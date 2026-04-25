@@ -33,23 +33,35 @@ The entire dashboard ships as one HTML file with inline `<style>` and `<script>`
 │ Controls: [Start/Pause Stream] [Reset]              │
 │ Speed slider: 1.0× … 8.0× (step 0.5)                │
 ├─────────────────────────────────────────────────────┤
-│ Fire Banner (hidden by default)                     │
+│ Fire Banner (hidden by default — [Details][Resume]) │
 ├─────────────────────────────────────────────────────┤
 │ Two-column grid (≥1100px viewport) / single-column  │
-│  LEFT                          │ RIGHT              │
+│  LEFT (wide)                  │ RIGHT (narrow)      │
 │  ─────────────────────────────│ ───────────────────│
-│  Price · Volume Profile · Evt │ Regime Matrix      │
-│  Delta Distribution           │ Breakout Watch ★   │
-│  Event Glossary               │ Fade Watch ◆       │
-│  Event Log                    │                    │
+│  Price + Volume composite     │ Regime Matrix       │
+│  Delta Distribution           │   (matrix only —    │
+│  Event Glossary  ← clickable  │    confidence,      │
+│  Event Log                    │    status, design   │
+│                               │    note)            │
 └─────────────────────────────────────────────────────┘
+
+Modal layer (overlay, fixed position, z-index 100):
+  Triggered by clicking any glossary row. Contains either
+  the canonical Watch panel (Breakout ★ / Fade ◆) or an
+  event-detail panel (Sweep ▲▼ / Absorption ◉ / Stop ⚡ /
+  Divergence ⚠). One modal at a time. Close via X, overlay
+  click, or Escape.
 ```
+
+> The right column is **matrix-only** in this version. The two canonical watch panels (Breakout / Fade) no longer live inline — they are injected into the shared modal on demand. See §9.3 (Modal Architecture).
 
 ### 2.2 Responsive Breakpoints
 - **< 1100px:** Single column, sections stack vertically.
-- **1100–1499px:** Two-column grid, left:right ≈ 1.55 : 1, container max 1280px.
-- **≥ 1500px:** Two-column grid, left:right ≈ 1.7 : 1, container max 1440px.
+- **1100–1499px:** Two-column grid, left:right ≈ **2.2 : 1**, container max 1280px.
+- **≥ 1500px:** Two-column grid, left:right ≈ **2.4 : 1**, container max 1440px.
 - **< 480px (mobile):** Reduced padding, smaller matrix label column (44px vs 56px), smaller event-row time/price columns.
+
+The wider left:right ratio (vs the prior version's 1.55 / 1.7) reflects the right column now containing only the matrix — it doesn't need as much horizontal space without the watch panels stacked underneath.
 
 ### 2.3 Color/Typography System
 - Dark theme. Background `#0a0e14`, panels `#141923`, borders `#1f2734`.
@@ -103,6 +115,17 @@ Records when one of the two canonical-entry watches has all 4 criteria true:
 - Events: capped at the most recent 80; older trimmed.
 - Canonical fires: capped at 20.
 - Trail (recent matrix path): last `TRAIL_LEN = 5` distinct cells.
+
+### 3.5 UI / Modal Persisted State
+Several pieces of UI state must persist *outside* the modal lifecycle, because the modal DOM (and the controls inside it) are destroyed and rebuilt on each open:
+
+| Variable | Type | Purpose |
+|---|---|---|
+| `autoPausePrefs` | `{ breakout: bool, fade: bool }` | Per-watch auto-pause preference. Defaults `{true, true}`. The auto-pause checkboxes only exist in the DOM when the corresponding modal is open; this object is the source of truth otherwise. When a modal is open, `handleWatchFire` syncs the checkbox state into this object before reading it. When a modal is closed, this object is read directly. |
+| `lastFiredWatch` | `'breakout' \| 'fade' \| null` | Records which watch most recently triggered the fire banner. Read by the banner's **Details** button to know which modal to open. Cleared by `resetStream`. |
+| `currentModal` | `'breakout' \| 'fade' \| 'sweep' \| 'absorption' \| 'stoprun' \| 'divergence' \| null` | Identifies the currently open modal, or `null` if none. `renderWatchPanel` uses this to decide whether to push DOM updates (it only writes to the watch DOM when `currentModal` matches the watch's prefix). |
+
+Per-watch state structs (`breakoutWatch`, `fadeWatch`) are unchanged from the prior version: each carries `lastCanonical`, `firedThisCycle`, and `flipTicks`. **These persist across modal open/close cycles** — see §15 hard constraint.
 
 ---
 
@@ -335,39 +358,97 @@ Fires when all 4 criteria are true. `direction` = predicted **trade** direction 
 
 > **IMPORTANT** (from code comment): `direction` for the fade watch is the *trade* direction, which is the **opposite** of the stretch direction. Stretch up → fade short → `direction='down'`.
 
-### 9.3 Watch Panel UI (per watch)
-Each watch panel contains:
+### 9.3 Modal Architecture
+The two canonical watches (and the four event types from the glossary) are no longer persistent UI elements. They live inside a **shared modal overlay** that is appended to the body once and reused for every modal type.
 
-1. **Header** — title + colored match score `N / 4`.
-   - Breakout panel: amber accents, title prefix `★`.
-   - Fade panel: blue accents, title prefix `◆`.
+**DOM skeleton (static, present at all times):**
+- `#modalOverlay` — full-viewport fixed div (`z-index: 100`, blurred dark backdrop). Has `.visible` class when a modal is open.
+- `#modalPanel` — centered card (max-width 600px, max-height 90vh, scrollable). Carries one of `variant-breakout`, `variant-fade`, `variant-sweep`, `variant-absorb`, `variant-stop`, `variant-diverge` to set its border-color accent.
+- `#modalGlyph` — leading icon next to title.
+- `#modalName` — title text. Color is variant-themed.
+- `#modalMeta` — right-aligned meta (used by canonical watches to show `N / 4`).
+- `#modalBody` — the swappable content region.
+- `.modal-close` — `×` button.
+
+**Lookup table — `MODAL_CONFIG[modalId]`:** maps each `modalId` (`'breakout' | 'fade' | 'sweep' | 'absorption' | 'stoprun' | 'divergence'`) to `{ variant, glyph, name, build }`, where `build` is the function that returns the inner HTML for `#modalBody`.
+
+**Open flow — `openModal(modalId)`:**
+1. Look up the config; if unknown, no-op.
+2. Set `currentModal = modalId`.
+3. Reset the panel's class to `'modal-panel variant-' + cfg.variant`.
+4. Set `#modalGlyph`, `#modalName` text. Clear `#modalMeta`.
+5. **Rebuild `#modalBody.innerHTML` from `cfg.build()`** — full DOM replacement, no diffing.
+6. Add `.visible` to overlay (triggers fade-in + slide-in keyframes).
+7. For canonical-watch modals only: immediately re-evaluate the corresponding canonical and call `renderBreakoutWatch` / `renderFadeWatch` to populate the freshly-built DOM with current state. (Otherwise the modal would briefly show all `○` / `0 / 4` until the next `step()`.)
+
+**Close flow — `closeModal()`:**
+1. Remove `.visible` from overlay.
+2. Set `currentModal = null`.
+3. The DOM nodes inside `#modalBody` remain in memory but are orphaned-by-replacement on the next open.
+
+**Close triggers:**
+- Click the `×` button.
+- Click the overlay outside the panel (`onOverlayClick` checks `e.target.id === 'modalOverlay'` so clicks inside the panel don't bubble — the panel itself stops propagation explicitly).
+- Press `Escape`. The keydown listener is registered globally and only acts when `currentModal !== null`.
+
+**Render-loop interaction:**
+- `renderWatchPanel(prefix, ...)` is called every tick for both watches (from `step()`). It always **updates flip-tracking state** (`flipTicks`, `lastCanonical`) regardless of whether the modal is open. **DOM writes are skipped** unless `currentModal === prefix`. This is what allows the diagnostic ("last to break: X · N ticks ago") to remain accurate when the user opens the modal later — flip ticks were being recorded the whole time.
+
+### 9.4 Modal Body Contents (per watch / per event)
+Each modal body is **rebuilt from a template literal on every `openModal` call** (no incremental diffing). For canonical watches, `renderWatchPanel` then immediately fills in the live values.
+
+#### 9.4.1 Canonical Watch Modal (Breakout / Fade)
+1. **Header (in modal-head, not body)** — glyph + name + match-score meta `<num> / 4`. The meta is appended via a deferred `setTimeout(..., 0)` from inside `build*ModalBody` so the DOM exists before the script writes to it.
+   - Breakout: amber accents, title `Breakout · Impulsive · Light`.
+   - Fade: blue accents, title `Fade · Active · Normal`.
 2. **Summary blurb** — one paragraph describing what is being watched and what it predicts.
-3. **Criteria list** — 4 rows. Each shows `○` (unmet) or `✓` (met, in green); met rows brighten the text.
+3. **Criteria list** (4 rows). Each row carries `data-key` matching one of the canonical's check keys. Renders `○` (unmet) or `✓` (met, in green); met rows brighten their text. **The list element id is `#breakoutCriteriaList` / `#fadeCriteriaList`** — `renderWatchPanel` selects rows from these lists.
 4. **Diagnostic line** — "last to break: <criterion name> · N tick(s) ago".
    - Computed from `flipTicks`: among criteria currently FALSE that were previously TRUE, the one with the most recent flip wins.
    - When all 4 are true: `"all 4 criteria met — fire armed"`, with green-accent border-left.
    - When none have ever been true: `"no criteria yet met"`.
    - When some are true but none have flipped from prior true: `"N/4 — none broken from prior true state"`.
 5. **Controls row**
-   - Auto-pause checkbox (default ON, scoped per watch).
+   - Auto-pause checkbox. **Initial `checked` attribute is hydrated from `autoPausePrefs[watchId]`** (defaults true). Because the checkbox only exists when the modal is open, see §3.5 for how the cached preference is kept in sync.
    - Force button — `Force ★` or `Force ◆`.
 6. **Failure-twin footer** — one line naming the adjacent cell that produces the opposite outcome.
 
-### 9.4 Fire Behavior (`handleWatchFire`)
+#### 9.4.2 Event Detail Modal (Sweep / Absorption / Stop Run / Divergence)
+Built by `buildEventModalBody(eventType)` using a static `EVENT_INFO` table:
+
+| eventType | Description copy | Detection copy | Significance copy |
+|---|---|---|---|
+| `sweep` | "A bar exceeds the prior N-bar high or low with elevated volume…" | bar high > recent 10-bar high (up); bar volume > 1.65× recent avg | "Sweeps mark moments where price tested a recent extreme with conviction…" |
+| `absorption` | "High volume occurring in a compressed bar range…" | bar volume > 1.75× recent avg; bar range < 0.55× recent avg range | "Often indicates exhaustion or a defended level…" |
+| `stoprun` | "A sweep whose immediate next bar fully reverses past the swept level…" | prior bar was a sweep; next bar closes past sweep bar's open | "A textbook signal that 'aggressive' buying or selling was actually stop-driven…" |
+| `divergence` | "Price makes a new extreme but cumulative delta…" | bar high > recent 10-bar high; cumulative Δ over last 9 bars opposes by > 0.6× avg vol | "Often precedes mean-reversion at extremes…" |
+
+The body renders, in order:
+1. Description (as a `.watch-summary`).
+2. Detection criteria list under a "Detection criteria:" label.
+3. Significance note in a `.modal-placeholder`.
+4. **Recent firings (this session)** — last 5 events of this type from `events`, in reverse chronological order, formatted as `<HH:MM> | <type> <↑/↓> | <price>`. Empty state: italic "none yet this session".
+5. Closing note in a second `.modal-placeholder`: "Events are detection primitives — they fire on bar-level pattern matches without making predictions about what happens next. Canonical entries (★, ◆) combine events with regime context to form actual hypotheses."
+
+### 9.5 Fire Behavior (`handleWatchFire`)
 - Edge-triggered per watch via `firedThisCycle` flag — fires exactly once per arming cycle, resets to false the next time `canonical.fired` is false.
 - On fire:
   1. Push a fire record onto `canonicalFires` with `watchId`, `barTime`, `direction`, `price`. Cap at 20.
-  2. If that watch's auto-pause checkbox is checked AND the stream is currently running, call `pauseForFire()`.
+  2. **Sync the auto-pause preference**: if the corresponding modal is open, read the live checkbox value into `autoPausePrefs[watchId]`. If the modal is closed, the cached value is used directly.
+  3. If `autoPausePrefs[watchId]` is true AND the stream is currently running, call `pauseForFire()`.
 
-### 9.5 Auto-Pause Banner (`pauseForFire`)
+### 9.6 Auto-Pause Banner (`pauseForFire`)
 - Stops the simulation interval, updates the Stream button to `"Resume Stream"`.
+- Records the firing watch into `lastFiredWatch` so the **Details** button knows which modal to open.
 - Shows the fire banner with copy:
   - **Breakout:** icon `⚡`, headline "Breakout canonical fired · stream paused", detail `"[Impulsive · Light] · sweep ↑/↓ · all 4 criteria met. Predicts upward/downward travel toward next structural level within ~15 bars."`
   - **Fade:** icon `◆`, headline "Fade canonical fired · stream paused", detail `"[Active · Normal] · stretch ↑/↓ from POC + VWAP · all 4 criteria met. Predicts upward/downward drift back toward POC within ~25-40 bars."`
 - Banner color theming matches the watch (amber for breakout, blue for fade).
-- `Resume` button on the banner: dismisses the banner and resumes the stream.
+- The banner has **two action buttons**, in this order:
+  - **`Details`** (`fire-details-btn`, transparent with watch-themed border) — calls `openFireDetails()`, which opens whichever modal corresponds to `lastFiredWatch`. Stream stays paused. The button is themed to the firing watch's color (amber for breakout, blue for fade) via the `.fade-variant` class on the banner.
+  - **`Resume`** (filled, watch-themed) — dismisses the banner and resumes the stream (calls `toggleStream()`).
 
-### 9.6 Fire Halo on Chart
+### 9.7 Fire Halo on Chart
 Each fire record draws a halo on the price chart on the bar where it fired:
 - Outer ring radius `max(10, slotW * 0.7)`.
 - Color matches watch (amber for breakout, blue for fade).
@@ -378,24 +459,45 @@ Each fire record draws a halo on the price chart on the bar where it fired:
 
 ## 10. Charts
 
-### 10.1 Price Chart (`#priceChart`, height 240px)
-Layout per render:
-- Right-hand profile column ≤ 110px wide (or 22% of width, whichever is smaller).
-- Padding `{l:6, r:8, t:10, b:14}`.
-- Y-scale fits all bars (settled + forming) plus 5% top/bottom padding.
+### 10.1 Price + Volume Composite Chart (`#priceChart`, height 240px)
+The single canvas hosts **two stacked sub-charts** sharing one X-scale:
+- **Top ~74%:** the price candles + volume-profile lines (POC/VAH/VAL) + VWAP + event markers + fire halos.
+- **Bottom 22%:** the per-bar volume sub-band.
+- A 4px visual gap separates the two.
+
+#### 10.1.1 Layout per render
+- `PROFILE_W` — right-hand profile column ≤ 110px wide (or 22% of canvas width, whichever is smaller).
+- `PAD = {l:6, r:8, t:10, b:14}`.
+- `VOL_BAND_FRAC = 0.22`, `VOL_BAND_GAP = 4`.
+- `volBandH = round(fullChartH * 0.22)`; `chartH = fullChartH - volBandH - 4`.
+- Y-scale of the price region fits all bars (settled + forming) plus 5% top/bottom padding.
 - Slot width = `chartW / max(totalBars, 12)` — at least 12 slots' worth of horizontal space is reserved so a fresh chart doesn't draw bars too wide.
 - Candle width = `max(2, min(slotW * 0.65, 14))`.
 
-Render order (back-to-front):
-1. Background `#0d1218`.
-2. VAH/VAL dashed lines (full chart width).
-3. POC solid teal line.
+#### 10.1.2 Render order (back-to-front)
+1. Background `#0d1218` (full canvas).
+2. VAH/VAL dashed lines (across price region).
+3. POC solid teal line (across price region).
 4. Candles. Forming bar uses translucent fill + dashed border.
-5. Anchored VWAP dashed yellow line + label.
-6. Canonical fire halos (rings + glyph above bar).
-7. Event markers (drawn on top of halos).
-8. Volume profile column on the right.
-9. Last-price tag at the right edge of the last close, colored by direction.
+5. **Volume sub-band** (see §10.1.3).
+6. Anchored VWAP dashed yellow line + label.
+7. Canonical fire halos (rings + glyph above bar).
+8. Event markers (drawn on top of halos).
+9. Volume profile column on the right.
+10. Last-price tag at the right edge of the last close, colored by direction.
+
+#### 10.1.3 Volume Sub-Band
+A dedicated horizontal lane occupying the **bottom 22%** of the canvas, beneath the candles. Its purpose is to surface the same volume series that drives the right-side profile, but per-bar and time-aligned with the candles above.
+
+- **Own y-scale, independent of the price region.** `maxVol = max(b.volume)` across all displayed bars (including the forming bar). Each bar's volume bar height is `(b.volume / maxVol) * (volBandH - 2)`, with a 1px floor.
+- **Color matches the candle direction**, so bullish/bearish read at a glance:
+  - Settled up: `rgba(78,166,116,0.55)` (translucent green).
+  - Settled down: `rgba(201,87,96,0.55)` (translucent red).
+  - Forming up: `rgba(78,166,116,0.30)`.
+  - Forming down: `rgba(201,87,96,0.30)`.
+- **Faint baseline** drawn across the band's bottom edge: `rgba(138,146,166,0.18)`, 1px.
+- **Tiny "VOL" label** in `rgba(138,146,166,0.5)`, 8px monospace, anchored at the band's top-left corner.
+- Bars share the same `xCenter` and `candleW` as the candles above, so columns align vertically.
 
 ### 10.2 Delta Distribution Chart (`#flowChart`, height 64px)
 Per-bar delta histogram in the same horizontal alignment as the price chart (so columns line up):
@@ -432,12 +534,33 @@ Per-bar delta histogram in the same horizontal alignment as the price chart (so 
 | Control | Behavior |
 |---|---|
 | `Start Stream` / `Pause Stream` / `Resume Stream` | Toggles `setInterval(step, getTickMs())`. On start, runs one immediate `step()` so the user sees movement instantly. On pause, button text is `"Resume Stream"`; on first start ever or after reset, it is `"Start Stream"`. |
-| `Reset` | Clears bars, events, trail, fires, watch state, scenario locks. Resets sim to defaults (`price=4500, volState=2, depthState=2, bias=1, tick=0`). Re-renders empty matrix and watches. |
+| `Reset` | Clears bars, events, trail, fires, watch state, scenario locks, and `lastFiredWatch`. Resets sim to defaults (`price=4500, volState=2, depthState=2, bias=1, tick=0`). Re-renders empty matrix; canonical watches are re-evaluated for their internal flip-tracking but no DOM is repainted unless a modal is open. |
 | Speed slider | Min 1, max 8, step 0.5. Live label `"X.X×"`. If running, the interval is restarted with the new tick interval. |
-| `Force ★` (in Breakout panel) | See §4.4. |
-| `Force ◆` (in Fade panel) | See §4.4. |
-| Auto-pause checkbox (one per watch) | Default checked. When checked AND that watch's canonical fires AND the stream is running, the stream auto-pauses and the fire banner appears. |
+| `Force ★` (inside Breakout modal) | See §4.4. Lives in the Breakout watch modal's controls row — only available when that modal is open. |
+| `Force ◆` (inside Fade modal) | See §4.4. Lives in the Fade watch modal's controls row. |
+| Auto-pause checkbox (inside each watch modal) | Default checked. Hydrates from `autoPausePrefs[watchId]` when the modal opens. When the checkbox value changes and a fire occurs, `handleWatchFire` syncs the live value back into `autoPausePrefs` before reading it. When the modal is closed, the cached preference is the source of truth. |
+| Fire banner `Details` button | Opens the modal corresponding to `lastFiredWatch` (the watch that just fired). Stream remains paused. |
 | Fire banner `Resume` button | Hides banner and resumes the stream (calls `toggleStream()`). |
+| Modal `×` close button / overlay click / `Escape` key | Three equivalent ways to dismiss any open modal. Sets `currentModal = null`. |
+
+### 12.5 Clickable Glossary as Navigation
+Each row of the **Event Glossary** section is a clickable navigation trigger — clicking a row opens the corresponding modal:
+
+| Glossary row | Opens modal |
+|---|---|
+| ▲▼ SWEEP | `openModal('sweep')` |
+| ◉ ABSORPTION | `openModal('absorption')` |
+| ⚡ STOP RUN | `openModal('stoprun')` |
+| ⚠ DIVERGENCE | `openModal('divergence')` |
+| ★ BREAKOUT FIRE | `openModal('breakout')` — the Breakout canonical-watch panel |
+| ◆ FADE FIRE | `openModal('fade')` — the Fade canonical-watch panel |
+
+Visual affordances:
+- Each row has `cursor: pointer` and a faint hover background (`rgba(255,255,255,0.025)`).
+- The row's name brightens to `--text` on hover.
+- No external icon or arrow — the entire row is the hit target.
+
+This is the primary discovery mechanism for the canonical watches in this version: there is no other path to opening them apart from the fire banner's **Details** button, which only appears once a watch has actually fired.
 
 ---
 
@@ -446,11 +569,12 @@ Per-bar delta histogram in the same horizontal alignment as the price chart (so 
 On load (`init` block at end of script):
 1. `buildMatrix()` — generates the 5×5 grid DOM with row labels, cells, x-axis row.
 2. Compute initial `matrixScores` from default sim state.
-3. Run `evaluateBreakoutCanonical` and `evaluateFadeCanonical` once (both will be all-false, no bars).
-4. `renderMatrix`, `renderBreakoutWatch`, `renderFadeWatch`, `drawPriceChart`, `drawFlowChart`.
+3. Run `evaluateBreakoutCanonical` and `evaluateFadeCanonical` once (both will be all-false, no bars). The returned objects are passed to `renderBreakoutWatch` / `renderFadeWatch` so each watch's `lastCanonical` snapshot is seeded — but no DOM is written for the watches because `currentModal` is `null`.
+4. `renderMatrix(...)`, `drawPriceChart()`, `drawFlowChart()`.
 5. Attach `resize` listener that redraws both canvases.
+6. Attach global `keydown` listener for `Escape` to close any open modal.
 
-Stream is **not** auto-started — the user must click `Start Stream`.
+Stream is **not** auto-started — the user must click `Start Stream`. No modal is open by default.
 
 ---
 
@@ -473,6 +597,9 @@ These are constraints called out explicitly in inline comments or implied by the
 8. **Auto-pause is per-watch.** The two checkboxes are independent.
 9. **`firedThisCycle` is edge-triggered per watch** so a sustained 4/4 state doesn't re-fire/re-pause every tick.
 10. **The "Synthetic" badge stays in the header** — this prototype must never be mistaken for a live data feed.
+11. **Modal content for canonical watches must be rebuilt on each `openModal` call, but flip-tracking state (`flipTicks`, `lastCanonical`) must persist across modal open/close cycles.** The diagnostic line ("last to break: X · N ticks ago") depends on tick-by-tick observation of true→false transitions, which `renderWatchPanel` performs *every step regardless of modal visibility*. A refactor that ties flip tracking to DOM lifecycle (e.g. only running it when the panel exists) will silently break the diagnostic for any criterion that flipped while the modal was closed. The DOM-write portion of `renderWatchPanel` is the only part gated by `currentModal === prefix`.
+12. **`autoPausePrefs` must be the canonical source of truth for auto-pause** when the modal is closed. The checkbox in the modal is hydrated *from* this object on open, and synced *into* this object whenever a fire is processed while the modal is open. A refactor that reads `getElementById('autoPauseToggle').checked` unconditionally will throw / read `null` whenever the watch fires while its modal is closed (the common case).
+13. **The `Details` button on the fire banner depends on `lastFiredWatch`.** It must be set by `pauseForFire` *before* the banner is shown, and cleared by `resetStream`. `openFireDetails` is a no-op when `lastFiredWatch` is null.
 
 ---
 
