@@ -428,12 +428,12 @@
   }
   .glossary-list li {
     display: grid;
-    grid-template-columns: 22px 88px 1fr;
+    grid-template-columns: 32px 88px 1fr;
     gap: 8px;
     padding: 3px 0;
     align-items: baseline;
   }
-  .glossary-list .g-glyph { text-align: center; font-size: 12px; }
+  .glossary-list .g-glyph { text-align: center; font-size: 12px; letter-spacing: -1px; }
   .glossary-list .g-name { color: var(--text-2); letter-spacing: 0.3px; }
   .glossary-list .g-desc { color: var(--muted); }
   .glossary-list .sweep   .g-glyph { color: var(--sweep); }
@@ -812,6 +812,49 @@
     </div>
   </div>
 
+  <!-- Event Glossary -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">Event Glossary</div>
+      <div class="section-meta">what each marker means</div>
+    </div>
+    <ul class="glossary-list">
+      <li class="sweep">
+        <span class="g-glyph">▲▼</span>
+        <span class="g-name">SWEEP</span>
+        <span class="g-desc">Bar exceeds prior N-bar high/low with volume &gt; 1.8× avg. ▲ above bar = up-sweep, ▼ below = down-sweep.</span>
+      </li>
+      <li class="absorb">
+        <span class="g-glyph">◉</span>
+        <span class="g-name">ABSORPTION</span>
+        <span class="g-desc">High volume + small range. Flow met liquidity, liquidity won.</span>
+      </li>
+      <li class="stop">
+        <span class="g-glyph">⚡</span>
+        <span class="g-name">STOP RUN</span>
+        <span class="g-desc">Sweep that fully reverses next bar. Often "last buyers/sellers in."</span>
+      </li>
+      <li class="diverge">
+        <span class="g-glyph">⚠</span>
+        <span class="g-name">DIVERGENCE</span>
+        <span class="g-desc">New price extreme not confirmed by cumulative Δ over lookback.</span>
+      </li>
+      <li>
+        <span class="g-glyph" style="color: var(--warn);">★</span>
+        <span class="g-name">BREAKOUT FIRE</span>
+        <span class="g-desc">All 4 criteria met for [Impulsive · Light] entry — predicts directional travel.</span>
+      </li>
+      <li>
+        <span class="g-glyph" style="color: var(--absorb);">◆</span>
+        <span class="g-name">FADE FIRE</span>
+        <span class="g-desc">All 4 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.</span>
+      </li>
+    </ul>
+    <div class="design-note">
+      <strong>Markers are sparse and event-typed</strong>, not per-bar verdicts. A bar with no marker is the default. This keeps the eye on what's structurally meaningful rather than restating candle direction.
+    </div>
+  </div>
+
   <!-- Event Log -->
   <div class="section">
     <div class="section-head">
@@ -966,49 +1009,6 @@
 
   </div><!-- /col-right -->
   </div><!-- /grid-main -->
-
-  <!-- Glossary -->
-  <div class="section">
-    <div class="section-head">
-      <div class="section-title">Event Glossary</div>
-      <div class="section-meta">what each marker means</div>
-    </div>
-    <ul class="glossary-list">
-      <li class="sweep">
-        <span class="g-glyph">▲</span>
-        <span class="g-name">SWEEP</span>
-        <span class="g-desc">Bar exceeds prior N-bar high/low with volume &gt; 1.8× avg. Direction-tagged.</span>
-      </li>
-      <li class="absorb">
-        <span class="g-glyph">◉</span>
-        <span class="g-name">ABSORPTION</span>
-        <span class="g-desc">High volume + small range. Flow met liquidity, liquidity won.</span>
-      </li>
-      <li class="stop">
-        <span class="g-glyph">⚡</span>
-        <span class="g-name">STOP RUN</span>
-        <span class="g-desc">Sweep that fully reverses next bar. Often "last buyers/sellers in."</span>
-      </li>
-      <li class="diverge">
-        <span class="g-glyph">⚠</span>
-        <span class="g-name">DIVERGENCE</span>
-        <span class="g-desc">New price extreme not confirmed by cumulative Δ over lookback.</span>
-      </li>
-      <li style="grid-template-columns: 22px 88px 1fr;">
-        <span class="g-glyph" style="color: var(--warn);">★</span>
-        <span class="g-name">BREAKOUT FIRE</span>
-        <span class="g-desc">All 4 criteria met for [Impulsive · Light] entry — predicts directional travel.</span>
-      </li>
-      <li style="grid-template-columns: 22px 88px 1fr;">
-        <span class="g-glyph" style="color: var(--absorb);">◆</span>
-        <span class="g-name">FADE FIRE</span>
-        <span class="g-desc">All 4 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.</span>
-      </li>
-    </ul>
-    <div class="design-note">
-      <strong>Markers are sparse and event-typed</strong>, not per-bar verdicts. A bar with no marker is the default. This keeps the eye on what's structurally meaningful rather than restating candle direction.
-    </div>
-  </div>
 
 </div>
 
@@ -1505,7 +1505,13 @@ function drawPriceChart() {
   const PROFILE_W = Math.min(110, w * 0.22);
   const PAD = { l: 6, r: 8, t: 10, b: 14 };
   const chartW = w - PROFILE_W - PAD.l - PAD.r - 8;
-  const chartH = h - PAD.t - PAD.b;
+  // Reserve bottom ~22% for the volume sub-band; price chart uses the rest.
+  const VOL_BAND_FRAC = 0.22;
+  const VOL_BAND_GAP  = 4;        // small visual gap between price and volume bands
+  const fullChartH = h - PAD.t - PAD.b;
+  const volBandH = Math.round(fullChartH * VOL_BAND_FRAC);
+  const chartH = fullChartH - volBandH - VOL_BAND_GAP;
+  const volTop = PAD.t + chartH + VOL_BAND_GAP;
 
   // Determine price range
   const allBars = formingBar ? [...bars, formingBar] : bars;
@@ -1588,6 +1594,34 @@ function drawPriceChart() {
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
     }
   }
+
+  // Volume sub-band — bottom of the price canvas, color-matched to candle direction.
+  // Own y-scale based on max volume in view so spikes are visible.
+  let maxVol = 1;
+  for (const b of allBars) if (b.volume > maxVol) maxVol = b.volume;
+  // Faint zero baseline
+  pctx.strokeStyle = 'rgba(138, 146, 166, 0.18)';
+  pctx.lineWidth = 1;
+  pctx.beginPath();
+  pctx.moveTo(PAD.l, volTop + volBandH);
+  pctx.lineTo(PAD.l + chartW, volTop + volBandH);
+  pctx.stroke();
+  for (let i = 0; i < allBars.length; i++) {
+    const b = allBars[i];
+    const xCenter = PAD.l + (i + 0.5) * slotW;
+    const isForming = (b === formingBar);
+    const isUp = b.close >= b.open;
+    const barH = Math.max(1, (b.volume / maxVol) * (volBandH - 2));
+    pctx.fillStyle = isForming
+      ? (isUp ? 'rgba(78,166,116,0.30)' : 'rgba(201,87,96,0.30)')
+      : (isUp ? 'rgba(78,166,116,0.55)' : 'rgba(201,87,96,0.55)');
+    pctx.fillRect(xCenter - candleW/2, volTop + volBandH - barH, candleW, barH);
+  }
+  // Tiny "VOL" label
+  pctx.fillStyle = 'rgba(138, 146, 166, 0.5)';
+  pctx.font = '8px "IBM Plex Mono", monospace';
+  pctx.textAlign = 'left';
+  pctx.fillText('VOL', PAD.l + 2, volTop + 8);
 
   // Anchored VWAP — dashed yellow line over price (settled bars only)
   if (bars.length >= 2) {
@@ -1696,56 +1730,34 @@ function drawPriceChart() {
 }
 
 function drawEventMarker(ctx, ev, x, y, slotW) {
-  const r = Math.min(5, slotW * 0.4);
+  // Render as text glyphs using the same Unicode characters as the Event Glossary,
+  // so chart icons and legend icons are visually identical (no path-vs-glyph drift).
+  const fontSize = Math.max(9, Math.min(slotW * 0.95, 14));
   ctx.save();
+  ctx.font = `${fontSize}px "IBM Plex Mono", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  let glyph, color, yOffset = 0;
   if (ev.type === 'sweep') {
-    ctx.fillStyle = '#b07ac9';
-    ctx.beginPath();
-    if (ev.dir === 'up') {
-      ctx.moveTo(x,     y - r - 2);
-      ctx.lineTo(x - r, y - 2);
-      ctx.lineTo(x + r, y - 2);
-    } else {
-      ctx.moveTo(x,     y + r + 2);
-      ctx.lineTo(x - r, y + 2);
-      ctx.lineTo(x + r, y + 2);
-    }
-    ctx.closePath();
-    ctx.fill();
+    color = '#b07ac9';
+    glyph = ev.dir === 'up' ? '▲' : '▼';
+    yOffset = ev.dir === 'up' ? -fontSize * 0.7 : fontSize * 0.7;
   } else if (ev.type === 'absorption') {
-    ctx.strokeStyle = '#6b8cce';
-    ctx.fillStyle = 'rgba(107,140,206,0.25)';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = '#6b8cce';
-    ctx.beginPath();
-    ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
-    ctx.fill();
+    color = '#6b8cce';
+    glyph = '◉';
   } else if (ev.type === 'stoprun') {
-    ctx.strokeStyle = '#d4634a';
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.moveTo(x - r, y);
-    ctx.lineTo(x,     y - r);
-    ctx.lineTo(x,     y + r * 0.3);
-    ctx.lineTo(x + r, y - r * 0.3);
-    ctx.stroke();
+    color = '#d4634a';
+    glyph = '⚡';
   } else if (ev.type === 'divergence') {
-    ctx.strokeStyle = '#d4a04a';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(x, y - r - 1);
-    ctx.lineTo(x - r, y + r - 1);
-    ctx.lineTo(x + r, y + r - 1);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.fillStyle = '#d4a04a';
-    ctx.beginPath();
-    ctx.arc(x, y + r * 0.3, 0.8, 0, Math.PI * 2);
-    ctx.fill();
+    color = '#d4a04a';
+    glyph = '⚠';
+    yOffset = ev.dir === 'up' ? -fontSize * 0.5 : fontSize * 0.5;
+  }
+
+  if (glyph) {
+    ctx.fillStyle = color;
+    ctx.fillText(glyph, x, y + yOffset);
   }
   ctx.restore();
 }
