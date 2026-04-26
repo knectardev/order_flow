@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orderflow-pipeline"
+version = "0.1.0"
+description = "Decode Databento DBN/Trades files and aggregate into 1-min OHLCV+delta bars for the order flow dashboard."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "databento>=0.75.0",
+]
+
+[project.scripts]
+orderflow-pipeline = "orderflow_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

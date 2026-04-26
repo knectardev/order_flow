@@ -1,0 +1,4 @@
+Risk Factor,Evaluation
+JSON Payload Size,"Medium Risk. Loading an entire RTH session of MES 1-minute bars as a single static JSON is fine for local use, but if you scale to multiple days, ensure you implement the ""bar-at-a-time"" fetch logic mentioned in §1.1."
+VWAP Sensitivity,Low Risk. Ensure the computeAnchoredVWAP function resets its accumulation at the start of the RTH session (09:30 ET) rather than just using the start of the JSON file to ensure the line matches standard trader expectations.
+Scenario Force vs. Reality,"Controlled. The plan to ""snap"" the scrubber to the nearest historical fire (instead of forcing synthetic events) is a much more honest way to handle the ""Force ★"" buttons."

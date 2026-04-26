@@ -1,0 +1,27 @@
+# --- Raw Databento downloads (large, re-downloadable) ---
+data/raw/
+*.dbn.zst
+*.zip
+
+# --- Python ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Aggregated bars are CHECKED IN (small) so the dashboard works after clone. ---
+!data/bars/
+!data/bars/**

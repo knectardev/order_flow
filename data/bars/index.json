@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "sessions": [
+    {
+      "file": "es_2026-04-20_rth.json",
+      "date": "2026-04-20",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-20T13:30:00Z",
+      "sessionEnd": "2026-04-20T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-21_rth.json",
+      "date": "2026-04-21",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-21T13:30:00Z",
+      "sessionEnd": "2026-04-21T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-22_rth.json",
+      "date": "2026-04-22",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-22T13:30:00Z",
+      "sessionEnd": "2026-04-22T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-23_rth.json",
+      "date": "2026-04-23",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-23T13:30:00Z",
+      "sessionEnd": "2026-04-23T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-24_rth.json",
+      "date": "2026-04-24",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-24T13:30:00Z",
+      "sessionEnd": "2026-04-24T20:00:00Z"
+    }
+  ]
+}
