@@ -251,14 +251,97 @@
 
   /* Canvases */
   .price-wrap {
+    position: relative;
     background: #0d1218;
     border: 1px solid var(--border);
     border-radius: 3px;
     padding: 0;
     overflow: hidden;
   }
-  #priceChart { display: block; width: 100%; height: 240px; }
+  #priceChart { display: block; width: 100%; height: 240px; cursor: crosshair; }
+  #priceChart.panning { cursor: grabbing; }
   #flowChart  { display: block; width: 100%; height: 64px; }
+
+  /* Hover tooltip on chart events. Style-consistent with .design-note / panels. */
+  .chart-tooltip {
+    position: absolute;
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+    min-width: 180px;
+    max-width: 280px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 3px;
+    padding: 7px 9px;
+    font-size: 10px;
+    line-height: 1.45;
+    color: var(--text-2);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.45);
+    transform: translate(10px, 10px);
+  }
+  .chart-tooltip.visible { display: block; }
+  .chart-tooltip .tt-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+  }
+  .chart-tooltip .tt-glyph {
+    font-size: 13px;
+    line-height: 1;
+  }
+  .chart-tooltip .tt-name {
+    font-size: 9.5px;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .chart-tooltip .tt-meta {
+    margin-left: auto;
+    font-size: 9px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .chart-tooltip .tt-desc { color: var(--muted); }
+  .chart-tooltip .tt-hint {
+    margin-top: 4px;
+    font-size: 8.5px;
+    color: var(--muted-2);
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+  }
+
+  /* Tooltip variant accent borders (mirror .glossary-list li accents). */
+  .chart-tooltip.variant-sweep    { border-left: 2px solid var(--sweep);  }
+  .chart-tooltip.variant-absorb   { border-left: 2px solid var(--absorb); }
+  .chart-tooltip.variant-stop     { border-left: 2px solid var(--stop);   }
+  .chart-tooltip.variant-diverge  { border-left: 2px solid var(--warn);   }
+  .chart-tooltip.variant-breakout { border-left: 2px solid var(--warn);   }
+  .chart-tooltip.variant-fade     { border-left: 2px solid var(--absorb); }
+
+  /* "Live edge" button — visible only when chart is panned away from the cursor. */
+  .live-edge-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 4;
+    display: none;
+    background: var(--panel-2);
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 9.5px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .live-edge-btn.visible { display: inline-block; }
+  .live-edge-btn:hover { background: rgba(33, 160, 149, 0.18); }
 
   /* Profile legend below chart */
   .profile-legend {
@@ -1006,6 +1089,8 @@
     </div>
     <div class="price-wrap">
       <canvas id="priceChart"></canvas>
+      <button class="live-edge-btn" id="liveEdgeBtn" onclick="returnToLiveEdge()" title="Return chart to live edge">↺ Live</button>
+      <div class="chart-tooltip" id="chartTooltip" role="tooltip" aria-hidden="true"></div>
     </div>
     <div class="profile-legend">
       <div class="item"><span class="swatch poc"></span><strong>POC</strong> point of control</div>
@@ -1234,7 +1319,19 @@ const replay = {
   sessionAnchorNs: null,   // sessionStart epoch ns for VWAP anchor
   regimeBreaks: null,      // {volBreaks: [..4 numbers], depthBreaks: [..]}
   allFires: [],            // pre-scanned canonical fires for jump-to-next
+  allEvents: [],           // pre-scanned events across the entire session (for chart pan)
 };
+
+// Chart viewport state for real-data history scrolling.
+// `viewEnd` is an exclusive index into replay.allBars; null ⇒ follow live cursor
+// (default behavior — viewport ends at the last committed/forming bar).
+// When the user pans, viewEnd is locked to a specific value and a "↺ Live"
+// button appears to return to live edge.
+let chartViewEnd = null;
+
+// Hit-test list rebuilt every drawPriceChart() call, used by the hover tooltip.
+// Each entry: {x, y, r, kind: 'event'|'fire', payload}
+let chartHits = [];
 
 // Synthetic-default thresholds — match the inline numbers below in
 // detectEvents(). When a real session loads, replay.tunings overrides.
@@ -1421,6 +1518,10 @@ function seek(targetIdx) {
   _resetReplayAccumulators();
   for (let i = 0; i < targetIdx; i++) _commitRealBar(i);
   replay.cursor = targetIdx;
+  // Re-couple the chart viewport to the cursor on any explicit seek (scrubber,
+  // step buttons, jump-to-fire, Reset). Free-form pan is preserved only across
+  // streaming/forming-bar updates, which never call seek().
+  chartViewEnd = null;
   seekInProgress = false;
   // Render once at end
   matrixScores = computeMatrixScores();
@@ -1482,6 +1583,66 @@ function precomputeAllFires() {
   seek(replay.allBars.length);
   replay.allFires = canonicalFires.slice();
   seek(savedCursor);
+}
+
+// Pre-scan the loaded session's bars in one forward pass to populate
+// replay.allEvents. The on-line detector caps `events` at 80 to keep the live
+// state lean; for chart panning over the full session we need every event,
+// keyed by its bar time so drawPriceChart can filter by visible range.
+//
+// Mirrors detectEvents + detectStopRun semantics. Uses replay.tunings (or the
+// synthetic defaults) so thresholds match what _commitRealBar would produce.
+function precomputeAllEvents() {
+  replay.allEvents = [];
+  if (replay.mode !== 'real' || !replay.allBars.length) return;
+  const t = getTunings();
+  const all = replay.allEvents;
+  for (let i = 0; i < replay.allBars.length; i++) {
+    const newBar = replay.allBars[i];
+    const history = replay.allBars.slice(Math.max(0, i - 12), i);
+    if (history.length >= 12) {
+      const recent = history.slice(-10);
+      const recentHigh = Math.max(...recent.map(b => b.high));
+      const recentLow  = Math.min(...recent.map(b => b.low));
+      const avgVol  = recent.reduce((s,b)=>s+b.volume,0)/recent.length;
+      const avgRange= recent.reduce((s,b)=>s+(b.high-b.low),0)/recent.length;
+      const range = newBar.high - newBar.low;
+
+      if (newBar.high > recentHigh && newBar.volume > avgVol * t.sweepVolMult) {
+        all.push({ type: 'sweep', dir: 'up', price: newBar.high, time: newBar.time });
+      } else if (newBar.low < recentLow && newBar.volume > avgVol * t.sweepVolMult) {
+        all.push({ type: 'sweep', dir: 'down', price: newBar.low, time: newBar.time });
+      }
+      if (newBar.volume > avgVol * t.absorbVolMult && range < avgRange * t.absorbRangeMult) {
+        all.push({ type: 'absorption', price: newBar.close, time: newBar.time });
+      }
+      const cumD = recent.slice(-8).reduce((s,b)=>s+b.delta, 0) + newBar.delta;
+      if (newBar.high > recentHigh && cumD < -avgVol * t.divergenceFlowMult) {
+        all.push({ type: 'divergence', dir: 'up', price: newBar.high, time: newBar.time });
+      } else if (newBar.low < recentLow && cumD > avgVol * t.divergenceFlowMult) {
+        all.push({ type: 'divergence', dir: 'down', price: newBar.low, time: newBar.time });
+      }
+    }
+    // Stop-run review: if the last pushed event was a sweep, look at this bar
+    // to decide if it's a stop-run (mirrors detectStopRun's one-bar lag).
+    if (all.length >= 1) {
+      const last = all[all.length - 1];
+      if (last.type === 'sweep' && !last._reviewed) {
+        // The sweep bar is at index i-1 (we just appended a sweep for bar i-1
+        // OR earlier; here we only treat sweeps appended on the previous loop).
+        const sweepIdx = replay.allBars.findIndex(b => b.time === last.time);
+        if (sweepIdx >= 0 && sweepIdx === i - 1) {
+          last._reviewed = true;
+          const sweepBar = replay.allBars[sweepIdx];
+          if (last.dir === 'up' && newBar.close < sweepBar.open) {
+            all.push({ type: 'stoprun', dir: 'up', price: last.price, time: newBar.time });
+          } else if (last.dir === 'down' && newBar.close > sweepBar.open) {
+            all.push({ type: 'stoprun', dir: 'down', price: last.price, time: newBar.time });
+          }
+        }
+      }
+    }
+  }
 }
 
 function jumpToNextFire(watchId) {
@@ -1561,7 +1722,10 @@ async function loadSession(meta) {
   replay.sessionAnchorNs = data.sessionStart;
   replay.cursor = 0;
   replay.allFires = [];
+  replay.allEvents = [];
+  chartViewEnd = null;            // reset to live-edge tracking on each new session
   precomputeRegimeBreaks();
+  precomputeAllEvents();
 
   // Show replay row, sync dropdown selection, update badge
   document.getElementById('replayRow').style.display = '';
@@ -1977,12 +2141,38 @@ function evaluateFadeCanonical() {
 function drawPriceChart() {
   const { w, h } = resizeCanvas(priceCanvas);
   pctx.clearRect(0, 0, w, h);
+  // Reset hit list every draw — geometry changes on resize/pan/streaming.
+  chartHits = [];
 
   // Background grid
   pctx.fillStyle = '#0d1218';
   pctx.fillRect(0, 0, w, h);
 
-  if (bars.length === 0 && !formingBar) return;
+  // ── Viewport selection ───────────────────────────────────────────────
+  // Synthetic mode: render the live `bars` rolling window (+ formingBar).
+  // Real mode @ live edge: same — `bars` is the last MAX_BARS, formingBar is
+  //    the in-progress real bar.
+  // Real mode panned: render replay.allBars[viewStart..viewEnd], no forming
+  //    bar (we're looking at history). Events are filtered from
+  //    replay.allEvents by bar.time.
+  let viewedBars;       // array of bars to render
+  let viewedEvents;     // events to overlay
+  let isPanned = false;
+  let panViewStart = 0;
+  if (replay.mode === 'real' && chartViewEnd !== null && chartViewEnd !== replay.cursor) {
+    isPanned = true;
+    const end = clamp(chartViewEnd, 1, replay.allBars.length);
+    panViewStart = Math.max(0, end - MAX_BARS);
+    viewedBars = replay.allBars.slice(panViewStart, end);
+    const winStart = viewedBars[0].time;
+    const winEnd   = viewedBars[viewedBars.length - 1].time;
+    viewedEvents = replay.allEvents.filter(ev => ev.time >= winStart && ev.time <= winEnd);
+  } else {
+    viewedBars = formingBar ? [...bars, formingBar] : bars;
+    viewedEvents = events;
+  }
+
+  if (viewedBars.length === 0) return;
 
   const PROFILE_W = Math.min(110, w * 0.22);
   const PAD = { l: 6, r: 8, t: 10, b: 14 };
@@ -1996,7 +2186,7 @@ function drawPriceChart() {
   const volTop = PAD.t + chartH + VOL_BAND_GAP;
 
   // Determine price range
-  const allBars = formingBar ? [...bars, formingBar] : bars;
+  const allBars = viewedBars;
   let lo = Infinity, hi = -Infinity;
   for (const b of allBars) {
     if (b.low  < lo) lo = b.low;
@@ -2008,8 +2198,13 @@ function drawPriceChart() {
 
   const yScale = p => PAD.t + ((hi - p) / (hi - lo)) * chartH;
 
-  // Profile (computed from settled bars)
-  const profile = bars.length > 2 ? computeProfile(bars) : null;
+  // Profile (computed from settled bars only — exclude formingBar at live edge,
+  // and use the visible window when panned so the profile reflects what's
+  // on screen).
+  const settledViewed = isPanned
+    ? viewedBars
+    : viewedBars.filter(b => b !== formingBar);
+  const profile = settledViewed.length > 2 ? computeProfile(settledViewed) : null;
 
   // Draw VAH / VAL / POC lines across full chart
   if (profile) {
@@ -2105,36 +2300,53 @@ function drawPriceChart() {
   pctx.textAlign = 'left';
   pctx.fillText('VOL', PAD.l + 2, volTop + 8);
 
-  // Anchored VWAP — dashed yellow line over price (settled bars only)
-  if (bars.length >= 2) {
-    const vwapPts = computeAnchoredVWAP(bars, getVwapAnchor());
+  // Anchored VWAP — dashed yellow line over price (settled bars only).
+  // Live edge: compute from the rolling `bars` window (matches existing
+  //            synthetic + real behavior).
+  // Panned (real): compute on the entire session up through the right edge so
+  //                the cumulative VWAP is correct, then render only the slice
+  //                visible in the current viewport.
+  let vwapDisplay = null;
+  if (isPanned) {
+    const fullSlice = replay.allBars.slice(0, panViewStart + viewedBars.length);
+    if (fullSlice.length >= 2) {
+      const fullVwap = computeAnchoredVWAP(fullSlice, getVwapAnchor());
+      vwapDisplay = fullVwap.slice(panViewStart);
+    }
+  } else if (bars.length >= 2) {
+    vwapDisplay = computeAnchoredVWAP(bars, getVwapAnchor());
+  }
+  if (vwapDisplay && vwapDisplay.length > 0) {
     pctx.strokeStyle = 'rgba(220, 200, 90, 0.72)';
     pctx.lineWidth = 1.3;
     pctx.setLineDash([4, 3]);
     pctx.beginPath();
-    for (let i = 0; i < vwapPts.length; i++) {
+    for (let i = 0; i < vwapDisplay.length; i++) {
       const x = PAD.l + (i + 0.5) * slotW;
-      const y = yScale(vwapPts[i].vwap);
+      const y = yScale(vwapDisplay[i].vwap);
       if (i === 0) pctx.moveTo(x, y);
       else pctx.lineTo(x, y);
     }
     pctx.stroke();
     pctx.setLineDash([]);
-    // Label at right edge of last point
-    const lastVWAP = vwapPts[vwapPts.length - 1].vwap;
-    const lastX = PAD.l + (vwapPts.length - 0.5) * slotW;
+    const lastVWAP = vwapDisplay[vwapDisplay.length - 1].vwap;
+    const lastX = PAD.l + (vwapDisplay.length - 0.5) * slotW;
     pctx.fillStyle = 'rgba(220, 200, 90, 0.85)';
     pctx.font = '9px "IBM Plex Mono", monospace';
     pctx.textAlign = 'left';
     pctx.fillText('VWAP ' + lastVWAP.toFixed(2), Math.min(lastX + 4, PAD.l + chartW - 60), yScale(lastVWAP) + 3);
   }
 
-  // Canonical fire halos — drawn underneath event markers so the SWEEP/etc. glyph sits on top
-  for (const fire of canonicalFires) {
-    const barIdx = bars.findIndex(b => b.time === fire.barTime);
+  // Canonical fire halos — drawn underneath event markers so the SWEEP/etc.
+  // glyph sits on top. When panned (real mode), use the full session's fire
+  // log (replay.allFires) so historic fires remain visible; when live, use the
+  // online `canonicalFires` ring buffer (capped at 20).
+  const fireSource = isPanned && replay.allFires.length ? replay.allFires : canonicalFires;
+  for (const fire of fireSource) {
+    const barIdx = viewedBars.findIndex(b => b.time === fire.barTime);
     if (barIdx < 0) continue;
     const xCenter = PAD.l + (barIdx + 0.5) * slotW;
-    const bar = bars[barIdx];
+    const bar = viewedBars[barIdx];
     const yMid = yScale((bar.high + bar.low) / 2);
     const haloR = Math.max(10, slotW * 0.7);
 
@@ -2162,15 +2374,25 @@ function drawPriceChart() {
     pctx.font = '11px "IBM Plex Mono", monospace';
     pctx.textAlign = 'center';
     pctx.fillText(glyph, xCenter, yScale(bar.high) - 8);
+
+    // Hit-test entry for tooltip + click-to-open-modal.
+    chartHits.push({
+      x: xCenter, y: yMid, r: Math.max(haloR, 12),
+      kind: 'fire', payload: fire,
+    });
   }
 
   // Event markers (sparse, only on settled bars)
-  for (const ev of events) {
-    const barIdx = bars.findIndex(b => b.time === ev.time);
+  for (const ev of viewedEvents) {
+    const barIdx = viewedBars.findIndex(b => b.time === ev.time);
     if (barIdx < 0) continue;
     const xCenter = PAD.l + (barIdx + 0.5) * slotW;
     const yEv = yScale(ev.price);
     drawEventMarker(pctx, ev, xCenter, yEv, slotW);
+    chartHits.push({
+      x: xCenter, y: yEv, r: Math.max(slotW * 0.7, 8),
+      kind: 'event', payload: ev,
+    });
   }
 
   // Volume profile bars on right
@@ -2209,6 +2431,28 @@ function drawPriceChart() {
     pctx.textAlign = 'right';
     pctx.fillText(last.close.toFixed(2), PAD.l + chartW - 4, yL - 4);
   }
+
+  // "Panned" hint: dim, mono, top-left of the price chart so it never overlaps
+  // the volume profile labels on the right.
+  if (isPanned) {
+    const end = clamp(chartViewEnd, 1, replay.allBars.length);
+    const lastBar = replay.allBars[end - 1];
+    const t = lastBar ? new Date(lastBar.time) : null;
+    const hh = t ? String(t.getUTCHours()).padStart(2, '0') : '--';
+    const mm = t ? String(t.getUTCMinutes()).padStart(2, '0') : '--';
+    pctx.fillStyle = 'rgba(212, 160, 74, 0.85)';
+    pctx.font = '9px "IBM Plex Mono", monospace';
+    pctx.textAlign = 'left';
+    pctx.fillText(`PANNED · ${hh}:${mm}Z · bar ${end}/${replay.allBars.length}`,
+                  PAD.l + 2, PAD.t + 8);
+  }
+
+  // Toggle "↺ Live" button visibility based on viewport state.
+  const liveBtn = document.getElementById('liveEdgeBtn');
+  if (liveBtn) liveBtn.classList.toggle('visible', isPanned);
+
+  // Refresh tooltip if the cursor is over a hit (geometry may have shifted on resize/pan).
+  _refreshTooltipFromLastMouse();
 }
 
 function drawEventMarker(ctx, ev, x, y, slotW) {
@@ -3034,6 +3278,211 @@ function resetStream() {
   document.getElementById('barCount').textContent = '0 bars';
   document.getElementById('cumDelta').textContent = 'cum Δ —';
 }
+
+// ───────────────────────────────────────────────────────────
+// Hover tooltip on chart events / fires
+// ───────────────────────────────────────────────────────────
+
+// Static descriptions for the hover tooltip. Event types reuse EVENT_INFO's
+// `description` for consistency with the modal copy. Fires get a watch-specific
+// summary; the modal still has the full criteria breakdown.
+const TOOLTIP_INFO = {
+  sweep:      { name: 'Sweep',      glyph: '▲▼', variant: 'sweep',
+                desc: 'New 10-bar extreme + elevated volume. Direction-tagged: ▲ above bar = up-sweep, ▼ below = down-sweep.' },
+  absorption: { name: 'Absorption', glyph: '◉',  variant: 'absorb',
+                desc: 'High volume in a compressed bar — flow met liquidity, liquidity won.' },
+  stoprun:    { name: 'Stop Run',   glyph: '⚡',  variant: 'stop',
+                desc: 'Sweep whose next bar fully reverses past the swept level. Often "last buyers/sellers in".' },
+  divergence: { name: 'Divergence', glyph: '⚠',  variant: 'diverge',
+                desc: 'New price extreme NOT confirmed by cumulative Δ. Flow disagrees with price.' },
+  breakout:   { name: 'Breakout Fire', glyph: '★', variant: 'breakout',
+                desc: 'All 4 criteria met for [Impulsive · Light] entry — predicts directional travel.' },
+  fade:       { name: 'Fade Fire',     glyph: '◆', variant: 'fade',
+                desc: 'All 4 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.' },
+};
+
+let _lastMouse = null;   // {x, y} CSS-pixel coords inside the canvas
+
+function _hitTestChart(x, y) {
+  let best = null, bestD2 = Infinity;
+  for (const hit of chartHits) {
+    const dx = x - hit.x, dy = y - hit.y;
+    const d2 = dx*dx + dy*dy;
+    if (d2 <= hit.r * hit.r && d2 < bestD2) {
+      best = hit; bestD2 = d2;
+    }
+  }
+  return best;
+}
+
+function _hideTooltip() {
+  const tt = document.getElementById('chartTooltip');
+  if (tt) {
+    tt.classList.remove('visible');
+    tt.setAttribute('aria-hidden', 'true');
+  }
+  priceCanvas.style.cursor = isPanningChart ? 'grabbing' : 'crosshair';
+}
+
+function _showTooltipForHit(hit, mouseX, mouseY) {
+  const tt = document.getElementById('chartTooltip');
+  if (!tt) return;
+  let info, meta;
+  if (hit.kind === 'event') {
+    info = TOOLTIP_INFO[hit.payload.type];
+    if (!info) return;
+    const dirTag = hit.payload.dir ? ` · ${hit.payload.dir.toUpperCase()}` : '';
+    meta = `@ ${(hit.payload.price ?? 0).toFixed(2)}${dirTag}`;
+  } else if (hit.kind === 'fire') {
+    info = TOOLTIP_INFO[hit.payload.watchId];
+    if (!info) return;
+    const dirTag = hit.payload.direction ? ` · ${hit.payload.direction.toUpperCase()}` : '';
+    meta = `@ ${(hit.payload.price ?? 0).toFixed(2)}${dirTag}`;
+  } else {
+    return;
+  }
+
+  // Reset variant classes, then apply the matching one.
+  tt.className = 'chart-tooltip visible variant-' + info.variant;
+  tt.setAttribute('aria-hidden', 'false');
+  tt.innerHTML =
+    `<div class="tt-head">` +
+      `<span class="tt-glyph">${info.glyph}</span>` +
+      `<span class="tt-name">${info.name}</span>` +
+      `<span class="tt-meta">${meta}</span>` +
+    `</div>` +
+    `<div class="tt-desc">${info.desc}</div>` +
+    `<div class="tt-hint">click marker for full breakdown</div>`;
+
+  // Position: prefer right-of-cursor; flip if it would clip the chart.
+  const wrap = priceCanvas.parentElement.getBoundingClientRect();
+  const ttW = tt.offsetWidth || 220;
+  const ttH = tt.offsetHeight || 60;
+  let left = mouseX + 14;
+  let top  = mouseY + 14;
+  if (left + ttW > wrap.width - 4)  left = mouseX - ttW - 14;
+  if (top + ttH > wrap.height - 4)  top  = mouseY - ttH - 14;
+  if (left < 4) left = 4;
+  if (top < 4)  top  = 4;
+  tt.style.left = left + 'px';
+  tt.style.top  = top  + 'px';
+  tt.style.transform = 'none';
+  priceCanvas.style.cursor = 'pointer';
+}
+
+function _refreshTooltipFromLastMouse() {
+  if (!_lastMouse) return;
+  const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
+  if (hit) _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
+  else     _hideTooltip();
+}
+
+priceCanvas.addEventListener('mousemove', (e) => {
+  const rect = priceCanvas.getBoundingClientRect();
+  _lastMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  // If we're actively click-dragging a pan, suppress the tooltip — pan UX wins.
+  if (isPanningChart) {
+    _continuePan(e);
+    _hideTooltip();
+    return;
+  }
+  const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
+  if (hit) _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
+  else     _hideTooltip();
+});
+priceCanvas.addEventListener('mouseleave', () => {
+  _lastMouse = null;
+  _hideTooltip();
+});
+priceCanvas.addEventListener('click', (e) => {
+  // Suppress modal-open if this click was the tail of a drag-pan.
+  if (_panMovedDuringDown) { _panMovedDuringDown = false; return; }
+  const rect = priceCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const hit = _hitTestChart(x, y);
+  if (!hit) return;
+  if (hit.kind === 'event')      openModal(hit.payload.type);
+  else if (hit.kind === 'fire')  openModal(hit.payload.watchId);
+});
+
+// ───────────────────────────────────────────────────────────
+// Chart pan / scroll over session history (real-data mode only)
+// ───────────────────────────────────────────────────────────
+let isPanningChart = false;
+let _panStartX = 0;
+let _panStartViewEnd = null;
+let _panSlotW = 1;
+let _panMovedDuringDown = false;
+
+function _panAvailable() {
+  return replay.mode === 'real' && replay.allBars.length > MAX_BARS;
+}
+
+function _currentViewEnd() {
+  // Effective right-edge index when chartViewEnd is null (live tracking).
+  return chartViewEnd !== null ? chartViewEnd : replay.cursor;
+}
+
+function _setViewEnd(idx) {
+  const minEnd = Math.min(MAX_BARS, replay.allBars.length);
+  const maxEnd = replay.allBars.length;
+  const clamped = clamp(Math.round(idx), minEnd, maxEnd);
+  // Snap back to live-edge tracking when the user pans all the way to the
+  // current cursor — keeps subsequent streaming bars sliding in naturally.
+  if (clamped === replay.cursor) {
+    chartViewEnd = null;
+  } else {
+    chartViewEnd = clamped;
+  }
+  drawPriceChart();
+}
+
+function returnToLiveEdge() {
+  chartViewEnd = null;
+  drawPriceChart();
+}
+
+priceCanvas.addEventListener('wheel', (e) => {
+  if (!_panAvailable()) return;
+  e.preventDefault();
+  // Normalize: deltaX (horizontal trackpads) takes precedence; otherwise use
+  // deltaY so a normal mouse wheel pans horizontally over history.
+  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  const step = delta > 0 ? 3 : -3;   // 3 bars per wheel notch
+  _setViewEnd(_currentViewEnd() + step);
+}, { passive: false });
+
+priceCanvas.addEventListener('mousedown', (e) => {
+  if (!_panAvailable()) return;
+  if (e.button !== 0) return;
+  isPanningChart = true;
+  _panMovedDuringDown = false;
+  const rect = priceCanvas.getBoundingClientRect();
+  _panStartX = e.clientX - rect.left;
+  _panStartViewEnd = _currentViewEnd();
+  // Estimate slot width once at drag-start (matches drawPriceChart logic).
+  const PROFILE_W = Math.min(110, rect.width * 0.22);
+  const chartW = rect.width - PROFILE_W - 6 - 8 - 8;
+  _panSlotW = chartW / Math.max(MAX_BARS, 12);
+  priceCanvas.classList.add('panning');
+  _hideTooltip();
+});
+
+function _continuePan(e) {
+  if (!isPanningChart) return;
+  const rect = priceCanvas.getBoundingClientRect();
+  const dx = (e.clientX - rect.left) - _panStartX;
+  if (Math.abs(dx) > 2) _panMovedDuringDown = true;
+  // Drag-right = look further into the past (decrease viewEnd); drag-left = forward.
+  const barsDelta = -dx / _panSlotW;
+  _setViewEnd(_panStartViewEnd + barsDelta);
+}
+
+window.addEventListener('mouseup', () => {
+  if (!isPanningChart) return;
+  isPanningChart = false;
+  priceCanvas.classList.remove('panning');
+});
 
 // ───────────────────────────────────────────────────────────
 // Init
