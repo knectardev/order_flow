@@ -2,10 +2,22 @@ import { MAX_BARS } from '../config/constants.js';
 import { state } from '../state.js';
 import { computeProfile } from '../analytics/profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from '../analytics/vwap.js';
+import { getCachedProfile, requestProfile } from '../data/profileApi.js';
 import { sessionForBar } from '../data/replay.js';
+import { isBarSelected } from '../ui/selection.js';
 import { _refreshTooltipFromLastMouse } from '../ui/tooltip.js';
 import { pctx, priceCanvas, resizeCanvas } from '../util/dom.js';
 import { clamp } from '../util/math.js';
+
+// Format a Date (or epoch-ms number) as an ISO-8601 timestamp with a Z
+// suffix for the /profile endpoint. We keep millisecond precision because
+// the API matches against `bar_time TIMESTAMP` columns at second
+// granularity but accepts fractional input — using full ISO keeps the
+// cache keys stable across re-renders that produce identical Date objects.
+function _isoZ(t) {
+  if (t == null) return '';
+  return (t instanceof Date) ? t.toISOString() : new Date(t).toISOString();
+}
 
 function _getViewedBars() {
   if (state.replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor) {
@@ -107,10 +119,38 @@ function drawPriceChart() {
       });
     }
   }
-  const profile = profileBars.length > 2 ? computeProfile(profileBars) : null;
+  // Profile source fork (regime-DB plan §1b'):
+  //   - API mode: fetch true tick-level volume profile from /profile,
+  //     keyed on the visible (or session-scoped) bar_time window. The
+  //     server runs the same value-area-fraction logic the JS proxy uses,
+  //     just over real per-print volume instead of redistributed bar
+  //     totals. While the fetch is in flight we render with no profile
+  //     (one frame of no VAH/VAL/POC lines + no profile bars) and the
+  //     resolution callback triggers a re-render via drawPriceChart().
+  //   - JSON mode (Phase 1 transition) and synthetic mode: fall back to
+  //     the OHLC-distribution proxy in src/analytics/profile.js. Synthetic
+  //     mode has no per-trade data; JSON mode is retired in Phase 2f.
+  let profile = null;
+  if (profileBars.length > 2) {
+    if (state.replay.dataDriven && state.replay.apiBase) {
+      const fromIso = _isoZ(profileBars[0].time);
+      const toIso   = _isoZ(profileBars[profileBars.length - 1].time);
+      profile = getCachedProfile(fromIso, toIso);
+      if (!profile) {
+        // Kick off the fetch and re-render when it lands. The handler
+        // schedules a microtask draw rather than calling drawPriceChart
+        // synchronously to avoid recursing inside the current render.
+        requestProfile(fromIso, toIso, () => Promise.resolve().then(() => drawPriceChart()));
+      }
+    } else {
+      profile = computeProfile(profileBars);
+    }
+  }
 
-  // Draw VAH / VAL / POC lines across full chart
-  if (profile) {
+  // Draw VAH / VAL / POC lines across full chart. Same null-guard as the
+  // profile-bar label block below — empty windows can return all-null
+  // POC/VAH/VAL.
+  if (profile && profile.vahPrice != null && profile.valPrice != null && profile.pocPrice != null) {
     pctx.lineWidth = 1;
     // VAH dashed
     pctx.strokeStyle = 'rgba(138, 146, 166, 0.45)';
@@ -173,29 +213,51 @@ function drawPriceChart() {
     }
   }
 
+  // Plan §4b/§4c-d: brushing tint pass. When state.selection is active,
+  // bars whose bar_time_ms isn't in selection.barTimes render dim and
+  // desaturated; selected bars render at full saturation with a thin
+  // accent halo. O(visible) per frame because we only check membership
+  // for the candles we're drawing — Set lookup is O(1).
+  const selectionActive = state.selection.kind !== null && state.selection.barTimes !== null;
+
   for (let i = 0; i < allBars.length; i++) {
     const b = allBars[i];
     const xCenter = PAD.l + (i + 0.5) * slotW;
     const isForming = (b === state.formingBar);
     const isUp = b.close >= b.open;
-    const color = isUp ? '#4ea674' : '#c95760';
-    const dimColor = isUp ? '#2d6a48' : '#7a363c';
+    const upColor   = '#4ea674';
+    const downColor = '#c95760';
+    const color = isUp ? upColor : downColor;
 
-    // Wick
-    pctx.strokeStyle = isForming ? 'rgba(192,198,208,0.45)' : color;
+    // Selection-driven tint. Forming bars are passed through unchanged
+    // (the live-edge feedback loop matters more than the selection
+    // affordance for that one bar).
+    let dim = false;
+    let highlighted = false;
+    if (selectionActive && !isForming) {
+      const ms = b.time instanceof Date ? b.time.getTime() : Date.parse(b.time);
+      if (isBarSelected(ms)) {
+        highlighted = true;
+      } else {
+        dim = true;
+      }
+    }
+
+    const wickColor = isForming ? 'rgba(192,198,208,0.45)'
+                    : dim         ? (isUp ? 'rgba(78,166,116,0.22)' : 'rgba(201,87,96,0.22)')
+                                  : color;
+    pctx.strokeStyle = wickColor;
     pctx.lineWidth = 1;
     pctx.beginPath();
     pctx.moveTo(xCenter, yScale(b.high));
     pctx.lineTo(xCenter, yScale(b.low));
     pctx.stroke();
 
-    // Body
     const yO = yScale(b.open), yC = yScale(b.close);
     const top = Math.min(yO, yC), bot = Math.max(yO, yC);
     const bodyH = Math.max(1, bot - top);
 
     if (isForming) {
-      // Forming bar: dashed translucent body
       pctx.fillStyle = isUp ? 'rgba(78,166,116,0.18)' : 'rgba(201,87,96,0.18)';
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
       pctx.strokeStyle = isUp ? 'rgba(78,166,116,0.7)' : 'rgba(201,87,96,0.7)';
@@ -203,9 +265,19 @@ function drawPriceChart() {
       pctx.lineWidth = 1;
       pctx.strokeRect(xCenter - candleW/2, top, candleW, bodyH);
       pctx.setLineDash([]);
+    } else if (dim) {
+      pctx.fillStyle = isUp ? 'rgba(78,166,116,0.22)' : 'rgba(201,87,96,0.22)';
+      pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
     } else {
       pctx.fillStyle = color;
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
+      if (highlighted) {
+        // Subtle accent ring around selected bars. 1px outset so the
+        // candle body itself stays at canonical color/opacity.
+        pctx.strokeStyle = 'rgba(33, 160, 149, 0.85)';
+        pctx.lineWidth = 1;
+        pctx.strokeRect(xCenter - candleW/2 - 0.5, top - 0.5, candleW + 1, bodyH + 1);
+      }
     }
   }
 
@@ -348,8 +420,12 @@ function drawPriceChart() {
     });
   }
 
-  // Volume profile state.bars on right
-  if (profile) {
+  // Volume profile state.bars on right.
+  // The /profile endpoint can return all-null POC/VAH/VAL when the
+  // requested window has no rows in bar_volume_profile (zero-volume
+  // gap, range smaller than one tick, etc.). Guard the labels so a
+  // null doesn't poison `toFixed`.
+  if (profile && profile.bins && profile.vahPrice != null && profile.valPrice != null && profile.pocPrice != null) {
     const px = PAD.l + chartW + 8;
     for (let i = 0; i < profile.bins.length; i++) {
       const v = profile.bins[i];
@@ -406,6 +482,36 @@ function drawPriceChart() {
       pctx.fillText(labelText, labelX, PAD.t + 10);
     }
     pctx.restore();
+  }
+
+  // Plan §4c-d: vertical anchor for fire-window selection. Drawn before
+  // the NOW line so the NOW indicator stays on top when both happen to
+  // land on the same x. Anchors the user's eye to the fire bar that
+  // opens the brushed window — the surrounding 30 bars are tinted
+  // accent via the candle loop above.
+  if (state.selection.kind === 'fire' && state.selection.fireBarTime != null) {
+    const fireMs = state.selection.fireBarTime;
+    const fireIdx = allBars.findIndex(b => {
+      const ms = b.time instanceof Date ? b.time.getTime() : Date.parse(b.time);
+      return ms === fireMs;
+    });
+    if (fireIdx >= 0) {
+      const xFire = PAD.l + (fireIdx + 0.5) * slotW;
+      pctx.save();
+      pctx.strokeStyle = 'rgba(33, 160, 149, 0.85)';
+      pctx.lineWidth = 1.4;
+      pctx.setLineDash([4, 3]);
+      pctx.beginPath();
+      pctx.moveTo(xFire, PAD.t);
+      pctx.lineTo(xFire, volTop + volBandH);
+      pctx.stroke();
+      pctx.setLineDash([]);
+      pctx.fillStyle = 'rgba(33, 160, 149, 0.95)';
+      pctx.font = '8px "IBM Plex Mono", monospace';
+      pctx.textAlign = 'center';
+      pctx.fillText('FIRE', xFire, PAD.t + 8);
+      pctx.restore();
+    }
   }
 
   // Vertical "NOW" line — anchors the user's perception to "what bar drives

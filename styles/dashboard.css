@@ -602,20 +602,242 @@
     z-index: 1;
   }
   .matrix-cell.watched-fade .watch-mark { opacity: 0.65; color: var(--absorb); }
-  .matrix-cell.fired {
-    animation: firepulse 1.4s ease-in-out infinite;
+
+  /* Brushed selection (regime-DB plan §4b). Matrix cells in
+     state.selection.cells get a visible border + inset glow so the
+     active cell-set reads at a glance; the outer ::before pseudo gives
+     the watched-vs-selected distinction (watch is amber/blue, selection
+     is teal accent). Cells can be both watched + selected — selected
+     wins the inset shadow. */
+  .matrix-cell.selected {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 2px rgba(33, 160, 149, 0.55);
+    cursor: pointer;
   }
-  .matrix-cell.fired-fade {
-    animation: firepulse-fade 1.4s ease-in-out infinite;
+  .matrix-cell { cursor: pointer; }
+
+  /* Regime warmup overlay (regime-DB plan §2c-d).
+     Active for the first ~30 bars of every session and any zero-volume
+     bar. The matrix-inner element gets `.warmup` while warmup is on; we
+     dim every cell uniformly via opacity 0.4 and float a centered amber
+     "WARMING UP" label over the grid (sized via aspect-ratio so it tracks
+     the matrix even on resize). The label sits behind the cells' z-index
+     so the `position: relative` cells continue rendering normally; the
+     dim makes the grid recede visually without losing structure. */
+  .matrix-inner { position: relative; }
+  .matrix-inner .matrix-grid { transition: opacity 0.25s; }
+  .matrix-inner.warmup .matrix-grid { opacity: 0.4; }
+  .matrix-warmup {
+    display: none;
+    position: absolute;
+    inset: 0;
+    /* The grid's first column is the row-label gutter (56px); the 5x5
+       cell area starts after that. Push the overlay over the cell area
+       so the label is centered on the matrix, not on the gutter+grid. */
+    padding-left: 56px;
+    padding-bottom: 28px;   /* x-axis-title sits at the bottom */
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    color: var(--warn);
+    font-family: 'IBM Plex Mono', 'JetBrains Mono', Monaco, monospace;
+    font-size: 12px;
+    letter-spacing: 0.15em;
+    text-shadow: 0 0 12px rgba(212, 160, 74, 0.45);
+    z-index: 2;
   }
-  @keyframes firepulse {
-    0%, 100% { box-shadow: inset 0 0 0 0 rgba(212, 160, 74, 0); }
-    50%      { box-shadow: inset 0 0 0 2px rgba(212, 160, 74, 0.7); }
+  .matrix-inner.warmup .matrix-warmup { display: flex; }
+
+  /* Heatmap layer (regime-DB plan §3c). Sits beneath all other cell
+     layers; its opacity is driven inline from renderMatrix() based on
+     the /occupancy fetch. The heatmap layer only paints when the matrix
+     is in heatmap mode — in posterior mode the layer is force-hidden so
+     the existing accent-tinted score fills remain the visual primary. */
+  .matrix-cell .heatmap-fill {
+    position: absolute;
+    inset: 0;
+    background: var(--warn);
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+    z-index: 0;
   }
-  @keyframes firepulse-fade {
-    0%, 100% { box-shadow: inset 0 0 0 0 rgba(107, 140, 206, 0); }
-    50%      { box-shadow: inset 0 0 0 2px rgba(107, 140, 206, 0.7); }
+  .matrix-cell .score-fill { z-index: 1; }
+  .matrix-cell .trail-dot  { z-index: 2; }
+  .matrix-cell .watch-mark { z-index: 3; }
+  /* In heatmap mode the posterior fill recedes so the occupancy tint is
+     legible; in posterior (default) mode the heatmap layer is muted. */
+  .matrix-inner.heatmap .matrix-cell .score-fill { opacity: 0 !important; }
+  .matrix-inner:not(.heatmap) .matrix-cell .heatmap-fill { opacity: 0 !important; }
+
+  /* Range selector (regime-DB plan §3b). Lives between the section head
+     and the matrix wrap. Buttons mirror the visual language of the
+     existing .secondary controls but smaller — they're a high-frequency
+     in-context toggle, not a top-level action. */
+  .matrix-range {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 8px 0 10px;
+    padding: 8px 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
   }
+  .matrix-range-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .matrix-range-btn {
+    appearance: none;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-size: 10.5px;
+    font-family: inherit;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .matrix-range-btn:hover { color: var(--text-2); border-color: var(--muted-2); }
+  .matrix-range-btn.active {
+    background: rgba(107, 140, 206, 0.12);
+    color: var(--accent);
+    border-color: rgba(107, 140, 206, 0.6);
+  }
+  .matrix-range-btn select {
+    appearance: none;
+    background: transparent;
+    color: inherit;
+    border: 0;
+    font: inherit;
+    margin: 0 2px;
+    cursor: pointer;
+  }
+  .matrix-range-group { display: inline-flex; align-items: center; }
+  .matrix-range-custom label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .matrix-range-custom input[type="datetime-local"] {
+    background: var(--panel);
+    color: var(--text-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 4px;
+    font: inherit;
+    font-size: 10.5px;
+  }
+  .matrix-range-apply {
+    appearance: none;
+    background: var(--accent);
+    color: var(--panel);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-size: 10.5px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .matrix-range-label {
+    font-size: 10px;
+    color: var(--muted-2);
+    letter-spacing: 0.4px;
+  }
+
+  /* Heatmap | Posterior toggle in section header. */
+  .matrix-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .matrix-mode-btn {
+    appearance: none;
+    background: transparent;
+    color: var(--muted);
+    border: 0;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-family: inherit;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .matrix-mode-btn + .matrix-mode-btn { border-left: 1px solid var(--border); }
+  .matrix-mode-btn:hover { color: var(--text-2); }
+  .matrix-mode-btn.active { background: rgba(107, 140, 206, 0.16); color: var(--accent); }
+
+  /* Occupancy diagnostic line below stat blocks. */
+  .matrix-occupancy-diag {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    font-size: 10.5px;
+    color: var(--muted);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .matrix-occupancy-diag .stat-label {
+    font-size: 9px;
+    color: var(--muted-2);
+    letter-spacing: 0.7px;
+    text-transform: uppercase;
+  }
+
+  /* Sticky SYSTEM row (regime-DB plan §2d). Pinned to top of the event
+     log so a user scrolling back through 30 minutes of accumulated events
+     during the warmup window still sees the "regime warming up" rationale.
+     Removed from the DOM in a single repaint when the first non-NULL rank
+     emits (handled by renderEventLog). The background must be opaque
+     (`var(--panel)` = the section background) so scrolled-up rows don't
+     bleed through. */
+  .event-log-system-row {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--panel);
+    display: grid;
+    grid-template-columns: 56px 22px 1fr 70px;
+    gap: 8px;
+    padding: 2px 0 4px;
+    align-items: baseline;
+    color: var(--muted-2);
+    border-bottom: 1px dashed rgba(212, 160, 74, 0.18);
+  }
+  .event-log-system-row .glyph { color: var(--warn); text-align: center; font-size: 11px; }
+  .event-log-system-row .label { color: var(--muted); }
+  .event-log-system-row .price { color: var(--muted-2); font-size: 10px; text-align: right; }
+  .event-log-system-row .time  { color: var(--muted-2); font-size: 10px; }
+
+  /* Selection banner (regime-DB plan §4b). Same sticky semantics as the
+     warmup row but in the accent color so users associate it with the
+     teal cell-selection borders. Clickable as a clear affordance. */
+  .event-log-selection-row {
+    border-bottom: 1px dashed rgba(33, 160, 149, 0.32);
+    cursor: pointer;
+  }
+  .event-log-selection-row .glyph { color: var(--accent); }
+  .event-log-selection-row .label { color: var(--accent); }
+  .event-log-selection-row .price { color: var(--accent); cursor: pointer; }
+  .event-log-selection-row:hover { background: rgba(33, 160, 149, 0.06); }
+
+  /* Fire rows in the event log (regime-DB plan §4c-d). Reuse the
+     existing .event-row grid but tint the glyph by watch type and add a
+     subtle hover affordance to telegraph clickability. */
+  .event-row-fire { cursor: pointer; }
+  .event-row-fire:hover { background: rgba(33, 160, 149, 0.05); }
+  .event-row-fire.fire-breakout .glyph { color: var(--warn); }
+  .event-row-fire.fire-fade     .glyph { color: var(--absorb); }
 
   /* Canonical Watch section */
   .watch-section { border-color: rgba(212, 160, 74, 0.18); }

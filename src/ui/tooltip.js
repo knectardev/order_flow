@@ -1,6 +1,7 @@
 import { state } from '../state.js';
 import { _continuePan, consumePanMoved } from './pan.js';
 import { openModal } from './modal.js';
+import { selectFire } from './selection.js';
 import { priceCanvas } from '../util/dom.js';
 
 const TOOLTIP_INFO = {
@@ -116,14 +117,26 @@ priceCanvas.addEventListener('mouseleave', () => {
   _hideTooltip();
 });
 priceCanvas.addEventListener('click', (e) => {
-  // Suppress modal-open if this click was the tail of a drag-pan.
+  // Suppress click handling if this was the tail of a drag-pan.
   if (consumePanMoved()) return;
   const rect = priceCanvas.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   const hit = _hitTestChart(x, y);
   if (!hit) return;
-  if (hit.kind === 'event')      openModal(hit.payload.type);
-  else if (hit.kind === 'fire')  openModal(hit.payload.watchId);
+  if (hit.kind === 'event') {
+    openModal(hit.payload.type);
+  } else if (hit.kind === 'fire') {
+    // Plan §4c-d: clicking a fire halo brushes the fire-window (fire bar
+    // + next 30) into the selection. Shift-click preserves the legacy
+    // modal-open behavior so users can still inspect the canonical
+    // breakdown without going through the fire banner. The fire banner's
+    // Details button continues to open the modal directly.
+    if (e.shiftKey) {
+      openModal(hit.payload.watchId);
+    } else {
+      selectFire(hit.payload);
+    }
+  }
 });
 
 // ───────────────────────────────────────────────────────────

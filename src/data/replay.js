@@ -2,7 +2,7 @@ import { BREAKOUT_CELL, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUN
 import { state } from '../state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { detectEvents, detectStopRun } from '../analytics/events.js';
-import { computeMatrixScores, deriveRegimeState, precomputeRegimeBreaks } from '../analytics/regime.js';
+import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
@@ -55,6 +55,9 @@ function _resetReplayAccumulators() {
   state.sim.volState = 2;
   state.sim.depthState = 2;
   state.lastFiredWatch = null;
+  // Reset warmup flag on every seek/replay reset; the next _commitRealBar
+  // sets it to its true value based on the bar's v_rank/d_rank.
+  state.regimeWarmup = false;
 }
 
 function _resetForSessionBoundary() {
@@ -86,20 +89,34 @@ function _commitRealBar(idx) {
   state.bars.push(realBar);
   if (state.bars.length > MAX_BARS) state.bars.shift();
 
+  // regime-DB plan §2c-d: deriveRegimeState may return null (warmup window
+  // or zero-volume bar with data-driven ranks). In that case we *do not*
+  // overwrite state.sim.volState / depthState — leaving them stale doesn't
+  // matter because canonical evaluators short-circuit on warmup, the
+  // matrix is rendered as the WARMING UP overlay, and trail dots are
+  // suppressed. Once ranks emit (typically bar 30), the flag flips back
+  // and normal rendering resumes in a single repaint.
   const reg = deriveRegimeState(idx);
-  state.sim.volState = reg.volState;
-  state.sim.depthState = reg.depthState;
+  if (reg) {
+    state.sim.volState = reg.volState;
+    state.sim.depthState = reg.depthState;
+    state.regimeWarmup = false;
+  } else {
+    state.regimeWarmup = true;
+  }
 
   const newEvs = detectEvents(realBar, state.bars.slice(0, -1));
   for (const ev of newEvs) state.events.push(ev);
   detectStopRun();
   if (state.events.length > 80) state.events = state.events.slice(-80);
 
-  const r = 4 - state.sim.volState;
-  const c = state.sim.depthState;
-  if (state.trail.length === 0 || state.trail[state.trail.length - 1].r !== r || state.trail[state.trail.length - 1].c !== c) {
-    state.trail.push({ r, c });
-    if (state.trail.length > TRAIL_LEN) state.trail.shift();
+  if (!state.regimeWarmup) {
+    const r = 4 - state.sim.volState;
+    const c = state.sim.depthState;
+    if (state.trail.length === 0 || state.trail[state.trail.length - 1].r !== r || state.trail[state.trail.length - 1].c !== c) {
+      state.trail.push({ r, c });
+      if (state.trail.length > TRAIL_LEN) state.trail.shift();
+    }
   }
 
   const breakoutCanonical = evaluateBreakoutCanonical();
@@ -275,41 +292,72 @@ function jumpToNextFire(watchId) {
 }
 
 async function bootstrapReplay() {
-  try {
-    const url = new URL(window.location.href).searchParams.get('data') || 'data/bars/index.json';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('index.json not available');
-    const idx = await res.json();
-    if (!Array.isArray(idx.sessions) || idx.sessions.length === 0) return;
-    const baseUrl = url.replace(/[^/]+$/, '');
-    state.replay.indexBaseUrl = baseUrl;
-    // Sort by date so concatenation is chronological even if index.json
-    // happens to be unsorted.
-    const metas = idx.sessions.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-    await _loadAllSessions(metas);
-  } catch (err) {
-    console.info('[orderflow] No real-data sessions loaded; staying in synthetic mode.', err.message);
+  // regime-DB plan §2f: JSON-manifest mode has been retired. The
+  // dashboard now requires `?source=api[&apiBase=…]`. Older `?source=
+  // json` URLs (or omitted `source=`) intentionally fall back to
+  // synthetic mode rather than silently loading stale JSON. Live data
+  // and the v2 regime classifier come from the FastAPI/DuckDB stack.
+  const params = new URL(window.location.href).searchParams;
+  const source = (params.get('source') || '').toLowerCase();
+  if (source === 'api') {
+    const apiBase = (params.get('apiBase') || 'http://localhost:8001').replace(/\/+$/, '');
+    return bootstrapFromApi(apiBase);
   }
+  console.info('[orderflow] No ?source=api specified; staying in synthetic mode.');
 }
 
-// Parallel-fetch every session JSON listed in the manifest, concatenate their
-// bars into one continuous timeline (state.replay.allBars), and build per-day
-// session-meta entries (state.replay.sessions[i]) with cumulative startIdx /
-// endIdx ranges. The cursor / scrubber / pan all index into this concatenated
-// timeline; sessionForBar() does a binary search across these ranges.
-async function _loadAllSessions(metas) {
-  const baseUrl = state.replay.indexBaseUrl || '';
+// API-mode bootstrap (regime-DB plan §1d). Fetches the session manifest
+// from /sessions, then per-session bars from /bars?session_date=…, and
+// concatenates them into the same state.replay.allBars / .sessions shape
+// that JSON mode uses. The downstream replay machinery (commit loop,
+// regime classifier, watch evaluators, event log) is identical — only
+// the data ingress changes — which is what makes the Phase 1e
+// data-equivalence verification meaningful.
+//
+// Profile fetching is lazy (priceChart.js → profileApi.js); we don't
+// pre-fetch /profile here because the profile window depends on viewport
+// state that can change after bootstrap.
+async function bootstrapFromApi(apiBase) {
+  state.replay.apiBase = apiBase;
+  state.replay.source = 'api';
+  state.replay.dataDriven = true;
+  let metas = [];
+  try {
+    const res = await fetch(`${apiBase}/sessions`);
+    if (!res.ok) throw new Error(`/sessions ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data.sessions) || data.sessions.length === 0) {
+      console.info('[orderflow] API mode: /sessions returned no sessions.');
+      return;
+    }
+    metas = data.sessions.slice().sort((a, b) =>
+      (a.session_date < b.session_date ? -1 : a.session_date > b.session_date ? 1 : 0));
+  } catch (err) {
+    // Surface API failures rather than masking them with synthetic mode —
+    // ?source=api is an explicit user/dev choice. The console message is
+    // the contract.
+    console.error('[orderflow] API bootstrap failed:', err.message);
+    state.replay.apiBase = null;
+    state.replay.source = 'synthetic';
+    state.replay.dataDriven = false;
+    return;
+  }
+  await _loadAllSessionsFromApi(apiBase, metas);
+}
+
+async function _loadAllSessionsFromApi(apiBase, metas) {
   const datas = await Promise.all(metas.map(async (meta) => {
-    const url = baseUrl + meta.file;
+    const url = `${apiBase}/bars?session_date=${encodeURIComponent(meta.session_date)}`;
     try {
       const r = await fetch(url);
       if (!r.ok) {
-        console.warn('Failed to load session', url, r.status);
+        console.warn('Failed to load API session bars', meta.session_date, r.status);
         return null;
       }
-      return await r.json();
+      const j = await r.json();
+      return { meta, data: j };
     } catch (err) {
-      console.warn('Failed to load session', url, err.message);
+      console.warn('Failed to load API session bars', meta.session_date, err.message);
       return null;
     }
   }));
@@ -318,32 +366,43 @@ async function _loadAllSessions(metas) {
 
   const allBars = [];
   const sessions = [];
-  for (let i = 0; i < datas.length; i++) {
-    const data = datas[i];
-    if (!data || !Array.isArray(data.bars)) continue;
+  for (const entry of datas) {
+    if (!entry) continue;
+    const { meta, data } = entry;
+    if (!Array.isArray(data.bars) || data.bars.length === 0) continue;
     const startIdx = allBars.length;
     for (const b of data.bars) {
+      // Bars come over the wire with `time` as ISO-Z strings; promote to
+      // Date so downstream code (chart axis, fire matching, event log
+      // formatting) can call .getUTC*() / .getTime() the same way it does
+      // in JSON mode.
       allBars.push({ ...b, time: new Date(b.time) });
     }
     const endIdx = allBars.length;
     if (endIdx === startIdx) continue;
-    const sessionStartMs = data.sessionStart ? Date.parse(data.sessionStart) : null;
-    const sessionEndMs   = data.sessionEnd   ? Date.parse(data.sessionEnd)   : null;
+    const sessionStartMs = meta.session_start ? Date.parse(meta.session_start) : null;
+    const sessionEndMs   = meta.session_end   ? Date.parse(meta.session_end)   : null;
     sessions.push({
-      file: metas[i].file,
-      symbol: data.symbol,
-      contract: data.contract,
-      date: data.date,
-      session: data.session,
-      sessionStart: data.sessionStart,
-      sessionEnd: data.sessionEnd,
+      // Synthetic 'file' key for the dropdown — onSessionChange()
+      // matches against this string. Prefix with `api:` so it can never
+      // collide with a JSON session manifest path.
+      file: `api:${meta.session_date}`,
+      symbol: 'ES',
+      contract: '',
+      date: meta.session_date,
+      session: 'rth',
+      sessionStart: meta.session_start,
+      sessionEnd: meta.session_end,
       sessionStartMs,
       sessionEndMs,
       startIdx,
       endIdx,
       barCount: endIdx - startIdx,
-      tunings: data.tunings || null,
-      regimeBreaks: null,
+      // Phase 1: per-session tunings aren't yet stored in DuckDB. Falling
+      // back to SYNTH_TUNINGS keeps detectors firing on the same
+      // thresholds JSON mode used in synthetic-tuning days; Phase 5+ can
+      // round-trip tunings through the DB if we need per-session drift.
+      tunings: SYNTH_TUNINGS,
     });
   }
 
@@ -360,7 +419,6 @@ async function _loadAllSessions(metas) {
   state.replay.allEvents = [];
   state.chartViewEnd = null;
 
-  precomputeRegimeBreaks();
   precomputeAllEvents();
 
   document.getElementById('replayRow').style.display = '';
@@ -369,7 +427,7 @@ async function _loadAllSessions(metas) {
   if (sel) sel.value = state.replay.current.file;
   const badge = document.getElementById('modeBadge');
   if (badge) {
-    badge.textContent = `Real · ${sessions[0].symbol || 'ES'} · v1 regime proxy`;
+    badge.textContent = `Real · ES · API · v2 regime`;
     badge.style.background = 'rgba(33, 160, 149, 0.18)';
   }
   _renderModeSubtitle();
@@ -412,4 +470,4 @@ function _renderModeSubtitle() {
     `${first.contract || ''} · ${state.replay.sessions.length} ${sessText} · ${span} · ${state.replay.allBars.length} bars · scrub or stream to replay`;
 }
 
-export { sessionForBar, _syncCurrentSession, _resetReplayAccumulators, _resetForSessionBoundary, _commitRealBar, seek, seekStep, _renderReplayChrome, onScrubberInput, onScrubberCommit, precomputeAllFires, precomputeAllEvents, jumpToNextFire, bootstrapReplay, populateSessionList, onSessionChange, _renderModeSubtitle };
+export { sessionForBar, _syncCurrentSession, _resetReplayAccumulators, _resetForSessionBoundary, _commitRealBar, seek, seekStep, _renderReplayChrome, onScrubberInput, onScrubberCommit, precomputeAllFires, precomputeAllEvents, jumpToNextFire, bootstrapReplay, bootstrapFromApi, populateSessionList, onSessionChange, _renderModeSubtitle };

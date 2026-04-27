@@ -147,8 +147,41 @@
   <div class="section">
     <div class="section-head">
       <div class="section-title">Regime Matrix · Probabilistic</div>
-      <div class="section-meta">vol × depth state</div>
+      <div class="section-meta">
+        <span class="matrix-mode-toggle" id="matrixModeToggle" role="tablist" aria-label="Matrix display mode">
+          <button class="matrix-mode-btn active" data-mode="posterior" role="tab">Posterior</button>
+          <button class="matrix-mode-btn" data-mode="heatmap" role="tab">Heatmap</button>
+        </span>
+      </div>
     </div>
+
+    <!-- Regime-DB plan §3b: occupancy range selector. Drives /occupancy
+         fetches that paint the heatmap layer behind the posterior cells. -->
+    <div class="matrix-range" id="matrixRange">
+      <div class="matrix-range-row">
+        <button class="matrix-range-btn active" data-kind="session">Current session</button>
+        <button class="matrix-range-btn" data-kind="lastHour">Last hour</button>
+        <span class="matrix-range-group">
+          <button class="matrix-range-btn" data-kind="lastN">Last
+            <select id="matrixRangeNSelect" aria-label="Number of trailing sessions">
+              <option value="3">3</option>
+              <option value="5" selected>5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+            </select>
+          sessions</button>
+        </span>
+        <button class="matrix-range-btn" data-kind="all">All loaded</button>
+        <button class="matrix-range-btn" data-kind="custom">Custom…</button>
+      </div>
+      <div class="matrix-range-row matrix-range-custom" id="matrixRangeCustomRow" style="display:none;">
+        <label>From <input type="datetime-local" id="matrixRangeCustomFrom"></label>
+        <label>To   <input type="datetime-local" id="matrixRangeCustomTo"></label>
+        <button class="matrix-range-apply" id="matrixRangeCustomApply">Apply</button>
+      </div>
+      <div class="matrix-range-label" id="matrixRangeLabel">—</div>
+    </div>
+
     <div class="matrix-wrap">
       <div class="y-axis-label">Volatility →</div>
       <div class="matrix-inner">
@@ -174,6 +207,11 @@
         <div class="stat-value muted" id="altCell">—</div>
         <div class="stat-detail" id="altCellScore">—</div>
       </div>
+    </div>
+
+    <div class="matrix-occupancy-diag">
+      <span class="stat-label">Occupancy</span>
+      <span id="matrixOccupancyDiag">—</span>
     </div>
 
     <div class="design-note">

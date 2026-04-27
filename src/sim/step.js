@@ -25,13 +25,21 @@ function step() {
 
   // Update state.trail and scores (works for both modes — state.sim.volState/depthState
   // are kept current by either evolveSimState (synth) or deriveRegimeState
-  // (real, applied during _commitRealBar)).
-  state.matrixScores = computeMatrixScores();
-  const r = 4 - state.sim.volState;
-  const c = state.sim.depthState;
-  if (state.trail.length === 0 || state.trail[state.trail.length-1].r !== r || state.trail[state.trail.length-1].c !== c) {
-    state.trail.push({ r, c });
-    if (state.trail.length > TRAIL_LEN) state.trail.shift();
+  // (real, applied during _commitRealBar)). During regime warmup we hold
+  // matrixScores at zero (the matrix renders the WARMING UP overlay) and
+  // skip the trail push so stale volState/depthState from before warmup
+  // don't pollute the trail with a phantom cell.
+  if (state.regimeWarmup) {
+    for (let r = 0; r < state.matrixScores.length; r++)
+      state.matrixScores[r].fill(0);
+  } else {
+    state.matrixScores = computeMatrixScores();
+    const r = 4 - state.sim.volState;
+    const c = state.sim.depthState;
+    if (state.trail.length === 0 || state.trail[state.trail.length-1].r !== r || state.trail[state.trail.length-1].c !== c) {
+      state.trail.push({ r, c });
+      if (state.trail.length > TRAIL_LEN) state.trail.shift();
+    }
   }
 
   // Evaluate both canonical entries. Edge-trigger per watch.

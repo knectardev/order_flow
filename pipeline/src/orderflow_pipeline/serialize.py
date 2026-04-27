@@ -37,6 +37,18 @@ DEFAULT_TUNINGS = {
 }
 
 
+# JSON serialization caveat (regime-DB plan §1b/§1e):
+#
+# Per-tick volume / delta is NOT included in the JSON output. The
+# microstructure breakdown lives only in the DuckDB `bar_volume_profile`
+# table; the JSON-mode dashboard keeps using the OHLC-distribution proxy in
+# src/analytics/profile.js until Phase 2f retires JSON mode entirely.
+# `vpt`, `concentration`, and `distinctPrices` ARE in the JSON output (as
+# bar-level scalars) — both writers consume the same already-rounded values
+# from Bar.to_json() / Bar.to_dict(), so the Phase-1e equivalence gate is
+# free of serialization noise.
+
+
 def _ns_to_iso(ns: int | None) -> str | None:
     if ns is None:
         return None

@@ -7,6 +7,15 @@ function evaluateBreakoutCanonical() {
   const checks = { cell: false, sweep: false, flow: false, clean: false };
   let direction = null;
 
+  // Regime-DB plan §2c-d: while regime is in warmup (NULL ranks for the
+  // first 30 bars of a session, or any zero-volume bar), all checks are
+  // forced false. The unstable rolling stats during warmup are exactly
+  // when proxy-driven false positives historically fired (notes.txt
+  // screenshot moments), so the suppression is protective, not cosmetic.
+  if (state.regimeWarmup) {
+    return { checks, passing: 0, total: 4, fired: false, direction: null };
+  }
+
   // 1. State in watched cell
   checks.cell = (state.sim.volState === BREAKOUT_CELL.volState
               && state.sim.depthState === BREAKOUT_CELL.depthState);
@@ -52,6 +61,11 @@ function evaluateFadeCanonical() {
   const checks = { balanced: false, cell: false, stretchPOC: false, stretchVWAP: false, noMomentum: false };
   let stretchDir = null;
   let direction = null;
+
+  // Regime-DB plan §2c-d: warmup short-circuit (see breakout for rationale).
+  if (state.regimeWarmup) {
+    return { checks, passing: 0, total: 5, fired: false, direction: null, stretchDir: null };
+  }
 
   // Hoisted shared values: profile, sigma, lastVWAP — computed once and reused
   // by balanced / stretchPOC / stretchVWAP. Guarded for early-session (too few

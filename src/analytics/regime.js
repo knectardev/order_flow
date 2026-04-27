@@ -1,61 +1,24 @@
 import { MATRIX_COLS, MATRIX_ROWS } from '../config/constants.js';
 import { state } from '../state.js';
-import { sessionForBar } from '../data/replay.js';
-import { bucketByBreaks, clamp, quintileBreaks } from '../util/math.js';
+import { clamp } from '../util/math.js';
 
-function precomputeRegimeBreaks() {
-  if (!state.replay.allBars.length || !state.replay.sessions.length) return;
-
-  const med = arr => {
-    const s = arr.slice().sort((a, b) => a - b);
-    return s.length ? s[Math.floor(s.length / 2)] : 0;
-  };
-  const mad = (arr, m) => {
-    const dev = arr.map(x => Math.abs(x - m));
-    return med(dev) || 1e-9;
-  };
-
-  for (const sess of state.replay.sessions) {
-    const sBars = state.replay.allBars.slice(sess.startIdx, sess.endIdx);
-    if (sBars.length === 0) {
-      sess.regimeBreaks = null;
-      continue;
-    }
-    const ranges    = sBars.map(b => b.high - b.low);
-    const avgSizes  = sBars.map(b => b.avgTradeSize || 0);
-    const lpRatios  = sBars.map(b => b.tradeCount > 0 ? (b.largePrintCount || 0) / b.tradeCount : 0);
-
-    const sizeMed = med(avgSizes), sizeMad = mad(avgSizes, sizeMed);
-    const lpMed   = med(lpRatios), lpMad   = mad(lpRatios, lpMed);
-    // Depth proxy: higher avg trade size + higher large-print ratio → deeper.
-    const depthScores = sBars.map((b, i) => {
-      const z1 = (avgSizes[i] - sizeMed) / (1.4826 * sizeMad);
-      const z2 = (lpRatios[i] - lpMed)   / (1.4826 * lpMad);
-      return 0.5 * z1 + 0.5 * z2;
-    });
-
-    sess.regimeBreaks = {
-      volBreaks:   quintileBreaks(ranges),
-      depthBreaks: quintileBreaks(depthScores),
-      // depthScores is keyed by session-local index (0..barCount-1); callers
-      // must subtract sess.startIdx before indexing.
-      depthScores,
-    };
-  }
-}
-
+// regime-DB plan §2c-d/§2f. Data-driven only: bars carry `vRank` /
+// `dRank` ∈ {1..5} or null, computed by
+// `pipeline/src/orderflow_pipeline/regime.py` and served via the
+// FastAPI/DuckDB stack. NULL ranks ⇒ warmup, and we return null so the
+// caller can dim the matrix and suppress canonical fires.
+//
+// The legacy session-local quintile-proxy fallback (which used MAD-z on
+// avg trade size + large-print ratio for a depth proxy and per-session
+// range-quintile breaks for vol) was retired in Phase 2f together with
+// the JSON-manifest data path. Synthetic mode no longer drives the
+// matrix; only `?source=api` does.
 function deriveRegimeState(idx) {
-  if (idx < 0 || idx >= state.replay.allBars.length) {
-    return { volState: 2, depthState: 2 };
-  }
-  const sess = sessionForBar(idx);
-  if (!sess || !sess.regimeBreaks) return { volState: 2, depthState: 2 };
+  if (idx < 0 || idx >= state.replay.allBars.length) return null;
   const b = state.replay.allBars[idx];
-  const range = b.high - b.low;
-  const localIdx = idx - sess.startIdx;
-  const volState = bucketByBreaks(range, sess.regimeBreaks.volBreaks);
-  const depthState = bucketByBreaks(sess.regimeBreaks.depthScores[localIdx], sess.regimeBreaks.depthBreaks);
-  return { volState, depthState };
+  if (!b) return null;
+  if (b.vRank == null || b.dRank == null) return null;   // warmup
+  return { volState: b.vRank - 1, depthState: b.dRank - 1 };
 }
 
 function computeMatrixScores() {
@@ -105,4 +68,4 @@ function computeConfidence(scores) {
   return clamp((ratio - 1) / 2, 0, 1);
 }
 
-export { precomputeRegimeBreaks, deriveRegimeState, computeMatrixScores, topCells, computeConfidence };
+export { deriveRegimeState, computeMatrixScores, topCells, computeConfidence };
