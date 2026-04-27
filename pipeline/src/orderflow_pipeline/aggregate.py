@@ -95,6 +95,11 @@ class Bar:
     range_pct: float | None = None
     v_rank: int | None = None
     d_rank: int | None = None
+    # Phase 6 VWAP-Anchor input. Running session VWAP at this bar's close,
+    # computed once per session per timeframe in `_stamp_session_vwap`
+    # using volume-weighted typical price. Empty bars carry forward the
+    # previous bar's vwap; left None until the first non-zero-volume bar.
+    vwap: float | None = None
 
     @property
     def distinct_prices(self) -> int:
@@ -163,6 +168,7 @@ class Bar:
             "rangePct":        self.range_pct,
             "vRank":           self.v_rank,
             "dRank":           self.d_rank,
+            "vwap":            self.vwap,
             "time":            self._iso_time(),
         }
 
@@ -196,6 +202,7 @@ class Bar:
             "concentration":     concentration,
             "v_rank":            self.v_rank,
             "d_rank":            self.d_rank,
+            "vwap":              self.vwap,
         }
 
     def iter_profile_rows(self, timeframe: str) -> Iterator[dict]:
@@ -257,6 +264,43 @@ def _signed_size(side: str, size: int) -> int:
     if side == "B":
         return -size
     return 0
+
+
+def _stamp_session_vwap(bars: list[Bar]) -> None:
+    """Stamp running session VWAP on each bar in place (Phase 6).
+
+    Runs after the partial-bar drop so it walks only in-session bars in
+    order. Uses the standard VWAP formula with bar typical price as the
+    unit-of-volume-weighting:
+
+        cum_pv = sum_{0..i} typical[j] * volume[j]
+        cum_v  = sum_{0..i} volume[j]
+        vwap[i] = cum_pv / cum_v
+
+    where typical[j] = (high[j] + low[j] + close[j]) / 3.
+
+    Empty bars (zero volume) carry forward the previous bar's vwap so the
+    column is never NULL once at least one in-session bar has traded; the
+    first in-session bar's vwap equals its own typical price (N == 1 ->
+    cum_pv == typical * volume, cum_v == volume).
+
+    The bar-level approximation differs from a strict trade-level VWAP by
+    at most a fraction of a tick (the typical-price drift); see
+    `pipeline/tests/test_aggregate.py::test_session_vwap` for the
+    convergence bound.
+    """
+    cum_pv = 0.0
+    cum_v = 0
+    last_vwap: float | None = None
+    for b in bars:
+        if b.volume <= 0:
+            b.vwap = last_vwap
+            continue
+        typical = (b.high + b.low + b.close) / 3.0
+        cum_pv += typical * b.volume
+        cum_v += b.volume
+        last_vwap = round(cum_pv / cum_v, 4)
+        b.vwap = last_vwap
 
 
 def aggregate_trades(
@@ -377,6 +421,11 @@ def aggregate_trades(
             if b.bin_start_ns >= rth_open_ns
             and b.bin_start_ns + bin_ns <= rth_close_ns
         ]
+
+    # Phase 6: stamp running session VWAP after the partial-bar drop so
+    # we only include in-session bars (otherwise leading partials would
+    # bias the running average).
+    _stamp_session_vwap(bars)
 
     return AggregateResult(
         bars=bars,

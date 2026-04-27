@@ -35,7 +35,21 @@ function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical) 
 
   if (canonical.passing === canonical.total) {
     diag.classList.add('all-met');
-    diagVal.textContent = `all ${canonical.total} criteria met — fire armed`;
+    // Phase 6: when the canonical is fully armed, surface the
+    // anchor-priority tag so the user can see HTF context at a glance:
+    //   HIGH_CONVICTION  -> normal "fire armed"
+    //   STANDARD         -> normal "fire armed"
+    //   LOW_CONVICTION   -> "fire armed (CAUTION: HTF mixed)"
+    //   SUPPRESSED       -> "filtered by HTF (1h opposes)"
+    let tail = '';
+    if (canonical.tag === 'SUPPRESSED') {
+      tail = ' (filtered by HTF — 1h opposes)';
+    } else if (canonical.tag === 'LOW_CONVICTION') {
+      tail = ' (CAUTION — HTF mixed)';
+    } else if (canonical.tag === 'HIGH_CONVICTION') {
+      tail = ' (HIGH conviction — HTF aligned)';
+    }
+    diagVal.textContent = `all ${canonical.total} criteria met — fire armed${tail}`;
   } else {
     let mostRecent = null;
     for (const key of criterionKeys) {

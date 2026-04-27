@@ -46,6 +46,46 @@ function _fireLabel(fire) {
     : `Breakout fire ${dirArrow} impulsive light`;
 }
 
+// Phase 6: Align column. Maps the anchor-priority tag onto a glyph + a
+// row-tint rgba string. Tints are intentionally *low-alpha* so the
+// existing event-row palette (sweep/absorb/fire colors) still reads as
+// the primary semantic; the bias gradient is a quiet secondary cue.
+//
+// Score threading: even with the same tag, a |score| spread (-4..+4)
+// modulates alpha so a STANDARD fire whose score is +1 reads slightly
+// greener than one whose score is 0. Keeps the tag bucket dominant
+// (HIGH_CONVICTION never bleeds down into STANDARD) but gives the
+// numeric score a small visible footprint.
+const _TAG_GLYPH = {
+  HIGH_CONVICTION: '✓✓',
+  STANDARD:        '·',
+  LOW_CONVICTION:  '⚠',
+  SUPPRESSED:      '⊘',
+};
+
+function _alignTint(tag, score) {
+  if (!tag) return '';
+  // |score| in 0..4 → alpha lift in 0..0.10 above the tag's base alpha.
+  const lift = Math.min(Math.abs(score || 0), 4) * 0.025;
+  if (tag === 'HIGH_CONVICTION') return `background: rgba(70, 180, 110, ${0.18 + lift});`;
+  if (tag === 'LOW_CONVICTION')  return `background: rgba(220, 160, 60, ${0.16 + lift});`;
+  if (tag === 'SUPPRESSED')      return `background: rgba(190, 90, 90, ${0.20 + lift});`;
+  // STANDARD: nearly transparent — score sign tints faint green/red so
+  // the user can see "this STANDARD fire leans bullish/bearish HTF".
+  if ((score || 0) > 0) return `background: rgba(70, 180, 110, ${0.04 + lift});`;
+  if ((score || 0) < 0) return `background: rgba(190, 90, 90,  ${0.04 + lift});`;
+  return '';
+}
+
+function _alignCellHtml(tag, score) {
+  if (!tag) return '<span class="align"></span>';
+  const glyph = _TAG_GLYPH[tag] || '·';
+  const sNum  = (score == null) ? '' : (score > 0 ? `+${score}` : `${score}`);
+  // title= gives a hover-tooltip with the verbose tag + score.
+  const title = `${tag.replace(/_/g, ' ').toLowerCase()} (score ${sNum || '0'})`;
+  return `<span class="align" title="${title}">${glyph}${sNum ? ` ${sNum}` : ''}</span>`;
+}
+
 function renderEventLog() {
   const log = document.getElementById('eventLog');
   const warmupHtml = state.regimeWarmup ? SYSTEM_WARMUP_HTML : '';
@@ -79,8 +119,19 @@ function renderEventLog() {
     return sel.barTimes.has(ms);
   };
 
+  // Phase 6: respect state.showSuppressed. SUPPRESSED fires are persisted
+  // to state.canonicalFires (so post-session review can audit what hard-
+  // mode filtered) but are hidden from the event log unless the user
+  // opts in via ?showSuppressed=1.
+  const suppressedFilter = (row) => {
+    if (row.kind !== 'fire') return true;
+    if (row.payload.tag !== 'SUPPRESSED') return true;
+    return !!state.showSuppressed;
+  };
+
   const merged = [...evRows, ...fireRows]
     .filter(filterPredicate)
+    .filter(suppressedFilter)
     .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 
   if (merged.length === 0) {
@@ -110,10 +161,19 @@ function renderEventLog() {
       const cls = isFade ? 'fire-fade' : 'fire-breakout';
       const glyph = isFade ? '◆' : '★';
       const ms = row.time.getTime();
-      return `<div class="event-row event-row-fire ${cls}" data-fire-ms="${ms}" data-fire-id="${f.watchId}">
+      // Phase 6: tint + align column. Tag/score come from canonical
+      // alignment computed at fire time; null for legacy fires that
+      // predate the bias engine, in which case _alignTint returns ''
+      // and _alignCellHtml renders an empty cell.
+      const score = f.alignment?.score ?? null;
+      const tint  = _alignTint(f.tag, score);
+      const alignHtml = _alignCellHtml(f.tag, score);
+      const styleAttr = tint ? ` style="${tint}"` : '';
+      return `<div class="event-row event-row-fire ${cls}" data-fire-ms="${ms}" data-fire-id="${f.watchId}"${styleAttr}>
         <span class="time">${tStr}</span>
         <span class="glyph">${glyph}</span>
         <span class="label">${_fireLabel(f)}</span>
+        ${alignHtml}
         <span class="price">${f.price.toFixed(2)}</span>
       </div>`;
     }
@@ -137,10 +197,14 @@ function renderEventLog() {
       glyph = '⚠';
       label = `Divergence — new ${ev.dir === 'up' ? 'high' : 'low'}, Δ disagrees`;
     }
+    // Phase 6: events don't carry canonical-tag context (alignment is
+    // computed only on fires), so the align cell is an empty placeholder
+    // to keep column widths consistent.
     return `<div class="event-row ${cls}">
       <span class="time">${tStr}</span>
       <span class="glyph">${glyph}</span>
       <span class="label">${label}</span>
+      <span class="align"></span>
       <span class="price">${ev.price.toFixed(2)}</span>
     </div>`;
   }).join('');

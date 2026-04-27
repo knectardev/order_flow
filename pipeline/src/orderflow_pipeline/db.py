@@ -27,6 +27,10 @@ Tables (Phase 5):
         concentration                DOUBLE      - modal_volume / volume
         v_rank                       SMALLINT    - 1..5, NULL during warmup
         d_rank                       SMALLINT    - 1..5, NULL during warmup
+        vwap                         DOUBLE      - Phase 6 running session VWAP at bar close
+        bias_state                   VARCHAR     - Phase 6 7-level bias for THIS bar's timeframe
+        parent_1h_bias               VARCHAR     - Phase 6 denormalized 1h bias covering this bar
+        parent_15m_bias              VARCHAR     - Phase 6 denormalized 15m bias covering this bar
         PRIMARY KEY (bar_time, timeframe)
 
     events
@@ -59,6 +63,7 @@ Indexes (Phase 5):
 
     idx_bars_tf_session   bars(timeframe, session_date)
     idx_bars_tf_rank      bars(timeframe, v_rank, d_rank)   - drives /occupancy + tuple-IN brushing
+    idx_bars_tf_bartime   bars(timeframe, bar_time)         - Phase 6 denormalization JOIN drive
     idx_bvp_tf_bar        bar_volume_profile(timeframe, bar_time)
     idx_bvp_tick          bar_volume_profile(price_tick)
 
@@ -105,6 +110,10 @@ _SCHEMA_SQL: tuple[str, ...] = (
         concentration     DOUBLE,
         v_rank            SMALLINT,
         d_rank            SMALLINT,
+        vwap              DOUBLE,
+        bias_state        VARCHAR,
+        parent_1h_bias    VARCHAR,
+        parent_15m_bias   VARCHAR,
         PRIMARY KEY (bar_time, timeframe)
     )
     """,
@@ -142,8 +151,22 @@ _SCHEMA_SQL: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_bars_tf_session ON bars(timeframe, session_date)",
     "CREATE INDEX IF NOT EXISTS idx_bars_tf_rank    ON bars(timeframe, v_rank, d_rank)",
+    "CREATE INDEX IF NOT EXISTS idx_bars_tf_bartime ON bars(timeframe, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_bvp_tf_bar      ON bar_volume_profile(timeframe, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_bvp_tick        ON bar_volume_profile(price_tick)",
+)
+
+
+# Phase 6 columns added on top of the Phase 5 schema. Existing
+# databases predate these columns; `init_schema` runs IF NOT EXISTS
+# guards via the per-column ALTER below so re-init on a Phase 5 DB
+# is upgrade-safe (no rebuild required for the column to land — but
+# you DO need a rebuild to populate the new values).
+_PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("vwap",            "DOUBLE"),
+    ("bias_state",      "VARCHAR"),
+    ("parent_1h_bias",  "VARCHAR"),
+    ("parent_15m_bias", "VARCHAR"),
 )
 
 
@@ -159,9 +182,18 @@ def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
 
 
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Idempotent CREATE TABLE / CREATE INDEX. Safe to call on every run."""
+    """Idempotent CREATE TABLE / CREATE INDEX. Safe to call on every run.
+
+    For databases created by Phase 5 (without the Phase 6 ``vwap`` /
+    ``bias_state`` / ``parent_*_bias`` columns) we add them via
+    ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``. The columns default
+    to NULL; a subsequent rebuild via ``cli.py rebuild`` populates them.
+    """
     for stmt in _SCHEMA_SQL:
         con.execute(stmt)
+    # Phase 6 in-place upgrade for pre-existing databases.
+    for col_name, col_type in _PHASE6_BAR_COLUMNS:
+        con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
 
 
 def write_session(
@@ -187,7 +219,10 @@ def write_session(
         bars_df:    session_date, bar_time, timeframe, open, high, low,
                     close, volume, delta, trade_count, large_print_count,
                     distinct_prices, range_pct, vpt, concentration, v_rank,
-                    d_rank
+                    d_rank, vwap, bias_state, parent_1h_bias,
+                    parent_15m_bias  (Phase 6 cols may be empty strings or
+                    NULL during ingest; the bias-stamp pass + denorm pass
+                    fill them after this write completes)
         events_df:  bar_time, timeframe, event_type, direction, price
         fires_df:   bar_time, timeframe, watch_id, direction, price,
                     outcome, outcome_resolved_at
@@ -239,17 +274,27 @@ def write_session(
         # zero-copy DataFrame integration. The column-list keeps row order
         # explicit and protects against silent column-order drift.
         if len(bars_df) > 0:
+            # Phase 6 columns are optional in the input frame for
+            # backwards compatibility — any missing column is filled with
+            # NULL so a partially-stamped frame still writes cleanly. The
+            # cli.py rebuild always populates them, so this fallback is
+            # only exercised by tests / direct API users.
+            for col in ("vwap", "bias_state", "parent_1h_bias", "parent_15m_bias"):
+                if col not in bars_df.columns:
+                    bars_df[col] = None
             con.execute(
                 """
                 INSERT INTO bars
                     (session_date, bar_time, timeframe, open, high, low, close,
                      volume, delta, trade_count, large_print_count,
                      distinct_prices, range_pct, vpt, concentration,
-                     v_rank, d_rank)
+                     v_rank, d_rank,
+                     vwap, bias_state, parent_1h_bias, parent_15m_bias)
                 SELECT session_date, bar_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
-                       v_rank, d_rank
+                       v_rank, d_rank,
+                       vwap, bias_state, parent_1h_bias, parent_15m_bias
                 FROM bars_df
                 """
             )

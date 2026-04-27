@@ -36,10 +36,28 @@ from .decode import iter_trades
 from .serialize import DEFAULT_TUNINGS, write_index, write_session_json
 from .symbology import resolve_front_month
 
-# Phase 5: full timeframe set persisted to DuckDB. Order matters only
-# inasmuch as 1m runs first so the JSON output (which is 1m only) is
-# produced before anything else that could fail.
-TIMEFRAMES = ("1m", "15m", "1h")
+# Phase 6: timeframes are processed HTF-first within each session so the
+# Phase 6 cross-timeframe denormalization (`parent_1h_bias`,
+# `parent_15m_bias`) can read its HTF rows out of DuckDB right after
+# they're written. Order: 1h -> 15m -> 1m. The 15m UPDATE pass joins
+# back to the 1h bars; the 1m UPDATE pass joins back to BOTH the 1h
+# and 15m bars.
+TIMEFRAMES = ("1h", "15m", "1m")
+
+# Phase 6: which higher-timeframes each lower-timeframe should be
+# denormalized against, plus the matching DuckDB INTERVAL literal that
+# defines the half-open bin-cover predicate.
+HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str, str], ...]] = {
+    # ltf -> tuple of (htf, parent_column_name, htf_width_interval)
+    "1m": (
+        ("1h",  "parent_1h_bias",  "1 hour"),
+        ("15m", "parent_15m_bias", "15 minutes"),
+    ),
+    "15m": (
+        ("1h",  "parent_1h_bias",  "1 hour"),
+    ),
+    "1h": (),
+}
 
 
 # raw filenames look like "glbx-mdp3-20260421.trades.dbn.zst"
@@ -171,6 +189,12 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
 
             if db_con is not None:
                 _write_session_to_db(db_con, result, session_date, tf)
+                # Phase 6: after the LTF rows land in the DB, stamp the
+                # denormalized parent_*_bias columns by joining back to
+                # the already-written HTF rows. The `for tf in (1h, 15m,
+                # 1m)` order guarantees the parents exist by the time
+                # the LTF UPDATE runs.
+                _stamp_parent_bias(db_con, session_date, tf)
                 print(f"  [{tf}] wrote duckdb session rows ({len(result.bars)} bars)")
 
         if session_summary is not None:
@@ -290,11 +314,23 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
 
     Phase 5: every row in every output frame carries the active
     `timeframe` so the DB's composite PKs scope cleanly.
+
+    Phase 6: stamps `bias_state` onto the DataFrame just before the DB
+    write (the column flows into bars.bias_state via write_session's
+    SELECT). `parent_*_bias` columns are left empty here — they are
+    filled by the post-write `_stamp_parent_bias` UPDATE pass, which
+    runs after the HTF rows for this session have all been persisted.
     """
     import pandas as pd
 
+    from . import bias as bias_module
+
     bar_rows = [b.to_dict(session_date, timeframe) for b in result.bars]
     bars_df = pd.DataFrame(bar_rows)
+    # Phase 6: stamp the per-bar 7-level bias_state in place. This reads
+    # the v_rank / d_rank / vwap that `_stamp_ranks` and
+    # `_stamp_session_vwap` already populated upstream.
+    bars_df = bias_module.compute_bias_column(bars_df, timeframe)
 
     profile_rows: list[dict] = []
     for b in result.bars:
@@ -320,6 +356,50 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
     db_module.write_session(
         con, session_date, timeframe, bars_df, events_df, fires_df, profile_df
     )
+
+
+def _stamp_parent_bias(con, session_date: date, ltf: str) -> None:
+    """Denormalize HTF bias states onto LTF rows for one session.
+
+    Runs AFTER the LTF rows for `(session_date, ltf)` have been written.
+    For every parent (`htf`, `parent_col`, `htf_width`) tuple registered
+    in ``HTF_PARENTS_BY_LTF[ltf]``, this issues:
+
+        UPDATE bars AS LTF
+           SET LTF.<parent_col> = HTF.bias_state
+          FROM bars AS HTF
+         WHERE LTF.timeframe = '<ltf>' AND LTF.session_date = <date>
+           AND HTF.timeframe = '<htf>'
+           AND LTF.bar_time >= HTF.bar_time
+           AND LTF.bar_time <  HTF.bar_time + INTERVAL '<htf_width>'
+
+    The half-open interval predicate `[HTF.bar_time, HTF.bar_time +
+    width)` is "bar-of-context" semantics: a 1m bar at 10:01 attaches
+    to the 1h bar starting at 10:00 (and never to 09:00 or 11:00). For
+    historical replay (the only mode this pipeline supports today), the
+    1h bar's bias_state at 10:00 reflects ranks computed across that
+    full hour — the LTF child sees the bias of the bin it sits inside,
+    which matches what a backtester would have known once the hour
+    closed. A "strictly-previously-closed" variant is reserved for a
+    future live-ingest mode.
+
+    No-op when `ltf == '1h'` (there are no parents to stamp).
+    """
+    parents = HTF_PARENTS_BY_LTF.get(ltf, ())
+    for htf, parent_col, htf_width in parents:
+        con.execute(
+            f"""
+            UPDATE bars AS LTF
+            SET {parent_col} = HTF.bias_state
+            FROM bars AS HTF
+            WHERE LTF.timeframe = ?
+              AND LTF.session_date = ?
+              AND HTF.timeframe = ?
+              AND LTF.bar_time >= HTF.bar_time
+              AND LTF.bar_time <  HTF.bar_time + INTERVAL '{htf_width}'
+            """,
+            [ltf, session_date, htf],
+        )
 
 
 def _ns_iso(ns: int) -> str:

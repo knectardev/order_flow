@@ -409,7 +409,10 @@
   .event-log .empty { color: var(--muted-2); font-style: italic; }
   .event-row {
     display: grid;
-    grid-template-columns: 56px 22px 1fr 70px;
+    /* Phase 6: insert a 38px "align" column between label and price.
+       Holds the anchor-priority glyph (✓✓ / ⚠ / ⊘) + score for fires,
+       and an empty placeholder for events so columns line up. */
+    grid-template-columns: 56px 22px 1fr 38px 70px;
     gap: 8px;
     padding: 1px 0;
     align-items: baseline;
@@ -417,6 +420,7 @@
   .event-row .time { color: var(--muted-2); font-size: 10px; }
   .event-row .glyph { text-align: center; font-size: 11px; }
   .event-row .label { color: var(--text-2); }
+  .event-row .align { color: var(--muted-2); font-size: 10px; text-align: right; letter-spacing: 0.5px; }
   .event-row .price { color: var(--muted); font-size: 10px; text-align: right; }
   .event-row.sweep   .glyph { color: var(--sweep); }
   .event-row.absorb  .glyph { color: var(--absorb); }
@@ -1282,5 +1286,5 @@
     .matrix-grid { grid-template-columns: 44px repeat(5, 1fr); }
     .x-axis-row { grid-template-columns: 44px repeat(5, 1fr); }
     .row-label { font-size: 8.5px; padding: 0 4px 0 0; }
-    .event-row { grid-template-columns: 50px 20px 1fr 64px; }
+    .event-row { grid-template-columns: 50px 20px 1fr 32px 64px; }
   }

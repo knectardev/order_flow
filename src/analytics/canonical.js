@@ -3,6 +3,88 @@ import { state } from '../state.js';
 import { computeProfile } from './profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from './vwap.js';
 
+// ───────────────────────────────────────────────────────────────────
+// Phase 6: directional bias vote table + alignment scoring + anchor-
+// priority tag rule.
+//
+// The pipeline stamps a 7-level bias_state on every bar (per its own
+// timeframe), and the writer denormalizes the bar's higher-timeframe
+// parents (`biasH1`, `bias15m`) onto each LTF row at ingest time. At
+// fire-eval time we read those denormalized parents off the last
+// settled bar and convert them into directional votes against the 1m
+// canonical's intended trade direction.
+//
+// Vote magnitudes (BIAS_VOTE):
+//   BULLISH_STRONG : +2  (high-vol + deep + above VWAP, confirmed markup)
+//   ACCUMULATION   : +1  (depth-leads-Location bullish anomaly)
+//   BULLISH_MILD   : +1  (default Mild bull above VWAP)
+//   NEUTRAL        :  0  (warmup OR inside the VWAP band — no signal)
+//   BEARISH_MILD   : -1  (default Mild bear below VWAP)
+//   DISTRIBUTION   : -1  (depth-leads-Location bearish anomaly)
+//   BEARISH_STRONG : -2  (high-vol + thin + below VWAP, confirmed markdown)
+//
+// `vote(biasState, dir1m)` flips the sign so a +2 against an "up"
+// canonical scores +2 (HTF agrees), and a +2 against a "down"
+// canonical scores -2 (HTF disagrees). Sums to alignment_score in
+// [-4, +4].
+//
+// Tag rule (anchor-priority):
+//   1h opposes (vote_1h < 0) + biasFilterMode === 'hard' -> SUPPRESSED
+//   1h opposes (vote_1h < 0)                              -> LOW_CONVICTION
+//   1h neutral (vote_1h == 0)                             -> STANDARD
+//   1h agrees + 15m agrees                                -> HIGH_CONVICTION
+//   1h agrees + 15m opposes (CAUTION zone)                -> LOW_CONVICTION
+//   1h agrees + 15m neutral                               -> STANDARD
+// `biasFilterMode === 'off'` short-circuits to STANDARD with score=0.
+// ───────────────────────────────────────────────────────────────────
+const BIAS_VOTE = {
+  BULLISH_STRONG:  +2,
+  BULLISH_MILD:    +1,
+  ACCUMULATION:    +1,
+  NEUTRAL:          0,
+  DISTRIBUTION:    -1,
+  BEARISH_MILD:    -1,
+  BEARISH_STRONG:  -2,
+};
+
+function vote(biasState, dir1m) {
+  if (!biasState || !dir1m) return 0;
+  const v = BIAS_VOTE[biasState];
+  if (v === undefined) return 0;
+  return dir1m === 'up' ? v : -v;
+}
+
+// Build the alignment block for a canonical fire. Returns null when
+// dir1m is null (canonical didn't fire / no direction yet) or the bar
+// has no HTF biases stamped (warmup / non-API mode); callers should
+// treat null as "no alignment context".
+function buildAlignment(lastBar, dir1m) {
+  if (!lastBar || !dir1m) return null;
+  const filterMode = state.biasFilterMode || 'soft';
+  if (filterMode === 'off') {
+    return { score: 0, vote_1h: 0, vote_15m: 0, tag: 'STANDARD',
+             biasH1: lastBar.biasH1 ?? null, bias15m: lastBar.bias15m ?? null };
+  }
+  const biasH1  = lastBar.biasH1  ?? null;
+  const bias15m = lastBar.bias15m ?? null;
+  const vote_1h  = vote(biasH1,  dir1m);
+  const vote_15m = vote(bias15m, dir1m);
+  const score = vote_1h + vote_15m;
+
+  let tag;
+  if (vote_1h < 0) {
+    tag = (filterMode === 'hard') ? 'SUPPRESSED' : 'LOW_CONVICTION';
+  } else if (vote_1h === 0) {
+    tag = 'STANDARD';
+  } else {
+    if (vote_15m < 0)      tag = 'LOW_CONVICTION';
+    else if (vote_15m > 0) tag = 'HIGH_CONVICTION';
+    else                   tag = 'STANDARD';
+  }
+
+  return { score, vote_1h, vote_15m, tag, biasH1, bias15m };
+}
+
 function evaluateBreakoutCanonical() {
   const checks = { cell: false, sweep: false, flow: false, clean: false };
   let direction = null;
@@ -13,7 +95,8 @@ function evaluateBreakoutCanonical() {
   // when proxy-driven false positives historically fired (notes.txt
   // screenshot moments), so the suppression is protective, not cosmetic.
   if (state.regimeWarmup) {
-    return { checks, passing: 0, total: 4, fired: false, direction: null };
+    return { checks, passing: 0, total: 4, fired: false, direction: null,
+             alignment: null, tag: null };
   }
 
   // 1. State in watched cell
@@ -54,7 +137,15 @@ function evaluateBreakoutCanonical() {
   }
 
   const passing = Object.values(checks).filter(Boolean).length;
-  return { checks, passing, total: 4, fired: passing === 4, direction };
+  const fired = passing === 4;
+  // Phase 6: read HTF biases off the last settled bar and compute the
+  // alignment block + anchor-priority tag. The block is attached to
+  // both fired and not-yet-fired evaluations so the watch panel can
+  // display "would-be" conviction even before all four checks pass.
+  const lastBar = state.bars[state.bars.length - 1];
+  const alignment = buildAlignment(lastBar, direction);
+  const tag = alignment ? alignment.tag : null;
+  return { checks, passing, total: 4, fired, direction, alignment, tag };
 }
 
 function evaluateFadeCanonical() {
@@ -64,7 +155,8 @@ function evaluateFadeCanonical() {
 
   // Regime-DB plan §2c-d: warmup short-circuit (see breakout for rationale).
   if (state.regimeWarmup) {
-    return { checks, passing: 0, total: 5, fired: false, direction: null, stretchDir: null };
+    return { checks, passing: 0, total: 5, fired: false, direction: null, stretchDir: null,
+             alignment: null, tag: null };
   }
 
   // Hoisted shared values: profile, sigma, lastVWAP — computed once and reused
@@ -123,7 +215,11 @@ function evaluateFadeCanonical() {
   if (stretchDir) direction = stretchDir === 'up' ? 'down' : 'up';
 
   const passing = Object.values(checks).filter(Boolean).length;
-  return { checks, passing, total: 5, fired: passing === 5, direction, stretchDir };
+  const fired = passing === 5;
+  const lastBar = state.bars[state.bars.length - 1];
+  const alignment = buildAlignment(lastBar, direction);
+  const tag = alignment ? alignment.tag : null;
+  return { checks, passing, total: 5, fired, direction, stretchDir, alignment, tag };
 }
 
-export { evaluateBreakoutCanonical, evaluateFadeCanonical };
+export { evaluateBreakoutCanonical, evaluateFadeCanonical, vote, buildAlignment, BIAS_VOTE };

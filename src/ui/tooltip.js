@@ -1,7 +1,7 @@
 import { state } from '../state.js';
 import { _continuePan, consumePanMoved } from './pan.js';
 import { openModal } from './modal.js';
-import { selectFire } from './selection.js';
+import { selectFire, clearSelection } from './selection.js';
 import { priceCanvas } from '../util/dom.js';
 
 const TOOLTIP_INFO = {
@@ -54,6 +54,17 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     if (!info) return;
     const dirTag = hit.payload.direction ? ` · ${hit.payload.direction.toUpperCase()}` : '';
     meta = `@ ${(hit.payload.price ?? 0).toFixed(2)}${dirTag}`;
+  } else if (hit.kind === 'bias') {
+    // Phase 6: bias-ribbon hover. Build a minimal info shim — there's no
+    // entry in TOOLTIP_INFO because biases aren't first-class events.
+    const biasLabel = hit.payload.bias || 'NEUTRAL';
+    info = {
+      variant: 'absorption',
+      glyph:   '◆',
+      name:    `${hit.payload.strip} bias`,
+      desc:    `${biasLabel.replace(/_/g, ' ')} — Wyckoffian regime read on the higher timeframe.`,
+    };
+    meta = biasLabel;
   } else {
     return;
   }
@@ -122,7 +133,16 @@ priceCanvas.addEventListener('click', (e) => {
   const rect = priceCanvas.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   const hit = _hitTestChart(x, y);
-  if (!hit) return;
+
+  // Click in empty chart space (no event/fire/bias hit) clears any
+  // active brush selection. This is the natural reset gesture — much
+  // more discoverable than the previous matrix-empty-area click or the
+  // event-log ✕ button — and undoes the dim/desaturated tint applied
+  // by drawPriceChart() when state.selection.kind !== null.
+  if (!hit) {
+    if (state.selection.kind !== null) clearSelection();
+    return;
+  }
   if (hit.kind === 'event') {
     openModal(hit.payload.type);
   } else if (hit.kind === 'fire') {
@@ -131,12 +151,28 @@ priceCanvas.addEventListener('click', (e) => {
     // modal-open behavior so users can still inspect the canonical
     // breakdown without going through the fire banner. The fire banner's
     // Details button continues to open the modal directly.
+    //
+    // Toggle behavior: clicking the *same* fire halo while it's already
+    // the active selection clears it, matching the same-cell-click-clears
+    // convention in selectCell(). Without this the only ways to undo
+    // a fire-halo brush were Esc / event-log ✕ / clicking outside the
+    // halo, none of which are obvious from the chart alone.
     if (e.shiftKey) {
       openModal(hit.payload.watchId);
+      return;
+    }
+    const sel = state.selection;
+    const fireMs = hit.payload.barTime instanceof Date
+      ? hit.payload.barTime.getTime()
+      : Date.parse(hit.payload.barTime);
+    if (sel.kind === 'fire' && sel.fireBarTime === fireMs) {
+      clearSelection();
     } else {
       selectFire(hit.payload);
     }
   }
+  // hit.kind === 'bias' falls through intentionally — bias-ribbon hovers
+  // are informational only, no click action.
 });
 
 // ───────────────────────────────────────────────────────────

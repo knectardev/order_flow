@@ -324,6 +324,23 @@ async function bootstrapReplay() {
   // synthetic mode rather than silently loading stale JSON. Live data
   // and the v2 regime classifier come from the FastAPI/DuckDB stack.
   const params = new URL(window.location.href).searchParams;
+
+  // Phase 6: Bias filter mode + show-suppressed flag are user-tunable
+  // via URL. ?biasFilter=hard activates 1h-anchor suppression (fires
+  // are dropped when 1h opposes the canonical direction). ?biasFilter=
+  // off disables alignment scoring entirely. Default 'soft' computes
+  // alignment for visualization but never suppresses fires.
+  // ?showSuppressed=1 keeps SUPPRESSED rows in the event log (greyed)
+  // so the user can see what's been filtered.
+  const biasFilter = (params.get('biasFilter') || '').toLowerCase();
+  if (biasFilter === 'hard' || biasFilter === 'off' || biasFilter === 'soft') {
+    state.biasFilterMode = biasFilter;
+  }
+  const showSup = (params.get('showSuppressed') || '').toLowerCase();
+  if (showSup === '1' || showSup === 'true' || showSup === 'yes') {
+    state.showSuppressed = true;
+  }
+
   const source = (params.get('source') || '').toLowerCase();
   if (source === 'api') {
     const apiBase = (params.get('apiBase') || 'http://localhost:8001').replace(/\/+$/, '');
@@ -442,7 +459,20 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
       // Date so downstream code (chart axis, fire matching, event log
       // formatting) can call .getUTC*() / .getTime() the same way it does
       // in JSON mode.
-      allBars.push({ ...b, time: new Date(b.time) });
+      //
+      // Phase 6: the API surfaces `vwap`, `biasState` (this bar's own
+      // 7-level bias on the active timeframe), and the denormalized
+      // higher-timeframe parents (`biasH1`, `bias15m`) on every row. The
+      // spread carries them through; we explicitly normalize undefined
+      // -> null so downstream code can `=== null` without `?? null`.
+      allBars.push({
+        ...b,
+        time: new Date(b.time),
+        vwap:      b.vwap      ?? null,
+        biasState: b.biasState ?? null,
+        biasH1:    b.biasH1    ?? null,
+        bias15m:   b.bias15m   ?? null,
+      });
     }
     const endIdx = allBars.length;
     if (endIdx === startIdx) continue;

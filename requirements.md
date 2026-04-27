@@ -31,9 +31,11 @@ Design intent remains unchanged:
 
 ### 2.2 Data Pipeline and API
 
-- Pipeline: `pipeline/src/orderflow_pipeline/*` computes bars, events, fires, regime ranks (`v_rank`, `d_rank`), and DB writes.
+- Pipeline: `pipeline/src/orderflow_pipeline/*` computes bars, events, fires, regime ranks (`v_rank`, `d_rank`), session VWAP, directional bias states, and DB writes.
   - Aggregation contract supports `1m` / `15m` / `1h` bins.
   - DuckDB schema keys rows by `(bar_time, timeframe)` and keeps per-timeframe isolation for bars/events/fires/profile rows.
+  - `bars` rows additionally carry `vwap`, `bias_state`, `parent_1h_bias`, `parent_15m_bias` columns (Phase 6 — see §13).
+  - Aggregation order is `1h → 15m → 1m` so lower timeframes can denormalize parent biases via a half-open interval join in `_stamp_parent_bias`.
 - API: `api/main.py` exposes read-only endpoints:
   - `/timeframes`
   - `/sessions`
@@ -43,6 +45,7 @@ Design intent remains unchanged:
   - `/profile`
   - `/occupancy`
 - API endpoints that return market rows are timeframe-aware (`timeframe` query parameter, default `1m`), and must not mix contexts across timeframes.
+- `/bars`, `/events`, `/fires` payloads include `vwap`, `biasState`, `biasH1`, `bias15m` (camelCase) projected from the persisted columns via `_attach_htf_bias`.
 - Storage: DuckDB (`data/orderflow.duckdb` by default).
 
 ### 2.3 Mode Loading
@@ -65,6 +68,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds).
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
+- **Bias filter state:** `biasFilterMode` (`'soft'` | `'hard'` | `'off'`, default `'soft'`) and `showSuppressed` (`boolean`, default `false`). Bootstrapped from `?biasFilter=` and `?showSuppressed=` URL params (Phase 6 — see §13).
 
 ---
 
@@ -112,6 +116,15 @@ In API replay mode, force buttons are repurposed:
 
 - Legacy synthetic labels `Force ★/◆` become jump actions (next fire navigation behavior).
 
+### 5.3 Anchor-Priority Tagging (Phase 6)
+
+Each canonical evaluation that produces a fire also computes an `alignment` block and an `anchor-priority tag` from the latest bar's `biasH1` and `bias15m` (see §13):
+
+- `alignment.score` ∈ `[-4, +4]` (sum of 1h + 15m votes against `dir1m`).
+- `tag` ∈ `{HIGH_CONVICTION, STANDARD, LOW_CONVICTION, SUPPRESSED}`.
+- During regime warmup `alignment` and `tag` are `null`; downstream renderers must handle null gracefully (no tint, no glyph).
+- `tag === 'SUPPRESSED'` is only emitted when `state.biasFilterMode === 'hard'` and the 1h bias opposes `dir1m`. Suppressed fires are still persisted to `state.canonicalFires` (so they can be audited under `state.showSuppressed === true`) but must skip the canonical-fire banner and auto-pause.
+
 ---
 
 ## 6) Matrix Panel Enhancements
@@ -144,6 +157,12 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 - `NOW` marker at live edge.
 - `PANNED` hint when detached from live edge.
 - `↺ Live` control to return viewport to live cursor.
+- **Bias ribbon** rendered above the candle pane via `src/render/biasRibbon.js` (Phase 6). Layout is timeframe-aware:
+  - `1m`: two strips (1h, then 15m).
+  - `15m`: one strip (1h).
+  - `1h`: one self-strip showing the active timeframe's own bias.
+
+  Ribbon hit regions emit `kind === 'bias'` hover hits consumed by the chart tooltip.
 
 ### 7.2 Interaction
 
@@ -163,6 +182,13 @@ Event log (`src/render/eventLog.js`) must:
 - Keep warmup SYSTEM row sticky while warmup is active.
 - Support clickable fire rows that trigger fire-window selection.
 - Show clear empty states for both unfiltered and filtered contexts.
+- Render an **Align column** (Phase 6) between the fire label and price, displaying the anchor-priority glyph (`✓✓` / `·` / `⚠` / `⊘`) and signed alignment score for fires; events render an empty placeholder cell so the grid stays consistent.
+- Apply a low-alpha row tint driven by the fire's `tag` and `|score|`:
+  - `HIGH_CONVICTION` → green
+  - `LOW_CONVICTION` → amber
+  - `SUPPRESSED` → red
+  - `STANDARD` → near-transparent green/red leaning in the direction of `score` sign.
+- Filter `SUPPRESSED` fires from the visible rows unless `state.showSuppressed === true`.
 
 ---
 
@@ -217,6 +243,10 @@ Fallback behavior:
 9. Preserve multi-timeframe parity across pipeline, DB, API, and replay UI (`1m` / `15m` / `1h`).
 10. Keep timeframe isolation strict (queries and writes always scoped by `timeframe`).
 11. Keep timeframe-switch UX deterministic (cursor snap, range handoff, cache/selection reset).
+12. Preserve the VWAP-anchor bias contract end-to-end: `bias_state` always derived from `(v_rank, d_rank, vwap_position)` via `pipeline.bias.classify_bias`; LTF bars must carry denormalized `parent_1h_bias` / `parent_15m_bias` populated by the half-open join in `_stamp_parent_bias`.
+13. Preserve the anchor-priority tag contract: 1h bias gates conviction, both-aligned ⇒ `HIGH_CONVICTION`, 1h-opposes ⇒ `SUPPRESSED` only in hard mode (else `LOW_CONVICTION`). Warmup ⇒ `null` tag/alignment.
+14. Bias ribbon must remain visible above the candle pane on every timeframe and fall back gracefully (background-only strip) when bias columns are NULL.
+15. The `?biasFilter=` and `?showSuppressed=` URL params are public surface for replay deep-linking — bootstrap behavior in `src/data/replay.js` must remain stable.
 
 ---
 
@@ -230,6 +260,88 @@ Fallback behavior:
 - Timeframe controls and mode chrome wiring: `src/main.js`, `src/ui/controls.js`, `src/data/replay.js`
 - Matrix rendering and occupancy integration: `src/render/matrix.js`, `src/ui/matrixRange.js`, `src/data/occupancyApi.js`
 - Price chart and profile integration: `src/render/priceChart.js`, `src/data/profileApi.js`
+- Bias ribbon rendering: `src/render/biasRibbon.js`
+- Canonical alignment / anchor-priority tagging: `src/analytics/canonical.js`, `src/sim/step.js`, `src/render/watch.js`
 - Event log and interactions: `src/render/eventLog.js`, `src/ui/selection.js`
+- Tooltip routing (events, fires, bias hovers): `src/ui/tooltip.js`
 - Backend API: `api/main.py`
 - Pipeline/ranking logic: `pipeline/src/orderflow_pipeline/*`
+- Bias engine (VWAP-anchor classifier): `pipeline/src/orderflow_pipeline/bias.py`
+- Session VWAP stamping: `pipeline/src/orderflow_pipeline/aggregate.py`
+- Cross-timeframe denormalization: `pipeline/src/orderflow_pipeline/cli.py` (`_stamp_parent_bias`)
+
+---
+
+## 13) Directional Bias & Cross-Timeframe Filtering (Phase 6)
+
+### 13.1 Bias Engine (VWAP-Anchor Model)
+
+`pipeline/src/orderflow_pipeline/bias.py` defines a 7-level bias alphabet computed per bar from `(v_rank, d_rank, vwap_position)`:
+
+- `BULLISH_STRONG`, `BULLISH_MILD`, `ACCUMULATION`, `NEUTRAL`, `DISTRIBUTION`, `BEARISH_MILD`, `BEARISH_STRONG`.
+
+`vwap_position(close, vwap, band_ticks) → {-1, 0, +1}` returns the sign of `close - vwap` outside a configurable tolerance band, `0` when inside the band or when inputs are NULL/NaN. `VWAP_BAND_TICKS_BY_TF = {1m: 4, 15m: 8, 1h: 16}` is the canonical configuration.
+
+`classify_bias` rule precedence:
+
+1. Warmup (any rank NULL) → `NEUTRAL`.
+2. Inside band (`vwap_pos === 0`) → `NEUTRAL`, with `(5,5)` upgraded to `ACCUMULATION` (Wyckoff bolder-read).
+3. Wyckoff anomalies above band: `(5,5)` → `BULLISH_STRONG`; `(5,1)` → `DISTRIBUTION`.
+4. Wyckoff anomalies below band: `(5,5)` → `ACCUMULATION`; `(4,1)` / `(5,1)` → `BEARISH_STRONG`.
+5. Strong tier: `(4,4)` above band → `BULLISH_STRONG`; `(4,1)` below band → `BEARISH_STRONG`.
+6. Depth-leads-location: `vwap_pos > 0` and `d_rank ≤ 2` → `DISTRIBUTION`; symmetric below.
+7. Mild default: sign by `vwap_pos`, intensity `MILD`.
+
+Coverage requirement: every cell of the `5 × 5 × 3` matrix maps to one of the 7 levels (validated by `pipeline/tests/test_bias.py`).
+
+### 13.2 Schema Additions (`bars`)
+
+| column | type | meaning |
+| --- | --- | --- |
+| `vwap` | `DOUBLE` | session-anchored running VWAP using typical price `(h+l+c)/3` |
+| `bias_state` | `VARCHAR` | output of `classify_bias` for this bar |
+| `parent_1h_bias` | `VARCHAR` | `bias_state` of the containing 1h bar (1m + 15m rows only) |
+| `parent_15m_bias` | `VARCHAR` | `bias_state` of the containing 15m bar (1m rows only) |
+
+Index: `idx_bars_tf_bartime(timeframe, bar_time)` to support the half-open denormalization join. Migrations are additive (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`) so Phase 5 DBs can be upgraded in place; until a fresh `aggregate` runs from raw `.dbn.zst`, existing rows have NULL bias columns and renderers must fall back gracefully.
+
+### 13.3 Denormalization Join
+
+LTF rows pick up parent biases via the half-open interval predicate:
+
+```
+LTF.bar_time >= HTF.bar_time
+AND LTF.bar_time < HTF.bar_time + INTERVAL <htf width>
+```
+
+Aggregation order is `1h → 15m → 1m`; `_stamp_parent_bias(con, session_date, ltf)` runs after each LTF write so the parent rows are guaranteed to exist.
+
+### 13.4 Alignment Score & Anchor-Priority Tag
+
+`src/analytics/canonical.js`:
+
+- `BIAS_VOTE` maps each of the 7 bias levels to a directional vote `{-2, -1, 0, +1, +2}`.
+- `vote(biasState, dir1m)` returns `+v` when the bias agrees with `dir1m`, `-v` when it opposes, `0` for neutral.
+- `buildAlignment(lastBar, dir1m)` returns `{score, vote_1h, vote_15m, tag, biasH1, bias15m}` where `score = vote_1h + vote_15m ∈ [-4, +4]`.
+
+Tag rule (anchor-priority — the 1h vote dominates):
+
+| 1h | 15m | tag |
+| --- | --- | --- |
+| opposes | any | `SUPPRESSED` (hard) / `LOW_CONVICTION` (soft, off) |
+| agrees | opposes | `LOW_CONVICTION` |
+| neutral | any | `STANDARD` |
+| agrees | neutral | `STANDARD` |
+| agrees | agrees | `HIGH_CONVICTION` |
+
+### 13.5 Bias Filter Modes
+
+- `state.biasFilterMode === 'soft'` (default): no fires are dropped; tags are surfaced as visual hints in the watch panel and event log.
+- `state.biasFilterMode === 'hard'`: 1h-opposes fires are tagged `SUPPRESSED`; banner + auto-pause are skipped, but the fire is still recorded so it can be reviewed.
+- `state.biasFilterMode === 'off'`: alignment is still computed for diagnostic purposes but tags never escalate beyond `STANDARD`.
+- `state.showSuppressed === true` reveals SUPPRESSED rows in the event log; default is hidden.
+
+### 13.6 Verification Rules
+
+- A 1m fire with `bar_time < 10:30 ET` may legitimately have `tag === null` (1m regime warmup not yet complete). At or after 10:30 ET a null tag indicates a denormalization bug and should be investigated against `_stamp_parent_bias` join coverage.
+- Fire-count protocol for documenting filter impact lives in `notes.txt` (Phase 6 section).

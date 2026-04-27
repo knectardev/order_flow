@@ -8,6 +8,7 @@ import { isBarSelected } from '../ui/selection.js';
 import { _refreshTooltipFromLastMouse } from '../ui/tooltip.js';
 import { pctx, priceCanvas, resizeCanvas } from '../util/dom.js';
 import { clamp } from '../util/math.js';
+import { drawBiasRibbon } from './biasRibbon.js';
 
 // Format a Date (or epoch-ms number) as an ISO-8601 timestamp with a Z
 // suffix for the /profile endpoint. We keep millisecond precision because
@@ -90,7 +91,14 @@ function drawPriceChart() {
   if (viewedBars.length === 0) return;
 
   const PROFILE_W = Math.min(110, w * 0.22);
-  const PAD = { l: 6, r: 8, t: 10, b: 14 };
+  // Phase 6: reserve a thin band at the very top of the canvas for the
+  // bias ribbon (1h + 15m strips). The ribbon sits above the chart pane
+  // but below the canvas's top edge, so PAD.t now includes both the
+  // ribbon and a small gap before the candle area starts.
+  const RIBBON_H   = 10;     // total ribbon height (split into two ~4px strips at 1m)
+  const RIBBON_TOP = 2;      // small gap from canvas top
+  const RIBBON_GAP = 3;      // gap between ribbon and candle area
+  const PAD = { l: 6, r: 8, t: RIBBON_TOP + RIBBON_H + RIBBON_GAP, b: 14 };
   const chartW = w - PROFILE_W - PAD.l - PAD.r - 8;
   // Reserve bottom ~22% for the volume sub-band; price chart uses the rest.
   const VOL_BAND_FRAC = 0.22;
@@ -305,6 +313,22 @@ function drawPriceChart() {
   const totalBars = allBars.length;
   const slotW = chartW / Math.max(totalBars, 12);
   const candleW = Math.max(2, Math.min(slotW * 0.65, 14));
+
+  // Phase 6: directional-bias ribbon. Drawn first inside the reserved
+  // [RIBBON_TOP, RIBBON_TOP + RIBBON_H] band above the candle pane so
+  // candles + reference lines layer above it (they don't overlap, but
+  // belt-and-suspenders — the ribbon should be the lowest z-layer of
+  // any chrome that lives at the top edge). Returns hover hits which
+  // we append to chartHits so the existing tooltip module picks them
+  // up without needing a new pathway.
+  const ribbonHits = drawBiasRibbon(pctx, allBars, {
+    x: PAD.l,
+    slotW,
+    top: RIBBON_TOP,
+    height: RIBBON_H,
+    activeTimeframe: state.activeTimeframe || DEFAULT_TIMEFRAME,
+  });
+  if (ribbonHits.length) state.chartHits.push(...ribbonHits);
 
   // RTH session-start dividers (real-data mode only). For every loaded
   // session whose first bar happens to be visible in the current

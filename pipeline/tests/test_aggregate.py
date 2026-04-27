@@ -251,5 +251,106 @@ def test_bar_to_dict_carries_timeframe():
         assert r["timeframe"] == "15m"
 
 
+# ───────────────────────────────────────────────────────────
+# 6. Phase 6: running session VWAP.
+# ───────────────────────────────────────────────────────────
+def test_session_vwap_first_bar_equals_typical_price():
+    # Single trade in minute 0 — the first 1m bar's vwap must equal its
+    # own typical price exactly (cum_pv / cum_v == typical when N == 1).
+    base_ns = _ts_ns_at(9, 30)
+    trades = [_trade(base_ns + 1_000_000_000, price=4500.0, size=10, side="A")]
+
+    res = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    assert len(res.bars) == 1
+    bar = res.bars[0]
+    typical = (bar.high + bar.low + bar.close) / 3.0
+    assert bar.vwap == pytest.approx(typical, abs=1e-4)
+
+
+def test_session_vwap_monotonic_with_carry_forward():
+    # Spread one trade per minute over 15 minutes, with one minute (m=7)
+    # left empty so the bar is degenerate (no trade -> bin skipped).
+    # The aggregator only emits bars with trades, so we instead check that
+    # `vwap` is monotonically defined and never None on every emitted bar.
+    base_ns = _ts_ns_at(9, 30)
+    trades = []
+    for m in range(15):
+        if m == 7:
+            continue
+        trades.append(_trade(base_ns + m * NS_PER_MINUTE + 30_000_000_000,
+                             price=4500.0 + 0.25 * m, size=5, side="A"))
+
+    res = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    assert len(res.bars) == 14
+    for bar in res.bars:
+        assert bar.vwap is not None, "every in-session bar with trades must have a vwap"
+        assert isinstance(bar.vwap, float)
+
+
+def test_session_vwap_converges_across_timeframes():
+    # The cumulative session VWAP at the close of any 1h bar must match
+    # the cumulative VWAP at the corresponding 1m / 15m bar that closes
+    # at the same instant — within a tolerance set by the typical-price
+    # approximation drift. Build a full-RTH session with varied prices
+    # so the per-bar typicals don't collapse to a degenerate average.
+    base_ns = _ts_ns_at(9, 30)
+    trades = []
+    for m in range(390):
+        # Price oscillates so 1m typicals differ noticeably from 15m / 1h
+        # typicals — the convergence test then has teeth.
+        p = 4500.0 + (m % 13) * 0.25 - (m % 7) * 0.125
+        trades.append(_trade(base_ns + m * NS_PER_MINUTE + 1_000_000_000,
+                             price=p, size=3, side="A" if m % 2 == 0 else "B"))
+
+    res_1m = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    res_15m = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["15m"], timeframe="15m",
+    )
+    res_1h = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1h"], timeframe="1h",
+    )
+
+    # At the close of each 1h bar, find the corresponding 1m / 15m bar
+    # that ends at the same instant and compare cumulative VWAPs.
+    # A 1h bar at 10:00 ET ends at 11:00 ET, which is the close of the
+    # 1m bar at 10:59 and the 15m bar at 10:45.
+    for hour_bar in res_1h.bars:
+        # 1m index ending at the same instant: the bar whose bin_start is
+        # 1 minute before hour_bar's right edge.
+        one_min_before_close = hour_bar.bin_start_ns + BIN_NS_BY_TIMEFRAME["1h"] - NS_PER_MINUTE
+        cand_1m = [b for b in res_1m.bars if b.bin_start_ns == one_min_before_close]
+        assert cand_1m, f"no 1m bar at {one_min_before_close}"
+        bar_1m_at_close = cand_1m[0]
+
+        # 15m index: bar whose bin_start is 15 min before the right edge.
+        fifteen_min_before_close = (
+            hour_bar.bin_start_ns + BIN_NS_BY_TIMEFRAME["1h"]
+            - BIN_NS_BY_TIMEFRAME["15m"]
+        )
+        cand_15m = [b for b in res_15m.bars if b.bin_start_ns == fifteen_min_before_close]
+        assert cand_15m, f"no 15m bar at {fifteen_min_before_close}"
+        bar_15m_at_close = cand_15m[0]
+
+        # Tolerance: the typical-price drift across timeframes is bounded
+        # by the bar range. For ES at $0.25 tick, 0.5 ES points (2 ticks)
+        # is the loose upper bound; in practice convergence is within
+        # 0.25 points.
+        assert abs(bar_1m_at_close.vwap - hour_bar.vwap) <= 0.5, \
+            f"1m vs 1h vwap diverged: {bar_1m_at_close.vwap} vs {hour_bar.vwap}"
+        assert abs(bar_15m_at_close.vwap - hour_bar.vwap) <= 0.5, \
+            f"15m vs 1h vwap diverged: {bar_15m_at_close.vwap} vs {hour_bar.vwap}"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

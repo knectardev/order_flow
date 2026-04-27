@@ -238,16 +238,49 @@ def _row_to_dict(cur: duckdb.DuckDBPyConnection) -> list[dict]:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def _bar_to_json_shape(b: dict) -> dict:
+# Phase 6: per-base-timeframe HTF projection list. Drives `_attach_htf_bias`
+# for /bars, /events, /fires. Each tuple is (camelCase_json_key, db_column).
+# 1m sees both 1h and 15m parents; 15m only sees 1h; 1h has no parents.
+HTF_LISTS_BY_BASE_TF: dict[str, tuple[tuple[str, str], ...]] = {
+    "1m":  (("biasH1", "parent_1h_bias"), ("bias15m", "parent_15m_bias")),
+    "15m": (("biasH1", "parent_1h_bias"),),
+    "1h":  (),
+}
+
+
+def _attach_htf_bias(row: dict, base_tf: str) -> dict:
+    """Project denormalized parent_*_bias columns into camelCase JSON keys.
+
+    The denormalization is performed by the writer (`cli.py
+    _stamp_parent_bias`) at ingest time, so this helper is a pure
+    projection — no read-time JOIN. The mapping per base timeframe lives
+    in ``HTF_LISTS_BY_BASE_TF``.
+
+    Returns a dict ready to be merged onto the bar / event / fire JSON
+    shape; missing columns flow through as JSON null. For 1h rows the
+    helper is a no-op (returns ``{}``) since 1h has no parents.
+    """
+    out: dict[str, str | None] = {}
+    for json_key, db_col in HTF_LISTS_BY_BASE_TF.get(base_tf, ()):
+        out[json_key] = row.get(db_col)
+    return out
+
+
+def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
     """Coerce a DB row into the JSON-mode dashboard's bar shape.
 
     The API mode reuses every downstream JS module (priceChart, regime,
     canonical evaluators), so the shape MUST match what JSON-mode loads
     today: camelCase field names, ISO-Z timestamp, primitive number/null
     values. Phase-1 NULLs on rank columns flow through as JSON null.
+
+    Phase 6 additions: ``vwap``, ``biasState`` (this bar's own bias on
+    the active timeframe), and the projected HTF parent biases via
+    ``_attach_htf_bias`` (``biasH1`` for 15m / 1m; ``bias15m`` for 1m
+    only).
     """
     bt: datetime = b["bar_time"]
-    return {
+    shape = {
         "open":            b["open"],
         "high":            b["high"],
         "low":             b["low"],
@@ -263,8 +296,12 @@ def _bar_to_json_shape(b: dict) -> dict:
         "rangePct":        b["range_pct"],
         "vRank":           b["v_rank"],
         "dRank":           b["d_rank"],
+        "vwap":            b.get("vwap"),
+        "biasState":       b.get("bias_state"),
         "time":            bt.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    shape.update(_attach_htf_bias(b, tf))
+    return shape
 
 
 # ───────────────────────────────────────────────────────────
@@ -400,7 +437,7 @@ def get_bars(
         "session_date": session_date,
         "timeframe":    tf,
         "cells":        [list(p) for p in pairs],
-        "bars":         [_bar_to_json_shape(r) for r in rows],
+        "bars":         [_bar_to_json_shape(r, tf) for r in rows],
     }
 
 
@@ -420,6 +457,16 @@ def get_events(
     """
     tf = _validate_timeframe(timeframe)
     con = _connect()
+    # Phase 6: LEFT JOIN to bars on the composite (timeframe, bar_time) key
+    # to surface bias_state + parent_*_bias for every event. The JOIN is
+    # an index probe via `idx_bars_tf_bartime`, so it adds negligible
+    # latency over the simple SELECT.
+    base_select = (
+        "SELECT e.bar_time, e.event_type, e.direction, e.price, "
+        "       b.bias_state, b.parent_1h_bias, b.parent_15m_bias "
+        "FROM events e "
+        "LEFT JOIN bars b ON b.bar_time = e.bar_time AND b.timeframe = e.timeframe "
+    )
     try:
         if bar_times:
             ts_list = [_parse_iso(t.strip()) for t in bar_times.split(",") if t.strip()]
@@ -427,8 +474,8 @@ def get_events(
                 return {"events": [], "timeframe": tf}
             placeholders = ",".join(["?"] * len(ts_list))
             rows = _row_to_dict(con.execute(
-                f"SELECT bar_time, event_type, direction, price FROM events "
-                f"WHERE timeframe = ? AND bar_time IN ({placeholders}) ORDER BY bar_time",
+                base_select +
+                f"WHERE e.timeframe = ? AND e.bar_time IN ({placeholders}) ORDER BY e.bar_time",
                 [tf, *ts_list],
             ))
         else:
@@ -437,8 +484,8 @@ def get_events(
             if lo is None or hi is None:
                 raise HTTPException(status_code=400, detail="Provide ?from= and ?to= or ?bar_times=.")
             rows = _row_to_dict(con.execute(
-                "SELECT bar_time, event_type, direction, price FROM events "
-                "WHERE timeframe = ? AND bar_time BETWEEN ? AND ? ORDER BY bar_time",
+                base_select +
+                "WHERE e.timeframe = ? AND e.bar_time BETWEEN ? AND ? ORDER BY e.bar_time",
                 [tf, lo, hi],
             ))
     finally:
@@ -451,6 +498,8 @@ def get_events(
                 "type":      r["event_type"],
                 "dir":       r["direction"],
                 "price":     r["price"],
+                "biasState": r.get("bias_state"),
+                **_attach_htf_bias(r, tf),
             }
             for r in rows
         ]
@@ -475,9 +524,13 @@ def get_fires(
         hi = _parse_iso(to)
         if lo is None or hi is None:
             raise HTTPException(status_code=400, detail="Provide ?from= and ?to=.")
+        # Phase 6: LEFT JOIN bars for bias_state + parent_*_bias.
         rows = _row_to_dict(con.execute(
-            "SELECT bar_time, watch_id, direction, price, outcome, outcome_resolved_at "
-            "FROM fires WHERE timeframe = ? AND bar_time BETWEEN ? AND ? ORDER BY bar_time",
+            "SELECT f.bar_time, f.watch_id, f.direction, f.price, f.outcome, f.outcome_resolved_at, "
+            "       b.bias_state, b.parent_1h_bias, b.parent_15m_bias "
+            "FROM fires f "
+            "LEFT JOIN bars b ON b.bar_time = f.bar_time AND b.timeframe = f.timeframe "
+            "WHERE f.timeframe = ? AND f.bar_time BETWEEN ? AND ? ORDER BY f.bar_time",
             [tf, lo, hi],
         ))
     finally:
@@ -495,6 +548,8 @@ def get_fires(
                     r["outcome_resolved_at"].strftime("%Y-%m-%dT%H:%M:%SZ")
                     if r["outcome_resolved_at"] else None
                 ),
+                "biasState": r.get("bias_state"),
+                **_attach_htf_bias(r, tf),
             }
             for r in rows
         ]

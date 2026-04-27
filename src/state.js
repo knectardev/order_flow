@@ -202,6 +202,37 @@ export const state = {
   // before switching to '1h'. Used to restore the selection when they
   // switch back to 1m/15m. null ⇒ no saved selection (first paint).
   savedMatrixRangeBeforeTf1h: null,
+
+  // Phase 6 cross-timeframe bias filtering controls.
+  //
+  //   biasFilterMode:
+  //     'soft'  (default) — Compute alignment_score and tag for every
+  //                          fire. Tag never reaches SUPPRESSED in soft
+  //                          mode; opposing 1h biases produce
+  //                          LOW_CONVICTION but the fire is still
+  //                          recorded and shown. Bias ribbon + event-log
+  //                          tints render the conviction visually.
+  //     'hard'             — Same as 'soft', but a fire is fully
+  //                          SUPPRESSED (not pushed to canonicalFires)
+  //                          when the 1h bias opposes the canonical's
+  //                          direction. Use for backtests where you
+  //                          want to know how many fires the regime
+  //                          filter would have excluded.
+  //     'off'              — Don't compute alignment at all (vote=0,
+  //                          score=0, tag='STANDARD'). The bias ribbon
+  //                          still draws (it's purely informational),
+  //                          but no canonical fires are filtered.
+  //
+  //   showSuppressed: when true, SUPPRESSED entries are still rendered
+  //                   in the event log (greyed/strikethrough) so the
+  //                   user can see what hard-mode is filtering. When
+  //                   false, SUPPRESSED entries are hidden from the
+  //                   event log entirely.
+  //
+  // Both flags are bootstrapped from URL params at app start
+  // (?biasFilter=hard, ?showSuppressed=1) — see bootstrapReplay.
+  biasFilterMode: 'soft',
+  showSuppressed: false,
 };
 
 // Effective tunings: real-session overrides default synthetic, scoped

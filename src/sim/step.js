@@ -141,14 +141,26 @@ function handleWatchFire(watchId, canonical, watchState, cellDef) {
     watchState.firedThisCycle = true;
     const lastBar = state.bars[state.bars.length - 1];
     if (lastBar) {
+      // Phase 6: every fire — including SUPPRESSED — gets recorded so
+      // the event log can display them under `state.showSuppressed=true`.
+      // What SUPPRESSED *does* skip is the user-visible banner + auto-
+      // pause logic below; the dashboard renderers (event log, watch
+      // panel) read the persisted tag to apply gradient tints, glyphs,
+      // and "filtered by HTF" indicators.
       state.canonicalFires.push({
         watchId,
         barTime: lastBar.time,
         direction: canonical.direction,
         price: lastBar.close,
+        tag:        canonical.tag        || null,
+        alignment:  canonical.alignment  || null,
       });
       if (state.canonicalFires.length > 20) state.canonicalFires.shift();
     }
+    // SUPPRESSED never triggers banner / auto-pause — the whole point of
+    // hard-mode is to silently filter; the row is still in the log for
+    // post-hoc review when showSuppressed is on.
+    if (canonical.tag === 'SUPPRESSED') return;
     // Suppress pause/banner during seek/precompute — we want to record the
     // fire but not interrupt the user's scrub.
     if (state.seekInProgress) return;
