@@ -1,8 +1,8 @@
-import { MAX_BARS } from '../config/constants.js';
+import { MAX_BARS, DEFAULT_TIMEFRAME } from '../config/constants.js';
 import { state } from '../state.js';
 import { computeProfile } from '../analytics/profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from '../analytics/vwap.js';
-import { getCachedProfile, requestProfile } from '../data/profileApi.js';
+import { getCachedProfile, hasResolvedProfile, requestProfile } from '../data/profileApi.js';
 import { sessionForBar } from '../data/replay.js';
 import { isBarSelected } from '../ui/selection.js';
 import { _refreshTooltipFromLastMouse } from '../ui/tooltip.js';
@@ -18,6 +18,24 @@ function _isoZ(t) {
   if (t == null) return '';
   return (t instanceof Date) ? t.toISOString() : new Date(t).toISOString();
 }
+
+// Anti-flicker carry-over for the right-side volume profile sidebar.
+// During streaming, every `FORMING_STEPS`-th frame settles a new bar
+// which shifts `state.bars` forward → both endpoints of the (from, to)
+// window change → cache miss → without this carry-over we'd render the
+// OHLC-proxy profile for the ~50 ms it takes the new /profile fetch to
+// resolve. The proxy and API profiles have different bin counts and
+// scales, so the visual swap reads as a black flash several times a
+// second. Stashing the most-recent resolved API profile and reusing it
+// on miss keeps the sidebar visually stable — the new fetch's onResolve
+// hook still triggers a re-render with the up-to-date data, so
+// staleness is bounded to one bar's worth of data (max).
+//
+// Scoped to the active timeframe so a tf-switch doesn't show stale
+// 1m bins under 1h candles. Cleared by setActiveTimeframe()'s
+// clearProfileCache() call → handled below in the resolve path.
+let _lastApiProfile = null;
+let _lastApiProfileTf = null;
 
 function _getViewedBars() {
   if (state.replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor) {
@@ -82,34 +100,33 @@ function drawPriceChart() {
   const chartH = fullChartH - volBandH - VOL_BAND_GAP;
   const volTop = PAD.t + chartH + VOL_BAND_GAP;
 
-  // Determine price range
   const allBars = viewedBars;
-  let lo = Infinity, hi = -Infinity;
-  for (const b of allBars) {
-    if (b.low  < lo) lo = b.low;
-    if (b.high > hi) hi = b.high;
-  }
-  const padPrice = (hi - lo) * 0.05 + 0.05;
-  lo -= padPrice; hi += padPrice;
-  if (hi - lo < 0.01) { hi = lo + 0.5; }
-
-  const yScale = p => PAD.t + ((hi - p) / (hi - lo)) * chartH;
 
   // Profile (computed from settled state.bars only — exclude state.formingBar at live edge,
   // and use the visible window when panned so the profile reflects what's
   // on screen).
   //
-  // Multi-session refinement: in real-data mode, scope the profile state.bars to
-  // the session containing the right-edge / NOW bar. This makes POC/VAH/VAL
-  // reset visually as the user scrolls across a day boundary — POC for
-  // "today" should never be polluted by yesterday's volume distribution.
-  // When the viewport spans two days, the profile reflects only the
-  // right-edge session's state.bars that happen to be visible.
+  // Phase 5 timeframe-aware scoping:
+  //   - 1m: scope the profile to the SESSION containing the right-edge /
+  //     NOW bar. At 1m a 60-bar window is always intra-session, so this
+  //     keeps POC/VAH/VAL anchored to "today's" distribution and resets
+  //     visually when the user pans across a day boundary.
+  //   - 15m / 1h: use the FULL visible window. A 60-bar 15m window spans
+  //     ~15 sessions and a 60-bar 1h window spans ~10 sessions; scoping
+  //     to the right-edge session would draw value-area lines across the
+  //     whole chart that only describe the last day's distribution —
+  //     visually misleading. Composing across all visible bars makes
+  //     VAH/VAL/POC describe the bars actually on screen.
+  //
+  // Computed before the y-range so POC/VAH/VAL prices can be folded into
+  // lo/hi and stay on-screen even when current price has drifted away from
+  // the value area.
   const settledViewed = isPanned
     ? viewedBars
     : viewedBars.filter(b => b !== state.formingBar);
   let profileBars = settledViewed;
-  if (state.replay.mode === 'real' && settledViewed.length > 0) {
+  const _scopeToRightEdgeSession = (state.activeTimeframe || DEFAULT_TIMEFRAME) === DEFAULT_TIMEFRAME;
+  if (_scopeToRightEdgeSession && state.replay.mode === 'real' && settledViewed.length > 0) {
     const rightEdgeIdx = (isPanned ? state.chartViewEnd : state.replay.cursor) - 1;
     const sess = sessionForBar(clamp(rightEdgeIdx, 0, state.replay.allBars.length - 1));
     if (sess) {
@@ -124,54 +141,164 @@ function drawPriceChart() {
   //     keyed on the visible (or session-scoped) bar_time window. The
   //     server runs the same value-area-fraction logic the JS proxy uses,
   //     just over real per-print volume instead of redistributed bar
-  //     totals. While the fetch is in flight we render with no profile
-  //     (one frame of no VAH/VAL/POC lines + no profile bars) and the
-  //     resolution callback triggers a re-render via drawPriceChart().
+  //     totals. The fetch resolution callback schedules a re-render via
+  //     drawPriceChart() so the tick-level data takes over once it lands.
   //   - JSON mode (Phase 1 transition) and synthetic mode: fall back to
   //     the OHLC-distribution proxy in src/analytics/profile.js. Synthetic
   //     mode has no per-trade data; JSON mode is retired in Phase 2f.
+  //
+  // Fallback policy: in API mode, if the server profile isn't yet
+  // resolved (in-flight fetch, network/API failure, or a window that
+  // legitimately has no bar_volume_profile rows so the response carried
+  // null POC/VAH/VAL), render the OHLC-proxy profile in the meantime.
+  // Without this fallback the chart goes blank — no value-area lines, no
+  // profile sidebar — every time the rolling-window key shifts (each new
+  // settled bar), which is the symptom we see while streaming. The
+  // proxy's POC may be a tick or two off vs the tick-level truth, but
+  // showing an approximation always beats showing nothing, and the real
+  // profile pops in seamlessly once the fetch resolves.
   let profile = null;
   if (profileBars.length > 2) {
     if (state.replay.dataDriven && state.replay.apiBase) {
       const fromIso = _isoZ(profileBars[0].time);
       const toIso   = _isoZ(profileBars[profileBars.length - 1].time);
-      profile = getCachedProfile(fromIso, toIso);
-      if (!profile) {
-        // Kick off the fetch and re-render when it lands. The handler
-        // schedules a microtask draw rather than calling drawPriceChart
-        // synchronously to avoid recursing inside the current render.
-        requestProfile(fromIso, toIso, () => Promise.resolve().then(() => drawPriceChart()));
+      const activeTf = state.activeTimeframe || 'unknown';
+      const cached = getCachedProfile(fromIso, toIso);
+      // API may legitimately return all-null POC/VAH/VAL when the window
+      // has no rows in bar_volume_profile — treat that as "not usable"
+      // and fall back to the proxy.
+      const cachedUsable = cached
+        && cached.pocPrice != null
+        && cached.vahPrice != null
+        && cached.valPrice != null;
+      if (cachedUsable) {
+        profile = cached;
+        _lastApiProfile = cached;
+        _lastApiProfileTf = activeTf;
+      } else {
+        // Cache miss for this exact (from, to) window. Anti-flicker at
+        // the live edge: reuse the most recently resolved API profile
+        // (same timeframe) until the in-flight fetch lands. While panned,
+        // do NOT reuse stale API profiles — panned navigation should show
+        // the exact window/session selection immediately, so we use the
+        // deterministic proxy until the matching API window resolves.
+        if (!isPanned && _lastApiProfile && _lastApiProfileTf === activeTf) {
+          profile = _lastApiProfile;
+        } else {
+          profile = computeProfile(profileBars);
+        }
+        // Only kick off a fetch if one hasn't *already* resolved for
+        // this (from, to). When a window's response was null POC/VAH/VAL
+        // (or any prior resolution) requestProfile() invokes onResolve
+        // synchronously for already-resolved entries, which would feed
+        // back into our microtask draw and infinite-loop the renderer.
+        if (!hasResolvedProfile(fromIso, toIso)) {
+          requestProfile(fromIso, toIso, () => Promise.resolve().then(() => drawPriceChart()));
+        }
       }
     } else {
       profile = computeProfile(profileBars);
     }
   }
 
+  // Anchored VWAP — computed up front (same reason as profile: we want to
+  // fold its visible price range into the chart's y-axis so the dashed
+  // yellow line can't fall off-screen).
+  // Live edge: compute from the rolling `state.bars` window.
+  // Panned (real): compute on the entire concatenated timeline up through
+  //                the right edge so the cumulative VWAP is correct, then
+  //                render only the slice visible in the current viewport.
+  let vwapDisplay = null;
+  const vwapAnchors = getVwapAnchors();
+  if (isPanned) {
+    const fullSlice = state.replay.allBars.slice(0, panViewStart + viewedBars.length);
+    if (fullSlice.length >= 2) {
+      const fullVwap = computeAnchoredVWAP(fullSlice, vwapAnchors);
+      vwapDisplay = fullVwap.slice(panViewStart);
+    }
+  } else if (state.bars.length >= 2) {
+    vwapDisplay = computeAnchoredVWAP(state.bars, vwapAnchors);
+  }
+
+  // Determine price range. Baseline is candle high/low (stable while the
+  // rolling window slides), but at 1m we also include the profile's full
+  // vertical extent + POC/VAH/VAL so the profile pane and key reference
+  // levels remain visible. This is intentionally 1m-scoped because the
+  // 1m profile is session-anchored and operationally central to signal
+  // interpretation; higher timeframes keep the candle-only range behavior.
+  let lo = Infinity, hi = -Infinity;
+  for (const b of allBars) {
+    if (b.low  < lo) lo = b.low;
+    if (b.high > hi) hi = b.high;
+  }
+  const fitProfileToRange = (state.activeTimeframe || DEFAULT_TIMEFRAME) === DEFAULT_TIMEFRAME;
+  if (
+    fitProfileToRange &&
+    profile &&
+    profile.bins &&
+    profile.bins.length > 0 &&
+    profile.binStep > 0
+  ) {
+    const profileHi = profile.priceLo + profile.bins.length * profile.binStep;
+    lo = Math.min(lo, profile.priceLo, profile.valPrice ?? Infinity, profile.pocPrice ?? Infinity, profile.vahPrice ?? Infinity);
+    hi = Math.max(hi, profileHi, profile.valPrice ?? -Infinity, profile.pocPrice ?? -Infinity, profile.vahPrice ?? -Infinity);
+  }
+  const padPrice = (hi - lo) * 0.05 + 0.05;
+  lo -= padPrice; hi += padPrice;
+  if (hi - lo < 0.01) { hi = lo + 0.5; }
+
+  const yScale = p => PAD.t + ((hi - p) / (hi - lo)) * chartH;
+  // y-coordinate clipped to the chart's vertical bounds. Used when a
+  // reference price (POC/VAH/VAL/VWAP) lies outside the candle-driven
+  // y-range — the line is then drawn pinned to the relevant edge so its
+  // existence + direction stays visible without expanding the axis.
+  const yScaleClamped = p => {
+    const y = yScale(p);
+    return Math.max(PAD.t, Math.min(PAD.t + chartH, y));
+  };
+  // Whether `p` lies above (-1), below (+1), or inside (0) the visible
+  // price range. Used to drive the off-range edge labels.
+  const refDirection = p => {
+    if (p > hi) return -1;   // above visible range → line pinned to top
+    if (p < lo) return  1;   // below visible range → line pinned to bottom
+    return 0;
+  };
+
   // Draw VAH / VAL / POC lines across full chart. Same null-guard as the
   // profile-bar label block below — empty windows can return all-null
   // POC/VAH/VAL.
   if (profile && profile.vahPrice != null && profile.valPrice != null && profile.pocPrice != null) {
-    pctx.lineWidth = 1;
-    // VAH dashed
-    pctx.strokeStyle = 'rgba(138, 146, 166, 0.45)';
-    pctx.setLineDash([3, 3]);
-    pctx.beginPath();
-    pctx.moveTo(PAD.l, yScale(profile.vahPrice));
-    pctx.lineTo(PAD.l + chartW, yScale(profile.vahPrice));
-    pctx.stroke();
-    // VAL dashed
-    pctx.beginPath();
-    pctx.moveTo(PAD.l, yScale(profile.valPrice));
-    pctx.lineTo(PAD.l + chartW, yScale(profile.valPrice));
-    pctx.stroke();
-    pctx.setLineDash([]);
-    // POC solid teal
-    pctx.strokeStyle = 'rgba(33, 160, 149, 0.55)';
-    pctx.lineWidth = 1.2;
-    pctx.beginPath();
-    pctx.moveTo(PAD.l, yScale(profile.pocPrice));
-    pctx.lineTo(PAD.l + chartW, yScale(profile.pocPrice));
-    pctx.stroke();
+    // Draw each reference line at its true y-coord when in range, or
+    // pinned to the top/bottom edge when off-range. The off-range case
+    // also gets an arrow + price label so the user can see "POC is
+    // above this chart at 6890" without us re-scaling the y-axis.
+    const _drawRefLine = (price, label, strokeStyle, lineW, dash) => {
+      const dir = refDirection(price);
+      const y   = yScaleClamped(price);
+      pctx.strokeStyle = strokeStyle;
+      pctx.lineWidth   = lineW;
+      if (dash) pctx.setLineDash(dash); else pctx.setLineDash([]);
+      pctx.beginPath();
+      pctx.moveTo(PAD.l, y);
+      pctx.lineTo(PAD.l + chartW, y);
+      pctx.stroke();
+      pctx.setLineDash([]);
+      if (dir !== 0) {
+        // Off-range edge tag: arrow indicates direction of true price,
+        // label shows the price itself. Right-aligned so it doesn't
+        // collide with the chart's left-edge "PANNED · …" hint.
+        pctx.fillStyle = strokeStyle;
+        pctx.font = '9px "IBM Plex Mono", monospace';
+        pctx.textAlign = 'right';
+        const arrow = dir < 0 ? '↑' : '↓';
+        const yLabel = dir < 0 ? (PAD.t + 10) : (PAD.t + chartH - 4);
+        pctx.fillText(`${label} ${arrow} ${price.toFixed(2)}`,
+                      PAD.l + chartW - 4, yLabel);
+      }
+    };
+    _drawRefLine(profile.vahPrice, 'VAH', 'rgba(138, 146, 166, 0.55)', 1,   [3, 3]);
+    _drawRefLine(profile.valPrice, 'VAL', 'rgba(138, 146, 166, 0.55)', 1,   [3, 3]);
+    _drawRefLine(profile.pocPrice, 'POC', 'rgba(33, 160, 149, 0.75)',  1.2, null);
   }
 
   // Candles
@@ -180,18 +307,34 @@ function drawPriceChart() {
   const candleW = Math.max(2, Math.min(slotW * 0.65, 14));
 
   // RTH session-start dividers (real-data mode only). For every loaded
-  // session whose sessionStart bar happens to be visible in the current
-  // viewport, build {viewportIdx, date} pairs by exact-time matching the
-  // sessionStart against the state.bars on screen. We draw the vertical lines now
-  // (before candles, so candle bodies sit on top) and stash the matches for
-  // the matching label block below — the labels render after candles so the
-  // date text stays legible. Bars outside the viewport contribute nothing,
-  // so a 60-bar live window typically shows only the right-edge session's
-  // divider; panning back across a boundary reveals the prior day's marker.
+  // session whose first bar happens to be visible in the current
+  // viewport, build {viewportIdx, date} pairs by exact-time matching
+  // each session's actual first-bar time against the bars on screen.
+  // We draw the vertical lines now (before candles, so candle bodies
+  // sit on top) and stash the matches for the matching label block
+  // below — the labels render after candles so the date text stays
+  // legible. Bars outside the viewport contribute nothing, so a 60-bar
+  // live window typically shows only the right-edge session's divider;
+  // panning back across a boundary reveals the prior day's marker.
+  //
+  // Phase 5 robustness: we key on `allBars[session.startIdx].time`, NOT
+  // on `meta.session_start` from the /sessions API. At 1h the first
+  // loaded bar of every session is at 10:00 ET because the leading
+  // partial 09:00-10:00 ET bin is dropped by the aggregator (RTH opens
+  // mid-bin), while `session_start` is 09:30 ET. Anchoring on the
+  // first loaded bar guarantees a match at every timeframe — and
+  // survives any future API drift between the reported session window
+  // and the actual data.
   const sessionDividers = [];
   if (state.replay.mode === 'real' && state.replay.sessions.length) {
     const startMsToDate = new Map();
-    for (const s of state.replay.sessions) startMsToDate.set(s.sessionStartMs, s.date);
+    for (const s of state.replay.sessions) {
+      const firstBar = state.replay.allBars[s.startIdx];
+      if (!firstBar) continue;
+      const t = firstBar.time;
+      const ms = t instanceof Date ? t.getTime() : Date.parse(t);
+      if (Number.isFinite(ms)) startMsToDate.set(ms, s.date);
+    }
     for (let i = 0; i < allBars.length; i++) {
       const t = allBars[i].time;
       const ms = t instanceof Date ? t.getTime() : new Date(t).getTime();
@@ -315,26 +458,14 @@ function drawPriceChart() {
   pctx.fillText(`max ${maxVol.toLocaleString()}`, PAD.l + chartW - 4, volTop + 8);
 
   // Anchored VWAP — dashed yellow line over price (settled state.bars only).
-  // Live edge: compute from the rolling `state.bars` window (matches existing
-  //            synthetic + real behavior).
-  // Panned (real): compute on the entire concatenated timeline up through
-  //                the right edge so the cumulative VWAP is correct, then
-  //                render only the slice visible in the current viewport.
-  // The VWAP function emits `segmentStart=true` on the first bar of each
-  // anchor segment; we break the polyline at every such point so the visual
-  // reset at every RTH open is unambiguous (no slanted line connecting the
-  // last bar of Day N to the first of Day N+1).
-  let vwapDisplay = null;
-  const vwapAnchors = getVwapAnchors();
-  if (isPanned) {
-    const fullSlice = state.replay.allBars.slice(0, panViewStart + viewedBars.length);
-    if (fullSlice.length >= 2) {
-      const fullVwap = computeAnchoredVWAP(fullSlice, vwapAnchors);
-      vwapDisplay = fullVwap.slice(panViewStart);
-    }
-  } else if (state.bars.length >= 2) {
-    vwapDisplay = computeAnchoredVWAP(state.bars, vwapAnchors);
-  }
+  // The polyline values were computed up front (above the y-range block).
+  // Off-range portions are clamped to the top/bottom edge of the chart so
+  // the line stays visible even when current price has drifted far from
+  // VWAP, without the y-axis having to expand to fit it. The VWAP
+  // function emits `segmentStart=true` on the first bar of each anchor
+  // segment; we break the polyline at every such point so the visual
+  // reset at every RTH open is unambiguous (no slanted line connecting
+  // the last bar of Day N to the first of Day N+1).
   if (vwapDisplay && vwapDisplay.length > 0) {
     pctx.strokeStyle = 'rgba(220, 200, 90, 0.72)';
     pctx.lineWidth = 1.3;
@@ -344,7 +475,7 @@ function drawPriceChart() {
     for (let i = 0; i < vwapDisplay.length; i++) {
       const pt = vwapDisplay[i];
       const x = PAD.l + (i + 0.5) * slotW;
-      const y = yScale(pt.vwap);
+      const y = yScaleClamped(pt.vwap);
       if (!pen || pt.segmentStart) {
         pctx.moveTo(x, y);
         pen = true;
@@ -355,11 +486,17 @@ function drawPriceChart() {
     pctx.stroke();
     pctx.setLineDash([]);
     const lastVWAP = vwapDisplay[vwapDisplay.length - 1].vwap;
-    const lastX = PAD.l + (vwapDisplay.length - 0.5) * slotW;
+    const lastDir  = refDirection(lastVWAP);
+    const lastX    = PAD.l + (vwapDisplay.length - 0.5) * slotW;
+    const lastY    = yScaleClamped(lastVWAP);
     pctx.fillStyle = 'rgba(220, 200, 90, 0.85)';
     pctx.font = '9px "IBM Plex Mono", monospace';
     pctx.textAlign = 'left';
-    pctx.fillText('VWAP ' + lastVWAP.toFixed(2), Math.min(lastX + 4, PAD.l + chartW - 60), yScale(lastVWAP) + 3);
+    // Append a direction arrow when VWAP is off-range so the user can
+    // see "VWAP ↑ 6900.25" pinned to the top edge of the chart.
+    const arrow = lastDir < 0 ? ' ↑' : (lastDir > 0 ? ' ↓' : '');
+    pctx.fillText('VWAP' + arrow + ' ' + lastVWAP.toFixed(2),
+                  Math.min(lastX + 4, PAD.l + chartW - 80), lastY + 3);
   }
 
   // Canonical fire halos — drawn underneath event markers so the SWEEP/etc.
@@ -461,20 +598,19 @@ function drawPriceChart() {
     pctx.fillText(last.close.toFixed(2), PAD.l + chartW - 4, yL - 4);
   }
 
-  // RTH session-start date labels. One per visible session-start divider.
+  // Session-start date labels. One per visible session-start divider.
   // Rendered after candles so the date text sits on top and stays legible.
   // Each label anchors to its divider's x; if it would clip the right edge
-  // of the chart we right-align so it tucks back into the plot area. With
-  // many dividers in view, identical-style labels keep the visual rhythm —
-  // the user sees a clear "RTH OPEN · YYYY-MM-DD" stamp above each day's
-  // first bar.
+  // of the chart we right-align so it tucks back into the plot area. The
+  // divider line itself already implies "this is where a session begins",
+  // so the label is just the YYYY-MM-DD date — no "RTH OPEN" prefix.
   if (sessionDividers.length) {
     pctx.save();
     pctx.font = '10px "IBM Plex Mono", monospace';
     pctx.fillStyle = 'rgba(220, 226, 236, 0.92)';
     for (const d of sessionDividers) {
       const xStart = PAD.l + (d.idx + 0.5) * slotW;
-      const labelText = `RTH OPEN · ${d.date}`;
+      const labelText = d.date;
       const labelW = pctx.measureText(labelText).width;
       const fitsRight = (xStart + 6 + labelW) <= (PAD.l + chartW - 4);
       pctx.textAlign = fitsRight ? 'left' : 'right';

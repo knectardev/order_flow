@@ -1,19 +1,255 @@
+I'm extending an existing order flow dashboard to support multiple bar 
+timeframes. The current state: the prototype runs on 1-minute ES futures 
+bars, with a DuckDB backend, FastAPI layer, and a JS dashboard that 
+visualizes price, volume profile, regime matrix, and canonical entries 
+(breakout and fade). The aggregator pipeline ingests Databento Trades 
+data, produces 1-minute bars with vpt/concentration metrics, and writes 
+to DuckDB. A regime classifier (regime.py) computes v_rank and d_rank 
+per bar.
 
+Phase 5 goal: extend the system to support 1-minute, 15-minute, and 
+1-hour timeframes. The user can select a timeframe in the dashboard, 
+and the entire visualization (chart, matrix, occupancy heatmap, events, 
+canonical entries, fires) updates to reflect that timeframe.
 
-While the plan is robust, here are three specific areas where the implementation might face friction during your Cursor/Claude workflow:
+Before writing any code, produce a build plan covering the sections 
+below. Stop after producing the plan; wait for review.
 
-#### 1. The "Floating Point" Gate (Phase 1e)
-You specified `math.isclose(abs_tol=1e-9)` as a hard gate. 
-* **The Risk:** Python’s `pandas` (DuckDB source) and JavaScript’s `JSON.parse` handle floating-point precision slightly differently during serialization. 
-* **The Fix:** If the verify script fails on 15th-decimal-place noise, don't loosen the tolerance to $1e-5$. Instead, ensure the aggregator **rounds** `vpt` and `concentration` to a fixed precision (e.g., 6 decimal places) *before* writing to both DuckDB and JSON. This ensures the "Hard Gate" remains meaningful without being tripped by floating-point "jitter."
+## Architectural decisions (already made — DO NOT re-litigate)
 
-#### 2. The "30-Bar Warmup" UX (Phase 2d)
-The plan calls for an amber `WARMING UP` label and 0.4 opacity. 
-* **Refinement:** Ensure the **Event Log sticky row** (`SYSTEM · regime warming up`) is truly pinned. If the user scrolls the log, that system message should stay at the top. This is the "User Trust" layer—without it, a user might think the algorithm has crashed during the first 30 minutes of the RTH session because the matrix isn't "moving."
+1. PRE-COMPUTED storage, not on-demand aggregation. Higher-timeframe 
+   bars are written to the database during ingestion, alongside 
+   1-minute bars. Reasons:
+   - VPT and concentration are NOT summable from 1-minute bars; they 
+     require recomputation from raw trades per timeframe.
+   - Query simplicity: every API endpoint is `WHERE timeframe = ?` 
+     instead of conditional aggregation logic.
+   - Storage cost is small (~8% growth for 2 added timeframes).
+   - Correctness > storage.
 
-#### 3. DuckDB Tuple-IN Query (Phase 4a)
-The plan uses `(v_rank, d_rank) IN ?` for the brushing filter.
-* **Optimization:** This is significantly faster than a series of `OR` statements, but it relies on a multi-column index. Ensure your Phase 1a `init_schema` explicitly creates:
-    `CREATE INDEX idx_bars_rank ON bars (v_rank, d_rank);`
-* Without this index, "All Sessions" occupancy queries or multi-cell brushing will degrade into full table scans as your DuckDB file grows over months of data.
+2. Each timeframe is its own context. Events, canonical entries, 
+   regime classification all run independently per timeframe. There 
+   is no "shared" event detection across timeframes — a 15-minute 
+   sweep is a different thing from a 1-minute sweep.
 
+3. The classifier's parameters scale per timeframe. Rough starting 
+   values:
+   - 1m:  100-bar window, 20-bar EMA span (existing)
+   - 15m: 30-bar window, 8-bar EMA span
+   - 1h:  24-bar window, 8-bar EMA span
+   These are calibration starting points, not final values. Surface 
+   them in a config dict that's easy to tune.
+
+4. Schema change: bars, events, and fires tables gain a `timeframe` 
+   column ('1m', '15m', '1h'). Primary keys become composite where 
+   appropriate. Bars: PK (bar_time, timeframe). Events: PK 
+   (bar_time, timeframe, event_type, direction). Fires: PK 
+   (bar_time, timeframe, watch_id).
+
+5. RTH only, ESM6 only, single symbol. Don't generalize.
+
+6. Threshold values for event detection (e.g., "volume > 1.65× avg" 
+   for sweeps) should be STRUCTURED as timeframe-keyed in the config, 
+   but for Phase 5 the 15m and 1h values should be COPIES of the 1m 
+   values. Per-timeframe threshold calibration is a follow-up task, 
+   not part of Phase 5. Don't invent threshold values; copy the 
+   existing ones into each timeframe slot in the config dict.
+
+## Plan sections required
+
+### 1. Schema migration
+
+- Exact CREATE TABLE definitions with the new composite PKs.
+- The migration approach is DROP and REBUILD, not ALTER TABLE. The 
+  existing rebuild discipline already accepts that any classifier 
+  change requires rebuilding the database; this is the same pattern.
+- Index changes (likely on `(timeframe, session_date)` for the common 
+  access pattern).
+- Specify how the rebuild is invoked. If a `rebuild` subcommand 
+  already exists in the aggregator CLI, update it to handle multi- 
+  timeframe ingestion. If it doesn't exist, this phase should add 
+  one — e.g., `python -m orderflow_pipeline rebuild --raw-dir ... 
+  --db-path ...` that drops the database, reinitializes the schema, 
+  and re-runs aggregation across all timeframes for all raw files.
+
+### 2. Aggregator changes
+
+- How the aggregator iterates over timeframes per session. Outer 
+  loop should be over sessions (load raw trades once per session), 
+  inner loop over timeframes (process the loaded trades into bars 
+  per timeframe). This avoids re-loading trades 3× per session.
+- How VPT and concentration are computed correctly for each timeframe: 
+  go back to the raw trades and accumulate per-bar price-volume 
+  distributions for the new bar boundaries. NOT aggregated from 
+  1-minute summaries (that produces wrong values).
+- How the classifier is called with timeframe-specific parameters 
+  (looked up from the config dict by timeframe key).
+- Order of operations within a (session, timeframe): bars → regime 
+  → events → fires. Each step depends on the previous.
+- Idempotency: re-running the aggregator on the same input produces 
+  the same database state, including timeframe rows.
+- PARTIAL BAR HANDLING: RTH sessions are 6.5 hours, which divides 
+  unevenly into 1-hour bars (last bar would be 30 minutes, partial). 
+  RECOMMENDATION: skip partial bars at higher timeframes — the last 
+  bar of each session at 1h is dropped if it would be less than a 
+  full bar duration. Document this choice in the aggregator code.
+
+### 3. Regime classifier changes
+
+- How regime.py accepts a timeframe parameter and looks up the right 
+  window/EMA values from the config dict.
+- WARMUP HANDLING IS A REAL PROBLEM at higher timeframes. RTH at 1h 
+  produces only 6-7 bars per session, which is fewer than a 24-bar 
+  warmup window. Without intervention, the 1h timeframe would emit 
+  NULL ranks for entire sessions. Three options to consider, propose 
+  one with reasoning:
+
+  a. Cross-session seeding (recommended): the rolling window can 
+     include bars from up to N previous sessions, with a marker 
+     distinguishing "seed" bars from "current session" bars. For 
+     1h: seed from the previous 3-5 sessions to provide ~20 bars 
+     of context, then compute current-session ranks against that 
+     seeded window. Trades the "session boundaries are clean" 
+     principle for "any ranks at all at high timeframes."
+
+  b. Lower the warmup floor for higher timeframes (e.g., 5-bar 
+     minimum at 1h, 10 at 15m). Keeps session boundaries clean but 
+     produces noisy early-session ranks at high timeframes.
+
+  c. Hybrid: use cross-session seeding only for the first N bars 
+     of a session, transitioning to within-session-only as the 
+     session accumulates bars. More complex but most defensible.
+
+  Recommend option (c) and propose specific parameters. Document 
+  the warmup behavior per timeframe in the regime module.
+
+- Document that "warmup period" differs per timeframe (20 bars at 
+  1m is 20 minutes; at 15m it's 5 hours; at 1h it's potentially 
+  multiple sessions even with seeding).
+- Session-scoped windowing at 1m stays as currently implemented. At 
+  higher timeframes, the chosen warmup option (probably c) modifies 
+  this behavior.
+
+### 4. Event detection per timeframe
+
+- How existing event criteria (sweep, absorption, divergence, 
+  stoprun) translate to higher timeframes. The detection logic is 
+  identical; only the data it runs on differs.
+- Per architectural decision #6 above: thresholds are structured 
+  as timeframe-keyed in the config dict, with all timeframes 
+  initially using the same values as 1m. Don't invent new thresholds 
+  for 15m or 1h; copy the 1m values.
+- Event timestamps at higher timeframes correspond to the higher- 
+  timeframe bar times (not the underlying 1m bars).
+
+### 5. Canonical entry evaluation per timeframe
+
+- Each entry runs independently per timeframe. The "5 of 5 criteria 
+  pass" logic is the same, but the bars/events being checked are 
+  scoped to the entry's timeframe.
+- Watched cells are the same (Impulsive·Light for breakout, 
+  Active·Normal for fade) regardless of timeframe — but the cells 
+  themselves are computed against per-timeframe ranks.
+- Force-scenario logic needs timeframe awareness — forcing a 
+  breakout at 15m should not affect 1m state and vice versa.
+- A fire on the 15m timeframe is logged with timeframe='15m' on its 
+  fires row.
+
+### 6. API changes
+
+- Every endpoint that returns bars, events, fires, or occupancy gains 
+  a required `timeframe` query parameter. Default to '1m' if absent 
+  to preserve backward compatibility with any callers that haven't 
+  been updated.
+- `/sessions` endpoint: still returns one row per session_date 
+  (sessions are timeframe-agnostic).
+- A new endpoint or response field listing available timeframes 
+  (so the dashboard knows what to populate the selector with).
+- The status banner endpoint (or wherever the metadata for "63 
+  sessions / 24390 bars" is computed) needs to be timeframe-aware: 
+  bar counts differ per timeframe.
+
+### 7. Dashboard changes
+
+- A timeframe selector (segmented control with 1m/15m/1h options) 
+  in the header area near the existing session selector.
+- Selecting a timeframe triggers a full refetch and re-render. The 
+  dashboard does not blend timeframes; switching is a context shift.
+
+- CURSOR POSITION ON TIMEFRAME CHANGE: when the user switches 
+  timeframes, the playback cursor should snap to the equivalent 
+  timestamp in the new timeframe — find the bar in the new timeframe 
+  whose time range contains the previously-active bar's timestamp. 
+  This preserves the user's position in the session. If the previous 
+  bar's timestamp doesn't fall within any bar in the new timeframe 
+  (edge cases at session boundaries), snap to the nearest bar.
+
+- Persistence: timeframe selection persists across session changes 
+  within a single page load but resets to '1m' on full reload (no 
+  localStorage required).
+- All existing UI (matrix, heatmap, canonical watch modals, event 
+  log, glossary) gets the active timeframe correctly applied.
+- The status banner reflects the active timeframe (e.g., 
+  "REAL · ES · API · V2 REGIME · 15m · 63 sessions").
+
+- A KNOWN-ISSUE NOTE for future work, NOT to be addressed in 
+  Phase 5: when live streaming is added later, the "forming bar" 
+  visual treatment will need to handle longer formation periods at 
+  15m and 1h timeframes (15 min and 1 hr respectively, vs 1 min). 
+  Phase 5 doesn't need to solve this, but the dashboard structure 
+  should not make it harder to solve later.
+
+### 8. Verification plan
+
+Side-by-side smoke test: open the dashboard at 1m, switch to 15m, 
+confirm:
+- Chart shows ~26 bars per session instead of 390.
+- Volume profile recomputed.
+- Matrix shows different cell distributions.
+- Heatmap "All loaded" shows different shape.
+
+Sanity checks the agent should perform automatically (write as 
+test cases or as a verification script):
+- 15m bar OHLC matches what you'd compute by aggregating 15 
+  consecutive 1m bars (open=first, close=last, high=max, low=min, 
+  volume=sum, delta=sum). This is a basic correctness check.
+- 15m vpt and concentration are NOT equal to averaged 1m values 
+  (they're recomputed from trades; expect different numbers).
+- Total event count at 15m is much lower than at 1m (event 
+  thresholds are the same per architectural decision #6, but the 
+  bar count is 1/15, so events should drop roughly 15× on average).
+- Total fire count at 15m is also much lower.
+- 1h timeframe emits ranks for at least the second session onward 
+  (warmup option chosen in Section 3 must produce non-NULL ranks 
+  within reasonable time).
+
+### 9. What NOT to do (scope boundaries)
+
+- No new event types.
+- No canonical entry retuning (just make existing entries 
+  timeframe-aware).
+- No threshold value changes between timeframes (structure the 
+  config to support per-timeframe values, but use 1m values for all 
+  timeframes initially).
+- No bias derivation yet (that's a future phase).
+- No cross-timeframe entry logic (e.g., "fire 1m breakout only if 1h 
+  regime is Active") — that's a future phase.
+- No outcome tracking (that's a future phase).
+- No new timeframes beyond 1m, 15m, 1h.
+- No on-demand aggregation as a "hybrid" approach. Pre-compute only.
+- No live-mode handling for the forming bar at higher timeframes.
+
+### 10. Open questions
+
+List anything ambiguous from this prompt that needs clarification 
+before implementation can begin. Don't guess; ask. Examples of the 
+shape of question that's worth asking:
+- "The cross-session seeding for warmup at 1h — should the seed bars 
+  count toward percentile-rank calculation, or only toward establishing 
+  rolling statistics?"
+- "When the user switches to 1h timeframe and the loaded data spans 
+  multiple sessions, should the heatmap default to 'all loaded' or 
+  'current session'?"
+
+After producing this plan, STOP. Do not write any code. Wait for 
+review.

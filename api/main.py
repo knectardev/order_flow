@@ -7,41 +7,41 @@ readers natively, and per-request connections sidestep any thread-safety
 landmines that would come from sharing a single connection across the
 event loop.
 
-Endpoints (regime-DB plan §1c, §1b'):
+Endpoints (regime-DB plan §1c, §1b'; Phase 5 timeframe extension):
+
+    GET /timeframes
+        Returns the timeframes present in the bars table (driven by
+        SELECT DISTINCT). The dashboard uses this to populate the
+        segmented selector and to validate `?timeframe=` URL params at
+        bootstrap. Falls back to {"timeframes": ["1m"]} on an empty DB
+        so the selector never disappears entirely.
 
     GET /sessions
-        Drives the dashboard's date dropdown.
+        Drives the dashboard's date dropdown. `bar_counts` is a per-
+        timeframe dict so a single call populates the status banner for
+        any active timeframe without re-querying.
 
-    GET /bars?from=&to=&session_date=&cell=v,d&cell=...
-        - `from`/`to` (or `session_date`) bound the time window.
+    GET /bars?from=&to=&session_date=&timeframe=&cell=v,d&cell=...
+        - `timeframe` (default '1m') scopes the query to one bin width.
+        - `from`/`to` (or `session_date`) bound the time window. When
+          `session_date` is provided, the resolved [lo, hi] window is
+          taken from min/max bar_time at that (session_date, timeframe)
+          pair so 15m / 1h sessions resolve to their own narrower window.
         - `cell=v,d` (repeatable, capped at 25 pairs) filters via DuckDB
-          tuple-IN on (v_rank, d_rank). Index `idx_bars_rank` makes this a
-          composite-index probe rather than a sequential scan.
-        - Phase 1 ignores `cell` filters because v_rank/d_rank are NULL
-          until Phase 2; the parameter is accepted today and applied
-          unconditionally — for Phase 1 sessions the result of the
-          tuple-IN is empty, which is the correct behavior (no ranked
-          bars yet means no brushable bars yet). Phase 4a will lean on
-          this same code path for multi-cell brushing.
+          tuple-IN on (v_rank, d_rank). Composite index `idx_bars_tf_rank`
+          on (timeframe, v_rank, d_rank) makes this an index probe.
 
-    GET /events?from=&to=&bar_times=t1,t2,...
-        Time-range OR exact-bar-time filter (Phase 4a uses bar_times).
+    GET /events?from=&to=&timeframe=&bar_times=t1,t2,...
+    GET /fires?from=&to=&timeframe=
+    GET /profile?from=&to=&session_date=&timeframe=
+    GET /occupancy?from=&to=&session_date=&timeframe=
+        Each gains the same `timeframe` query param (default '1m'). All
+        SQL is filtered by `WHERE timeframe = ?` so a 15m bar at the same
+        timestamp as a 1m bar is never accidentally double-counted.
 
-    GET /fires?from=&to=
-
-    GET /profile?from=&to=&session_date=
-        True tick-level volume profile from `bar_volume_profile` (regime-DB
-        plan §1b'). Server-side POC / VAH / VAL — same value-area-fraction
-        logic as `src/analytics/profile.js#computeProfile`, but operating
-        on real per-print volume instead of an OHLC-distribution proxy.
-
-    GET /occupancy?from=&to=&session_date=
-        5x5 cell occupancy histogram for the requested window (regime-DB
-        plan §3a). Drives the dashboard's matrix heatmap background +
-        "[cell] occupied X% of selected window" diagnostic. NULL-rank bars
-        (warmup, zero-volume) are excluded from `total_bars` so percentages
-        are over the *rankable* sample, which is the only meaningful
-        denominator for a cell-occupancy metric.
+    GET /profile + /occupancy use the per-timeframe min/max via the
+    composite index `idx_bvp_tf_bar` on (timeframe, bar_time) for the
+    profile aggregation.
 
 CORS is open to `*` for local dev — when serving the dashboard via
 `python -m http.server` on a different port, the browser blocks
@@ -79,6 +79,12 @@ VA_FRACTION = 0.68
 MAX_CELL_PAIRS = 25
 _CELL_RE = re.compile(r"^[1-5],[1-5]$")
 
+# Phase 5 canonical timeframe set. Every endpoint that filters by
+# `timeframe` validates against this allowlist before threading the value
+# into a parameterized SQL query.
+SUPPORTED_TIMEFRAMES = ("1m", "15m", "1h")
+DEFAULT_TIMEFRAME = "1m"
+
 
 app = FastAPI(
     title="Order Flow API",
@@ -110,6 +116,25 @@ def _connect() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(DB_PATH), read_only=True)
 
 
+def _validate_timeframe(tf: str | None) -> str:
+    """Reject unknown timeframes; default to 1m when the param is absent.
+
+    Defaulting to '1m' (rather than 400-ing on absence) keeps the API
+    backward compatible with any caller that hasn't been updated for
+    Phase 5 yet — the dashboard's old URLs still resolve to the same
+    1m data they used to return. Unknown values are still 400'd because
+    silently downgrading to 1m would mask client bugs.
+    """
+    if tf is None or tf == "":
+        return DEFAULT_TIMEFRAME
+    if tf not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid timeframe={tf!r}; expected one of {list(SUPPORTED_TIMEFRAMES)}.",
+        )
+    return tf
+
+
 def _parse_iso(ts: str | None) -> datetime | None:
     if ts is None or ts == "":
         return None
@@ -139,22 +164,32 @@ def _resolve_window(
     from_: str | None,
     to: str | None,
     session_date: str | None,
+    timeframe: str,
 ) -> tuple[datetime, datetime]:
     """Resolve the (lo, hi) TIMESTAMP window for the query.
 
+    Phase 5: window resolution is scoped to `(session_date, timeframe)` so
+    a 15m or 1h `session_date=` lookup returns that day's actual 15m / 1h
+    range — not the wider 1m range — and the downstream BETWEEN clause
+    works against the right number of bars.
+
     Precedence: `session_date` (if provided) > explicit (from, to). When
     `session_date` is given, we look up that day's actual min/max bar_time
-    from the DB so the window is exactly the session's range — no ET vs UTC
-    arithmetic on the API side. Returns a 404 if `session_date` has no rows.
+    from the DB so the window is exactly the session's range. Returns a
+    404 if `(session_date, timeframe)` has no rows.
     """
     if session_date:
         d = _parse_session_date(session_date)
         row = con.execute(
-            "SELECT MIN(bar_time), MAX(bar_time) FROM bars WHERE session_date = ?",
-            [d],
+            "SELECT MIN(bar_time), MAX(bar_time) FROM bars "
+            "WHERE session_date = ? AND timeframe = ?",
+            [d, timeframe],
         ).fetchone()
         if row is None or row[0] is None:
-            raise HTTPException(status_code=404, detail=f"No bars for session_date={session_date}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No bars for session_date={session_date} timeframe={timeframe}",
+            )
         return row[0], row[1]
 
     lo = _parse_iso(from_)
@@ -237,37 +272,93 @@ def _bar_to_json_shape(b: dict) -> dict:
 # ───────────────────────────────────────────────────────────
 
 
+@app.get("/timeframes")
+def get_timeframes() -> dict:
+    """List timeframes actually present in the bars table.
+
+    The dashboard's segmented control is populated from this response, so
+    a partial rebuild that wrote only '1m' rows still produces a usable
+    UI — the user just sees a single button. We always include '1m' in
+    the fallback for `bars` table empty edge case so the selector exists
+    on first paint.
+    """
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT timeframe FROM bars ORDER BY 1"
+        ).fetchall()
+    finally:
+        con.close()
+
+    found = [r[0] for r in rows]
+    if not found:
+        return {"timeframes": [DEFAULT_TIMEFRAME]}
+    # Order canonically (1m / 15m / 1h) regardless of DuckDB's lexical
+    # sort, so the dashboard's selector buttons are stable across rebuilds.
+    canonical = [tf for tf in SUPPORTED_TIMEFRAMES if tf in found]
+    extras = [tf for tf in found if tf not in SUPPORTED_TIMEFRAMES]
+    return {"timeframes": canonical + extras}
+
+
 @app.get("/sessions")
 def get_sessions() -> dict:
-    """List every distinct session_date with its bar count + start/end.
+    """List every distinct session_date with its per-timeframe bar counts.
 
-    Drives the dashboard's date dropdown. Sorted ascending by date so the
-    JS bootstrap concatenates timelines in chronological order without
-    re-sorting on its side.
+    Phase 5: `bar_counts` is a dict keyed on timeframe so one call
+    populates the status banner regardless of which timeframe is
+    currently active in the dashboard. `session_start` / `session_end`
+    are taken across ALL timeframes for the date — they bound the
+    underlying RTH session and are therefore timeframe-agnostic.
+
+    Sorted ascending by date so the JS bootstrap concatenates timelines
+    in chronological order without re-sorting on its side.
     """
     con = _connect()
     try:
         rows = con.execute(
             """
             SELECT session_date,
+                   timeframe,
                    COUNT(*)         AS bar_count,
                    MIN(bar_time)    AS session_start,
                    MAX(bar_time)    AS session_end
             FROM bars
-            GROUP BY session_date
-            ORDER BY session_date
+            GROUP BY session_date, timeframe
+            ORDER BY session_date, timeframe
             """
         ).fetchall()
     finally:
         con.close()
-    sessions = []
-    for d, n, lo, hi in rows:
-        sessions.append({
-            "session_date":  d.isoformat() if isinstance(d, date) else str(d),
-            "bar_count":     int(n),
-            "session_start": lo.strftime("%Y-%m-%dT%H:%M:%SZ") if lo else None,
-            "session_end":   hi.strftime("%Y-%m-%dT%H:%M:%SZ") if hi else None,
-        })
+
+    by_date: dict[Any, dict] = {}
+    for d, tf, n, lo, hi in rows:
+        key = d
+        entry = by_date.get(key)
+        if entry is None:
+            entry = {
+                "session_date":  d.isoformat() if isinstance(d, date) else str(d),
+                "bar_counts":    {},
+                "session_start": None,
+                "session_end":   None,
+            }
+            by_date[key] = entry
+        entry["bar_counts"][tf] = int(n)
+        # Widen the start/end window across all timeframes so the dashboard
+        # can use it as the day's RTH bounds regardless of active tf.
+        lo_iso = lo.strftime("%Y-%m-%dT%H:%M:%SZ") if lo else None
+        hi_iso = hi.strftime("%Y-%m-%dT%H:%M:%SZ") if hi else None
+        if lo_iso and (entry["session_start"] is None or lo_iso < entry["session_start"]):
+            entry["session_start"] = lo_iso
+        if hi_iso and (entry["session_end"] is None or hi_iso > entry["session_end"]):
+            entry["session_end"] = hi_iso
+
+    sessions = sorted(by_date.values(), key=lambda s: s["session_date"])
+    # Backward-compat: also publish a single `bar_count` derived from the
+    # 1m timeframe (or the first available) so any caller that hasn't been
+    # updated keeps getting a usable scalar.
+    for s in sessions:
+        bc: dict = s["bar_counts"]
+        s["bar_count"] = int(bc.get(DEFAULT_TIMEFRAME, next(iter(bc.values()), 0)))
     return {"sessions": sessions}
 
 
@@ -276,22 +367,23 @@ def get_bars(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
     session_date: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
     cell: list[str] = Query(default=[]),
 ) -> dict:
     """Return bars in [from, to] (or for `session_date`), shaped like JSON mode.
 
-    Phase 4a's tuple-IN brushing: every additional `cell=v,d` query
-    parameter narrows the result to bars whose (v_rank, d_rank) is in the
-    parsed tuple list. Index `idx_bars_rank` makes this a composite-index
-    probe; verify with `EXPLAIN SELECT ...`.
+    Phase 5: every query is scoped to `timeframe` (default '1m'). The
+    composite index `idx_bars_tf_rank` on (timeframe, v_rank, d_rank)
+    makes the tuple-IN cell brushing an index probe rather than a scan.
     """
+    tf = _validate_timeframe(timeframe)
     con = _connect()
     try:
-        lo, hi = _resolve_window(con, from_, to, session_date)
+        lo, hi = _resolve_window(con, from_, to, session_date, tf)
         pairs = _parse_cell_pairs(cell)
 
-        sql = "SELECT * FROM bars WHERE bar_time BETWEEN ? AND ?"
-        params: list[Any] = [lo, hi]
+        sql = "SELECT * FROM bars WHERE timeframe = ? AND bar_time BETWEEN ? AND ?"
+        params: list[Any] = [tf, lo, hi]
         if pairs:
             placeholders = ",".join(["(?,?)"] * len(pairs))
             sql += f" AND (v_rank, d_rank) IN ({placeholders})"
@@ -306,6 +398,7 @@ def get_bars(
         "from":         lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "to":           hi.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "session_date": session_date,
+        "timeframe":    tf,
         "cells":        [list(p) for p in pairs],
         "bars":         [_bar_to_json_shape(r) for r in rows],
     }
@@ -315,24 +408,28 @@ def get_bars(
 def get_events(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
     bar_times: str | None = Query(default=None),
 ) -> dict:
     """Return events in [from, to] OR at exact bar_times (comma-separated ISO).
 
     Phase 4a uses `bar_times=` to filter the event log to a brushed
-    selection. Either filter mode is valid — they don't combine.
+    selection. Either filter mode is valid — they don't combine. Phase 5
+    additionally scopes by `timeframe` so a brushed window at 15m doesn't
+    pick up 1m events at the same instant.
     """
+    tf = _validate_timeframe(timeframe)
     con = _connect()
     try:
         if bar_times:
             ts_list = [_parse_iso(t.strip()) for t in bar_times.split(",") if t.strip()]
             if not ts_list:
-                return {"events": []}
+                return {"events": [], "timeframe": tf}
             placeholders = ",".join(["?"] * len(ts_list))
             rows = _row_to_dict(con.execute(
                 f"SELECT bar_time, event_type, direction, price FROM events "
-                f"WHERE bar_time IN ({placeholders}) ORDER BY bar_time",
-                ts_list,
+                f"WHERE timeframe = ? AND bar_time IN ({placeholders}) ORDER BY bar_time",
+                [tf, *ts_list],
             ))
         else:
             lo = _parse_iso(from_)
@@ -341,12 +438,13 @@ def get_events(
                 raise HTTPException(status_code=400, detail="Provide ?from= and ?to= or ?bar_times=.")
             rows = _row_to_dict(con.execute(
                 "SELECT bar_time, event_type, direction, price FROM events "
-                "WHERE bar_time BETWEEN ? AND ? ORDER BY bar_time",
-                [lo, hi],
+                "WHERE timeframe = ? AND bar_time BETWEEN ? AND ? ORDER BY bar_time",
+                [tf, lo, hi],
             ))
     finally:
         con.close()
     return {
+        "timeframe": tf,
         "events": [
             {
                 "time":      r["bar_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -363,8 +461,14 @@ def get_events(
 def get_fires(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
 ) -> dict:
-    """Return fires in [from, to]. Mirrors the JS canonicalFires shape."""
+    """Return fires in [from, to]. Mirrors the JS canonicalFires shape.
+
+    Phase 5: scoped by `timeframe` so a 15m fire timeline isn't polluted
+    with 1m fires at the same bar_time instant.
+    """
+    tf = _validate_timeframe(timeframe)
     con = _connect()
     try:
         lo = _parse_iso(from_)
@@ -373,12 +477,13 @@ def get_fires(
             raise HTTPException(status_code=400, detail="Provide ?from= and ?to=.")
         rows = _row_to_dict(con.execute(
             "SELECT bar_time, watch_id, direction, price, outcome, outcome_resolved_at "
-            "FROM fires WHERE bar_time BETWEEN ? AND ? ORDER BY bar_time",
-            [lo, hi],
+            "FROM fires WHERE timeframe = ? AND bar_time BETWEEN ? AND ? ORDER BY bar_time",
+            [tf, lo, hi],
         ))
     finally:
         con.close()
     return {
+        "timeframe": tf,
         "fires": [
             {
                 "barTime":   r["bar_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -401,34 +506,30 @@ def get_profile(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
     session_date: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
 ) -> dict:
     """True tick-level volume profile from `bar_volume_profile`.
 
-    Aggregates per-tick volume + signed delta across the requested window,
-    then computes POC (modal tick) and VAH/VAL (expand outward from POC
-    until VA_FRACTION of total volume is captured). Same value-area-fraction
-    semantics as `src/analytics/profile.js#computeProfile`, but driven by
-    real per-print volume rather than an OHLC-distribution proxy.
-
-    Response shape is intentionally close to the JS proxy's return shape
-    (`bins`, `binStep`, `priceLo`, `priceHi`, `pocPrice`, `valPrice`,
-    `vahPrice`, `maxBin`) so the client-side renderer in priceChart.js can
-    consume both with minimal divergence. The `ticks` array is the raw
-    per-tick volume/delta breakdown — not used by the renderer today, but
-    retained for future per-tick heatmaps / debugging.
+    Phase 5: scoped to `timeframe` so the per-tick aggregation reflects
+    the active timeframe's bar grid (1m / 15m / 1h all share bin-start
+    instants but the per-bar volume profile rows are stored per-tf for
+    composite-PK uniqueness). At the resolution of "all bars in window",
+    the visual profile is dominated by total volume and looks similar
+    across timeframes — but the per-tf scoping is correct semantically.
     """
+    tf = _validate_timeframe(timeframe)
     con = _connect()
     try:
-        lo, hi = _resolve_window(con, from_, to, session_date)
+        lo, hi = _resolve_window(con, from_, to, session_date, tf)
         rows = con.execute(
             """
             SELECT price_tick, SUM(volume) AS volume, SUM(delta) AS delta
             FROM bar_volume_profile
-            WHERE bar_time BETWEEN ? AND ?
+            WHERE timeframe = ? AND bar_time BETWEEN ? AND ?
             GROUP BY price_tick
             ORDER BY price_tick
             """,
-            [lo, hi],
+            [tf, lo, hi],
         ).fetchall()
     finally:
         con.close()
@@ -438,6 +539,7 @@ def get_profile(
             "from":          lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "to":            hi.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "session_date":  session_date,
+            "timeframe":     tf,
             "ticks":         [],
             "total_volume":  0,
             "bins":          [],
@@ -453,10 +555,6 @@ def get_profile(
             "valTick":       None,
         }
 
-    # Build a contiguous tick array (no gaps) so the renderer's bin index
-    # matches `(price - priceLo) / binStep` directly. Gaps in the raw
-    # GROUP BY result (untraded ticks) become zero-volume bins, which is
-    # what the existing JS renderer expects when it walks 0..PROFILE_BINS.
     ticks_raw = [
         {"price_tick": int(t), "volume": int(v), "delta": int(d)}
         for (t, v, d) in rows
@@ -473,15 +571,12 @@ def get_profile(
 
     total_volume = int(sum(r["volume"] for r in ticks_raw))
 
-    # POC = bin with max volume. Tie-break: lowest price (earliest index)
-    # — same convention as the JS proxy's first-max scan.
     poc_idx = 0
     for i in range(1, bin_count):
         if bins[i] > bins[poc_idx]:
             poc_idx = i
     poc_tick = lo_tick + poc_idx
 
-    # Expand outward from POC until VA_FRACTION of total volume captured.
     target = total_volume * VA_FRACTION
     acc = bins[poc_idx]
     lo_i = hi_i = poc_idx
@@ -500,16 +595,14 @@ def get_profile(
     val_tick = lo_tick + lo_i
     vah_tick = lo_tick + hi_i
 
-    # Bin shape that the JS renderer can consume directly. priceLo is
-    # already the bottom edge of bin 0 (a tick boundary), so unlike the
-    # OHLC-proxy's floating priceLo we don't need a half-tick offset.
     price_lo = lo_tick * TICK_SIZE
-    price_hi = (hi_tick + 1) * TICK_SIZE   # top edge of last bin
+    price_hi = (hi_tick + 1) * TICK_SIZE
 
     return {
         "from":          lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "to":            hi.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "session_date":  session_date,
+        "timeframe":     tf,
         "ticks":         ticks_raw,
         "total_volume":  total_volume,
         "bins":          bins,
@@ -517,9 +610,6 @@ def get_profile(
         "binStep":       TICK_SIZE,
         "priceLo":       price_lo,
         "priceHi":       price_hi,
-        # POC sits at bin center; VAL at bottom edge of lo_i; VAH at top edge of hi_i.
-        # Same convention as the JS proxy so the renderer's lines land in the
-        # same place.
         "pocPrice":      poc_tick * TICK_SIZE + TICK_SIZE / 2,
         "valPrice":      val_tick * TICK_SIZE,
         "vahPrice":      (vah_tick + 1) * TICK_SIZE,
@@ -535,13 +625,13 @@ def get_occupancy(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
     session_date: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
 ) -> ORJSONResponse:
     """5x5 cell occupancy over the [from, to] (or session_date) window.
 
-    Uses the `idx_bars_rank` composite index for the GROUP BY. With ~80
-    sessions × 390 bars the full-loaded scan is well under the 100 ms
-    budget; index probe makes per-session / last-hour windows essentially
-    free.
+    Phase 5: filtered by `timeframe`. Uses the composite index
+    `idx_bars_tf_rank` on (timeframe, v_rank, d_rank), which makes the
+    GROUP BY an index probe.
 
     Cache-Control:
       - Fixed historical windows (`from` & `to` both provided) → `max-age=60`,
@@ -549,31 +639,23 @@ def get_occupancy(
         aggregated. Browser-cache hit serves repeat scrubs / range toggles
         instantly without re-hitting the API.
       - Cursor-driven windows (Last hour / Current session, where the
-        client passes `session_date` or a moving `to`) ⇒ `no-cache`. The
-        client treats those as live and the cache would serve stale data.
-        We can't tell from inside the handler whether `from`/`to` were
-        derived from a moving cursor, so we conservatively `no-cache`
-        anything that's session_date-bound *or* whose `to` lies within
-        the last 5 minutes of the most recent bar in the DB. That second
-        check would require a SELECT, so for simplicity we only mark
-        `session_date=` as no-cache; explicit (from, to) windows always
-        get max-age=60. Misuse looks like a stale 60-second window — the
-        worst case is a slightly stale heatmap on a session boundary,
-        which the user resolves by toggling the range selector once.
+        client passes `session_date` or a moving `to`) ⇒ `no-cache`.
     """
+    tf = _validate_timeframe(timeframe)
     con = _connect()
     try:
-        lo, hi = _resolve_window(con, from_, to, session_date)
+        lo, hi = _resolve_window(con, from_, to, session_date, tf)
         rows = con.execute(
             """
             SELECT v_rank, d_rank, COUNT(*) AS occupancy
             FROM bars
-            WHERE bar_time BETWEEN ? AND ?
+            WHERE timeframe = ?
+              AND bar_time BETWEEN ? AND ?
               AND v_rank IS NOT NULL
               AND d_rank IS NOT NULL
             GROUP BY v_rank, d_rank
             """,
-            [lo, hi],
+            [tf, lo, hi],
         ).fetchall()
     finally:
         con.close()
@@ -588,6 +670,7 @@ def get_occupancy(
         "from":         lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "to":           hi.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "session_date": session_date,
+        "timeframe":    tf,
         "total_bars":   total,
         "cells":        cells,
     }
@@ -603,5 +686,9 @@ def root() -> dict:
     return {
         "service": "orderflow-api",
         "db_path": str(DB_PATH),
-        "endpoints": ["/sessions", "/bars", "/events", "/fires", "/profile", "/occupancy"],
+        "endpoints": [
+            "/timeframes", "/sessions", "/bars", "/events",
+            "/fires", "/profile", "/occupancy",
+        ],
+        "supported_timeframes": list(SUPPORTED_TIMEFRAMES),
     }

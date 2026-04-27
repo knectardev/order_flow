@@ -1,12 +1,12 @@
 import { state } from './state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
-import { bootstrapReplay, onScrubberCommit, onScrubberInput, onSessionChange, seekStep } from './data/replay.js';
+import { bootstrapReplay, onScrubberCommit, onScrubberInput, onSessionChange, seekStep, setActiveTimeframe } from './data/replay.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { drawPriceChart } from './render/priceChart.js';
 import { renderBreakoutWatch, renderFadeWatch } from './render/watch.js';
-import { onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
+import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
 import { dismissFire, openFireDetails } from './ui/fireBanner.js';
 import { bindMatrixRangeUI, repaintMatrix } from './ui/matrixRange.js';
 import { closeModal, onOverlayClick, openModal } from './ui/modal.js';
@@ -41,6 +41,17 @@ bootstrapReplay();
 // Kept at the bottom of the file so all referenced functions are defined.
 // ───────────────────────────────────────────────────────────
 document.getElementById('sessionSelect').addEventListener('change', onSessionChange);
+
+// Phase 5 timeframe selector. Click → switch active timeframe (refetch
+// bars + cursor-snap + heatmap auto-bump). Buttons present unconditionally
+// in the HTML; their disabled state is driven by /timeframes from
+// _syncTimeframeSelectorUI() once API bootstrap completes.
+document.querySelectorAll('#timeframeSelect .tf-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    setActiveTimeframe(btn.dataset.tf);
+  });
+});
 document.getElementById('seekPrevBtn').addEventListener('click', () => seekStep(-1));
 document.getElementById('seekNextBtn').addEventListener('click', () => seekStep(+1));
 document.getElementById('scrubber').addEventListener('input',  onScrubberInput);
@@ -57,6 +68,7 @@ document.querySelectorAll('.glossary-list li[data-modal]').forEach(li =>
 document.getElementById('modalOverlay').addEventListener('click', onOverlayClick);
 document.getElementById('modalPanel').addEventListener('click', (e) => e.stopPropagation());
 document.getElementById('modalCloseBtn').addEventListener('click', closeModal);
+bindPlaybackHotkeys();
 
 // Regime-DB plan §3b/§3c: matrix range selector + Heatmap|Posterior
 // toggle. Wired here (and not inside buildMatrix) because the buttons

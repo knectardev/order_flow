@@ -1,65 +1,77 @@
-"""DuckDB schema + per-session writer.
+"""DuckDB schema + per-(session, timeframe) writer.
 
 The aggregator is the only writer to this DB. The dashboard (via the FastAPI
 layer in `api/main.py`) is read-only.
 
-Tables (plan §1a):
+Phase 5 extends every table with a `timeframe` column ('1m' / '15m' / '1h')
+and promotes the primary keys to composites that include it. Each timeframe
+is its own independent context — events, fires, regime ranks, and per-tick
+volume profile are all computed per-timeframe and never mixed. Storage cost
+is small (~8% growth for 2 added timeframes) and query patterns simplify to
+`WHERE timeframe = ?` on every endpoint.
+
+Tables (Phase 5):
 
     bars
         session_date    DATE        - "2026-04-21" etc., RTH date
-        bar_time        TIMESTAMP   - bin-start UTC, primary key
+        bar_time        TIMESTAMP   - bin-start UTC
+        timeframe       VARCHAR     - '1m' | '15m' | '1h'
         open / high / low / close   FLOAT
         volume                       INTEGER
         delta                        INTEGER
         trade_count                  INTEGER
         large_print_count            INTEGER
         distinct_prices              INTEGER     - len(price_volume)
-        range_pct                    DOUBLE      - filled by Phase 2 regime.py
+        range_pct                    DOUBLE      - filled by regime.py
         vpt                          DOUBLE      - volume / distinct_prices
         concentration                DOUBLE      - modal_volume / volume
-        v_rank                       SMALLINT    - 1..5, NULL during warmup (Phase 2)
-        d_rank                       SMALLINT    - 1..5, NULL during warmup (Phase 2)
+        v_rank                       SMALLINT    - 1..5, NULL during warmup
+        d_rank                       SMALLINT    - 1..5, NULL during warmup
+        PRIMARY KEY (bar_time, timeframe)
 
     events
         bar_time        TIMESTAMP
+        timeframe       VARCHAR
         event_type      VARCHAR     - 'sweep' / 'absorption' / 'stoprun' / 'divergence'
         direction       VARCHAR     - 'up' / 'down' / NULL
         price           FLOAT
-        PRIMARY KEY (bar_time, event_type, direction)
+        PRIMARY KEY (bar_time, timeframe, event_type, direction)
 
     fires
         bar_time            TIMESTAMP
+        timeframe           VARCHAR
         watch_id            VARCHAR     - 'breakout' / 'fade'
         direction           VARCHAR
         price               FLOAT
-        outcome             VARCHAR     - reserved for Phase 5+ outcome tracking
+        outcome             VARCHAR     - reserved for outcome tracking
         outcome_resolved_at TIMESTAMP   - reserved
-        PRIMARY KEY (bar_time, watch_id, direction)
+        PRIMARY KEY (bar_time, timeframe, watch_id, direction)
 
     bar_volume_profile
         bar_time    TIMESTAMP
+        timeframe   VARCHAR
         price_tick  INTEGER     - round(price / 0.25); recover price as price_tick * 0.25
         volume      INTEGER     - sum(trade.size) at this tick within the bar
-        delta       INTEGER     - signed; sums to bars.delta when grouped by bar_time
-        PRIMARY KEY (bar_time, price_tick)
+        delta       INTEGER     - signed; sums to bars.delta when grouped by bar_time/timeframe
+        PRIMARY KEY (bar_time, timeframe, price_tick)
 
-Indexes (named explicitly so verify_phase1.py / Phase 4a's brushing query can
-EXPLAIN against them):
+Indexes (Phase 5):
 
-    idx_bars_session    bars(session_date)
-    idx_bars_rank       bars(v_rank, d_rank)        - drives /occupancy + tuple-IN brushing
-    idx_bvp_bar         bar_volume_profile(bar_time)
-    idx_bvp_tick        bar_volume_profile(price_tick)
+    idx_bars_tf_session   bars(timeframe, session_date)
+    idx_bars_tf_rank      bars(timeframe, v_rank, d_rank)   - drives /occupancy + tuple-IN brushing
+    idx_bvp_tf_bar        bar_volume_profile(timeframe, bar_time)
+    idx_bvp_tick          bar_volume_profile(price_tick)
 
 Public API:
 
     connect(path) -> duckdb.DuckDBPyConnection
     init_schema(con)
-    write_session(con, session_date, bars_df, events_df, fires_df, profile_df)
+    write_session(con, session_date, timeframe, bars_df, events_df, fires_df, profile_df)
 
-`write_session` is idempotent: re-running on the same `session_date` deletes
-that day's rows (in all four tables) before inserting. No partial state if a
-write is interrupted — everything happens in one transaction.
+`write_session` is idempotent: re-running on the same `(session_date,
+timeframe)` deletes that day+timeframe's rows (in all four tables) before
+inserting. No partial state if a write is interrupted — everything happens
+in one transaction. Re-running one timeframe never disturbs another.
 """
 from __future__ import annotations
 
@@ -77,7 +89,8 @@ _SCHEMA_SQL: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS bars (
         session_date      DATE       NOT NULL,
-        bar_time          TIMESTAMP  NOT NULL PRIMARY KEY,
+        bar_time          TIMESTAMP  NOT NULL,
+        timeframe         VARCHAR    NOT NULL,
         open              DOUBLE     NOT NULL,
         high              DOUBLE     NOT NULL,
         low               DOUBLE     NOT NULL,
@@ -91,42 +104,46 @@ _SCHEMA_SQL: tuple[str, ...] = (
         vpt               DOUBLE,
         concentration     DOUBLE,
         v_rank            SMALLINT,
-        d_rank            SMALLINT
+        d_rank            SMALLINT,
+        PRIMARY KEY (bar_time, timeframe)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS events (
         bar_time   TIMESTAMP NOT NULL,
+        timeframe  VARCHAR   NOT NULL,
         event_type VARCHAR   NOT NULL,
         direction  VARCHAR,
         price      DOUBLE    NOT NULL,
-        PRIMARY KEY (bar_time, event_type, direction)
+        PRIMARY KEY (bar_time, timeframe, event_type, direction)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS fires (
         bar_time            TIMESTAMP NOT NULL,
+        timeframe           VARCHAR   NOT NULL,
         watch_id            VARCHAR   NOT NULL,
         direction           VARCHAR,
         price               DOUBLE    NOT NULL,
         outcome             VARCHAR,
         outcome_resolved_at TIMESTAMP,
-        PRIMARY KEY (bar_time, watch_id, direction)
+        PRIMARY KEY (bar_time, timeframe, watch_id, direction)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS bar_volume_profile (
         bar_time   TIMESTAMP NOT NULL,
+        timeframe  VARCHAR   NOT NULL,
         price_tick INTEGER   NOT NULL,
         volume     INTEGER   NOT NULL,
         delta      INTEGER   NOT NULL,
-        PRIMARY KEY (bar_time, price_tick)
+        PRIMARY KEY (bar_time, timeframe, price_tick)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_bars_session ON bars(session_date)",
-    "CREATE INDEX IF NOT EXISTS idx_bars_rank    ON bars(v_rank, d_rank)",
-    "CREATE INDEX IF NOT EXISTS idx_bvp_bar      ON bar_volume_profile(bar_time)",
-    "CREATE INDEX IF NOT EXISTS idx_bvp_tick     ON bar_volume_profile(price_tick)",
+    "CREATE INDEX IF NOT EXISTS idx_bars_tf_session ON bars(timeframe, session_date)",
+    "CREATE INDEX IF NOT EXISTS idx_bars_tf_rank    ON bars(timeframe, v_rank, d_rank)",
+    "CREATE INDEX IF NOT EXISTS idx_bvp_tf_bar      ON bar_volume_profile(timeframe, bar_time)",
+    "CREATE INDEX IF NOT EXISTS idx_bvp_tick        ON bar_volume_profile(price_tick)",
 )
 
 
@@ -150,61 +167,72 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
 def write_session(
     con: duckdb.DuckDBPyConnection,
     session_date: date,
+    timeframe: str,
     bars_df: "pd.DataFrame",
     events_df: "pd.DataFrame",
     fires_df: "pd.DataFrame",
     profile_df: "pd.DataFrame",
 ) -> None:
-    """Replace all rows for `session_date` across the four tables.
+    """Replace all rows for `(session_date, timeframe)` across the four tables.
 
     Transactional: if any DELETE or INSERT fails, the whole write rolls back
     and no rows are left in an inconsistent state. Re-running on the same
-    `session_date` is therefore a true refresh — never a partial overwrite.
+    `(session_date, timeframe)` is therefore a true refresh — never a
+    partial overwrite. Re-running one timeframe never disturbs another:
+    every DELETE is keyed on `(session_date, timeframe)` so the other
+    timeframes' rows for the same date stay intact.
 
     Expected DataFrame columns (all required, must match table column names):
 
-        bars_df:    session_date, bar_time, open, high, low, close, volume,
-                    delta, trade_count, large_print_count, distinct_prices,
-                    range_pct, vpt, concentration, v_rank, d_rank
-        events_df:  bar_time, event_type, direction, price
-        fires_df:   bar_time, watch_id, direction, price, outcome,
-                    outcome_resolved_at
-        profile_df: bar_time, price_tick, volume, delta
+        bars_df:    session_date, bar_time, timeframe, open, high, low,
+                    close, volume, delta, trade_count, large_print_count,
+                    distinct_prices, range_pct, vpt, concentration, v_rank,
+                    d_rank
+        events_df:  bar_time, timeframe, event_type, direction, price
+        fires_df:   bar_time, timeframe, watch_id, direction, price,
+                    outcome, outcome_resolved_at
+        profile_df: bar_time, timeframe, price_tick, volume, delta
 
-    Phase 1 leaves `range_pct`, `v_rank`, `d_rank` as NULL; Phase 2 fills
-    them in. `events_df` / `fires_df` / `profile_df` may be empty (no rows
-    to insert) but must still have the listed columns.
+    `events_df` / `fires_df` / `profile_df` may be empty (no rows to
+    insert) but must still have the listed columns.
 
-    `bar_volume_profile` has no session_date column, so we delete those rows
-    by joining the existing bars table on bar_time before purging that day's
-    bars rows.
+    `bar_volume_profile` rows are deleted by `(timeframe, bar_time)` joined
+    against the bars table for the requested `(session_date, timeframe)`,
+    before purging that day+timeframe's bars rows themselves.
     """
     con.execute("BEGIN TRANSACTION")
     try:
         # Order matters: purge bar_volume_profile first because the join uses
-        # the bars table to find which bar_times to drop.
+        # the bars table to find which (bar_time, timeframe) rows to drop.
         con.execute(
             """
             DELETE FROM bar_volume_profile
-            WHERE bar_time IN (
-                SELECT bar_time FROM bars WHERE session_date = ?
-            )
+            WHERE timeframe = ?
+              AND bar_time IN (
+                SELECT bar_time FROM bars
+                WHERE session_date = ? AND timeframe = ?
+              )
             """,
-            [session_date],
+            [timeframe, session_date, timeframe],
         )
-        con.execute("DELETE FROM bars   WHERE session_date = ?", [session_date])
-        # events / fires don't carry session_date directly; bound them by the
-        # session's bar_time range from the incoming bars_df. This keeps the
-        # writer self-contained (no need to query the about-to-be-purged
-        # bars table for its prior date range).
+        con.execute(
+            "DELETE FROM bars WHERE session_date = ? AND timeframe = ?",
+            [session_date, timeframe],
+        )
+        # events / fires don't carry session_date directly; bound them by
+        # the session's bar_time range from the incoming bars_df scoped to
+        # this timeframe. Re-running 15m never touches 1m's events/fires
+        # because the WHERE clause filters on timeframe.
         if len(bars_df) > 0:
             t_lo = bars_df["bar_time"].min()
             t_hi = bars_df["bar_time"].max()
             con.execute(
-                "DELETE FROM events WHERE bar_time BETWEEN ? AND ?", [t_lo, t_hi]
+                "DELETE FROM events WHERE timeframe = ? AND bar_time BETWEEN ? AND ?",
+                [timeframe, t_lo, t_hi],
             )
             con.execute(
-                "DELETE FROM fires  WHERE bar_time BETWEEN ? AND ?", [t_lo, t_hi]
+                "DELETE FROM fires  WHERE timeframe = ? AND bar_time BETWEEN ? AND ?",
+                [timeframe, t_lo, t_hi],
             )
 
         # `bars_df` etc. are referenced by name from the SQL via DuckDB's
@@ -214,11 +242,11 @@ def write_session(
             con.execute(
                 """
                 INSERT INTO bars
-                    (session_date, bar_time, open, high, low, close,
+                    (session_date, bar_time, timeframe, open, high, low, close,
                      volume, delta, trade_count, large_print_count,
                      distinct_prices, range_pct, vpt, concentration,
                      v_rank, d_rank)
-                SELECT session_date, bar_time, open, high, low, close,
+                SELECT session_date, bar_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
                        v_rank, d_rank
@@ -228,17 +256,17 @@ def write_session(
         if len(events_df) > 0:
             con.execute(
                 """
-                INSERT INTO events (bar_time, event_type, direction, price)
-                SELECT bar_time, event_type, direction, price FROM events_df
+                INSERT INTO events (bar_time, timeframe, event_type, direction, price)
+                SELECT bar_time, timeframe, event_type, direction, price FROM events_df
                 """
             )
         if len(fires_df) > 0:
             con.execute(
                 """
                 INSERT INTO fires
-                    (bar_time, watch_id, direction, price, outcome,
+                    (bar_time, timeframe, watch_id, direction, price, outcome,
                      outcome_resolved_at)
-                SELECT bar_time, watch_id, direction, price, outcome,
+                SELECT bar_time, timeframe, watch_id, direction, price, outcome,
                        outcome_resolved_at
                 FROM fires_df
                 """
@@ -246,8 +274,8 @@ def write_session(
         if len(profile_df) > 0:
             con.execute(
                 """
-                INSERT INTO bar_volume_profile (bar_time, price_tick, volume, delta)
-                SELECT bar_time, price_tick, volume, delta FROM profile_df
+                INSERT INTO bar_volume_profile (bar_time, timeframe, price_tick, volume, delta)
+                SELECT bar_time, timeframe, price_tick, volume, delta FROM profile_df
                 """
             )
         con.execute("COMMIT")

@@ -1,5 +1,5 @@
 import { BREAKOUT_CELL, FADE_CELL } from '../config/constants.js';
-import { getTickMs, state } from '../state.js';
+import { getScenario, getTickMs, state } from '../state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { computeMatrixScores } from '../analytics/regime.js';
 import { jumpToNextFire, seek } from '../data/replay.js';
@@ -46,6 +46,26 @@ function onSpeedChange() {
   }
 }
 
+function bindPlaybackHotkeys() {
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space') return;
+    if (e.repeat) return;
+
+    const target = e.target;
+    const isEditable = target instanceof HTMLElement && (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable
+    );
+    if (isEditable) return;
+
+    // Prevent page scrolling and toggle stream pause/resume.
+    e.preventDefault();
+    toggleStream();
+  });
+}
+
 function resetStream() {
   if (state.interval) { clearInterval(state.interval); state.interval = null; }
   document.getElementById('streamBtn').textContent = 'Start Stream';
@@ -71,12 +91,16 @@ function resetStream() {
   state.fadeWatch.lastCanonical = null;
   state.fadeWatch.firedThisCycle = false;
   state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null };
-  // Reset scenario state
-  state.scenarioLockBars = 0;
-  state.scenarioLockCell = null;
-  state.primeNextSweep = false;
-  state.primedDisplacement = 0;
-  state.primedDirection = 0;
+  // Reset scenario state for the active timeframe's bucket. Synthetic
+  // mode is always 1m so this is functionally a 1m reset; the per-tf
+  // structure lets future multi-timeframe synthetic / mixed scenarios
+  // keep their state independent.
+  const sc = getScenario();
+  sc.scenarioLockBars = 0;
+  sc.scenarioLockCell = null;
+  sc.primeNextSweep = false;
+  sc.primedDisplacement = 0;
+  sc.primedDirection = 0;
   state.lastFiredWatch = null;
   state.sim = {
     price: 4500, volState: 2, depthState: 2,
@@ -98,10 +122,11 @@ function resetStream() {
 function forceBreakoutScenario() {
   if (state.replay.mode === 'real') { jumpToNextFire('breakout'); return; }
   document.getElementById('fireBanner').classList.remove('visible');
-  state.scenarioLockBars = 12;
-  state.scenarioLockCell = BREAKOUT_CELL;
-  state.primeNextSweep   = true;
-  state.primedDisplacement = 0; // make sure we're not also doing a fade scenario
+  const sc = getScenario();
+  sc.scenarioLockBars = 12;
+  sc.scenarioLockCell = BREAKOUT_CELL;
+  sc.primeNextSweep   = true;
+  sc.primedDisplacement = 0; // make sure we're not also doing a fade scenario
   state.sim.volState   = BREAKOUT_CELL.volState;
   state.sim.depthState = BREAKOUT_CELL.depthState;
   state.sim.bias = Math.random() < 0.5 ? 1 : -1;
@@ -112,16 +137,17 @@ function forceBreakoutScenario() {
 function forceFadeScenario() {
   if (state.replay.mode === 'real') { jumpToNextFire('fade'); return; }
   document.getElementById('fireBanner').classList.remove('visible');
-  state.scenarioLockBars = 14;
-  state.scenarioLockCell = FADE_CELL;
-  state.primeNextSweep = false;
-  state.primedDirection    = Math.random() < 0.5 ? 1 : -1;
-  state.primedDisplacement = 4;  // 4 state.bars of strong drift to clear 1σ from POC
+  const sc = getScenario();
+  sc.scenarioLockBars = 14;
+  sc.scenarioLockCell = FADE_CELL;
+  sc.primeNextSweep = false;
+  sc.primedDirection    = Math.random() < 0.5 ? 1 : -1;
+  sc.primedDisplacement = 4;  // 4 state.bars of strong drift to clear 1σ from POC
   state.sim.volState   = FADE_CELL.volState;
   state.sim.depthState = FADE_CELL.depthState;
-  state.sim.bias = state.primedDirection;
+  state.sim.bias = sc.primedDirection;
   state.fadeWatch.firedThisCycle = false;
   if (!state.interval) toggleStream();
 }
 
-export { toggleStream, onSpeedChange, resetStream, forceBreakoutScenario, forceFadeScenario };
+export { toggleStream, onSpeedChange, bindPlaybackHotkeys, resetStream, forceBreakoutScenario, forceFadeScenario };

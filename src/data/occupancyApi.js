@@ -25,10 +25,20 @@
 import { MATRIX_COLS, MATRIX_ROWS } from '../config/constants.js';
 import { state } from '../state.js';
 
-const _cache = new Map();   // key: `${from}|${to}`  →  Promise<occupancy>
+const _cache = new Map();   // key: `${tf}|${from}|${to}` (or `${tf}|sd:${date}`)
 
-function _key(from, to) {
-  return `${from}|${to}`;
+// Phase 5: cache key + request URL are scoped to the active timeframe
+// so the matrix heatmap reflects ranks computed in the right context.
+function _activeTf() {
+  return state.activeTimeframe || '1m';
+}
+
+function _key(from, to, tf) {
+  return `${tf}|${from}|${to}`;
+}
+
+function _keyForSession(sessionDate, tf) {
+  return `${tf}|sd:${sessionDate}`;
 }
 
 function _projectToGrid(api) {
@@ -66,11 +76,13 @@ function fetchOccupancy(from, to, sessionDate = null) {
   // (uses session_date=) and a manually-requested fixed-range query
   // for the same boundaries don't collide on different Cache-Control
   // semantics.
-  const k = sessionDate ? `sd:${sessionDate}` : _key(from, to);
+  const tf = _activeTf();
+  const k = sessionDate ? _keyForSession(sessionDate, tf) : _key(from, to, tf);
   const hit = _cache.get(k);
   if (hit) return hit;
 
   const params = new URLSearchParams();
+  params.set('timeframe', tf);
   if (sessionDate) {
     params.set('session_date', sessionDate);
   } else {
@@ -100,14 +112,16 @@ function fetchOccupancy(from, to, sessionDate = null) {
 }
 
 function getCachedOccupancy(from, to, sessionDate = null) {
-  const k = sessionDate ? `sd:${sessionDate}` : _key(from, to);
+  const tf = _activeTf();
+  const k = sessionDate ? _keyForSession(sessionDate, tf) : _key(from, to, tf);
   const hit = _cache.get(k);
   if (!hit || typeof hit.then !== 'function') return null;
   return hit._resolved || null;
 }
 
 function requestOccupancy(from, to, sessionDate = null, onResolve) {
-  const k = sessionDate ? `sd:${sessionDate}` : _key(from, to);
+  const tf = _activeTf();
+  const k = sessionDate ? _keyForSession(sessionDate, tf) : _key(from, to, tf);
   const hit = _cache.get(k);
   if (hit && hit._resolved) {
     if (onResolve) onResolve(hit._resolved);

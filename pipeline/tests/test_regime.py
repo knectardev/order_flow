@@ -94,7 +94,8 @@ def _make_random_session(n: int = 200, seed: int = 42) -> pd.DataFrame:
 def test_warmup_first_30_bars_null():
     df = _make_random_session(n=200)
     out = regime.compute_ranks(df.copy())
-    for i in range(regime.WARMUP_BARS):
+    warmup = regime.REGIME_PARAMS["1m"]["warmup"]
+    for i in range(warmup):
         assert out["v_rank"].iloc[i] is None, f"bar {i} v_rank not NULL"
         assert out["d_rank"].iloc[i] is None, f"bar {i} d_rank not NULL"
 
@@ -218,6 +219,113 @@ def test_empty_dataframe():
         "range_pct", "v_rank", "d_rank",
     ]
     assert len(out) == 0
+
+
+# ───────────────────────────────────────────────────────────
+# Phase 5: hybrid warmup with cross-session seed history.
+# ───────────────────────────────────────────────────────────
+
+
+def _make_session_with_volume(n: int, base_high: float, base_low: float, seed: int) -> pd.DataFrame:
+    """A small session with non-trivial range/vpt/concentration variability.
+
+    The hybrid-warmup tests need seed sessions whose rolling z and
+    percentile rank windows actually compute (zero-variance windows
+    return rank=3 by tiebreaker, which is technically valid but masks
+    the "did seed feed the math?" question).
+    """
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "high":          rng.uniform(base_high, base_high + 4.0, n),
+        "low":           rng.uniform(base_low - 1.0, base_low + 1.0, n),
+        "volume":        rng.integers(500, 5000, n),
+        "vpt":           rng.uniform(50.0, 200.0, n),
+        "concentration": rng.uniform(0.05, 0.50, n),
+    })
+
+
+def test_regime_hybrid_warmup_1h_emits_ranks_session_2():
+    """5 seed sessions of 1h bars + 1 current → ranks emit from bar 0.
+
+    Without seeding, a 1h session has only ~6 bars and the 8-bar warmup
+    would NULL every bar in the entire session. With seed_history_df
+    containing the prior sessions' 1h bars, the working frame is long
+    enough that the warmup mask falls entirely within the seed rows —
+    so every current-session bar emits a non-NULL rank.
+    """
+    # 5 seed sessions of 6 bars each (~30 seed bars at 1h)
+    seed_sessions = [
+        _make_session_with_volume(6, base_high=4500.0, base_low=4498.0, seed=10 + i)
+        for i in range(5)
+    ]
+    seed_df = pd.concat(seed_sessions, ignore_index=True)
+    current_df = _make_session_with_volume(6, base_high=4500.0, base_low=4498.0, seed=99)
+
+    out = regime.compute_ranks(current_df.copy(), timeframe="1h", seed_history_df=seed_df)
+
+    assert len(out) == 6, "1h session length unchanged by seeding"
+    for i in range(6):
+        v = out["v_rank"].iloc[i]
+        d = out["d_rank"].iloc[i]
+        assert v is not None, f"bar {i} v_rank should be non-NULL with seed history"
+        assert d is not None, f"bar {i} d_rank should be non-NULL with seed history"
+
+
+def test_regime_seed_does_not_pollute_output():
+    """seed_history_df rows are NEVER written back into the output frame.
+
+    `compute_ranks(current, seed_history_df=seed)` returns a DataFrame
+    whose len() equals the input current frame's length — seed rows are
+    used for rolling-window math only, not for output. Critical contract
+    so the CLI's row count stays stable across runs with vs without
+    seed history.
+    """
+    seed_df = _make_session_with_volume(20, base_high=4500.0, base_low=4498.0, seed=33)
+    current_df = _make_session_with_volume(15, base_high=4500.0, base_low=4498.0, seed=44)
+
+    out = regime.compute_ranks(current_df.copy(), timeframe="15m", seed_history_df=seed_df)
+
+    assert len(out) == 15, f"output rows = {len(out)}, expected 15 (current-only)"
+    # Spot-check: the input columns are preserved on the output frame.
+    assert "high" in out.columns and "low" in out.columns
+    assert "v_rank" in out.columns and "d_rank" in out.columns
+
+
+def test_regime_15m_seed_transitions_to_current_only_after_k():
+    """Hybrid transition: post-K bars use current-session-only stats.
+
+    With K=15 at 15m and a 30-bar current session, bars 0..14 should
+    use seeded ranks and bars 15..29 should use current-only ranks.
+    We verify the transition by checking that running the same current
+    frame WITHOUT seed produces the same rank values from bar K onward
+    (within the post-warmup region).
+    """
+    seed_df = _make_session_with_volume(80, base_high=4500.0, base_low=4498.0, seed=51)
+    current_df = _make_session_with_volume(30, base_high=4501.0, base_low=4499.0, seed=52)
+
+    seeded_out  = regime.compute_ranks(current_df.copy(), timeframe="15m", seed_history_df=seed_df)
+    current_out = regime.compute_ranks(current_df.copy(), timeframe="15m", seed_history_df=None)
+
+    K = regime.REGIME_PARAMS["15m"]["seed_transition_k"]
+    # Bars at and after K must agree with the no-seed pass (post-K is
+    # current-only by construction of the hybrid stitch).
+    for i in range(K, 30):
+        seeded_v = seeded_out["v_rank"].iloc[i]
+        current_v = current_out["v_rank"].iloc[i]
+        # Both are either int or None at the same positions because the
+        # stitch swaps in current-only values verbatim.
+        assert seeded_v == current_v, (
+            f"bar {i} post-K seeded v_rank={seeded_v} != current-only v_rank={current_v}"
+        )
+
+
+def test_regime_params_keys():
+    """Phase 5 contract: REGIME_PARAMS must cover all canonical timeframes."""
+    assert set(regime.REGIME_PARAMS.keys()) >= {"1m", "15m", "1h"}
+    # Hybrid warmup is disabled at 1m and enabled at 15m / 1h.
+    assert regime.REGIME_PARAMS["1m"]["seed_transition_k"] == 0
+    assert regime.REGIME_PARAMS["15m"]["seed_transition_k"] > 0
+    assert regime.REGIME_PARAMS["1h"]["seed_transition_k"] > 0
 
 
 if __name__ == "__main__":

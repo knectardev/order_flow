@@ -1,8 +1,10 @@
-import { BREAKOUT_CELL, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUNINGS, TRAIL_LEN } from '../config/constants.js';
+import { BREAKOUT_CELL, DEFAULT_TIMEFRAME, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUNINGS, TIMEFRAMES, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { detectEvents, detectStopRun } from '../analytics/events.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
+import { clearOccupancyCache } from './occupancyApi.js';
+import { clearProfileCache } from './profileApi.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
@@ -12,6 +14,16 @@ import { handleWatchFire } from '../sim/step.js';
 import { toggleStream } from '../ui/controls.js';
 import { _syncSessionDropdown } from '../ui/pan.js';
 import { clamp } from '../util/math.js';
+
+// Phase 5: bin width per timeframe (mirrors aggregate.BIN_NS_BY_TIMEFRAME
+// on the server). Used by the cursor-snap math in setActiveTimeframe to
+// find the bar in the new timeframe whose [bar_time, bar_time + bin_ms)
+// window contains the user's prior position.
+const BIN_MS_BY_TF = {
+  '1m':       60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '1h':  60 * 60 * 1000,
+};
 
 function sessionForBar(barIdx) {
   const arr = state.replay.sessions;
@@ -73,14 +85,27 @@ function _resetForSessionBoundary() {
 
 function _commitRealBar(idx) {
   // Multi-session boundary handling: when this bar starts a new session
-  // (any session other than the first), purge per-session live state so
-  // detection, watches, and rolling-window VWAP/profile don't see prior-day
-  // state.bars. We also re-point state.replay.tunings at the current bar's session so
-  // detectEvents() uses the right thresholds for this day.
+  // (any session other than the first), at 1m we purge per-session live
+  // state so detection, watches, and the rolling-window candles don't
+  // see prior-day bars. We also re-point state.replay.tunings at the
+  // current bar's session so detectEvents() uses the right thresholds
+  // for this day.
+  //
+  // Phase 5 timeframe-aware: at 15m and 1h, sessions are too short
+  // (26 bars and 6 bars respectively) for a per-session rolling window
+  // to be useful — wiping state.bars at every boundary makes the chart
+  // visibly clear several times across a 60-bar window. Treat the
+  // multi-session timeline as one continuous stream at those
+  // timeframes: keep state.bars / state.events accumulating across
+  // boundaries so animation flows seamlessly. The VWAP polyline still
+  // segments per-session via getVwapAnchors() so the visual reset at
+  // each RTH open is preserved. Only at 1m does the per-session
+  // semantics genuinely match the rolling-window length.
   const sess = sessionForBar(idx);
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
   if (sess) {
     state.replay.tunings = sess.tunings || null;
-    if (sess.startIdx === idx && sess !== state.replay.sessions[0]) {
+    if (sess.startIdx === idx && sess !== state.replay.sessions[0] && tf === DEFAULT_TIMEFRAME) {
       _resetForSessionBoundary();
     }
   }
@@ -187,8 +212,9 @@ function _renderReplayChrome() {
   const lastTag = isPanned
     ? 'panned'
     : (state.formingBar ? 'forming' : 'settled');
+  const tfLabel = state.activeTimeframe || '1m';
   document.getElementById('barCount').textContent =
-    `1m bars · ${viewedBars.length} shown · last ${lastTag}`;
+    `${tfLabel} bars · ${viewedBars.length} shown · last ${lastTag}`;
   const cumD = viewedBars.reduce((s, b) => s + b.delta, 0);
   document.getElementById('cumDelta').textContent =
     viewedBars.length ? `cum Δ ${cumD >= 0 ? '+' : ''}${cumD}` : 'cum Δ —';
@@ -321,6 +347,37 @@ async function bootstrapFromApi(apiBase) {
   state.replay.apiBase = apiBase;
   state.replay.source = 'api';
   state.replay.dataDriven = true;
+
+  // Phase 5: read ?timeframe= URL param at bootstrap. Validates against
+  // the canonical TIMEFRAMES list; unknown values silently fall back to
+  // the default rather than 400-ing the dashboard at startup.
+  const params = new URL(window.location.href).searchParams;
+  const urlTf = (params.get('timeframe') || '').toLowerCase();
+  if (TIMEFRAMES.includes(urlTf)) {
+    state.activeTimeframe = urlTf;
+  }
+
+  // Discover available timeframes — the selector only enables buttons
+  // that have data behind them. /timeframes degrades gracefully on a
+  // partial rebuild (returns whatever's actually in the bars table).
+  try {
+    const tfRes = await fetch(`${apiBase}/timeframes`);
+    if (tfRes.ok) {
+      const tfData = await tfRes.json();
+      if (Array.isArray(tfData.timeframes) && tfData.timeframes.length) {
+        state.availableTimeframes = tfData.timeframes.slice();
+      }
+    }
+  } catch (err) {
+    console.warn('[orderflow] /timeframes fetch failed; using TIMEFRAMES default:', err.message);
+  }
+  // If the user requested a timeframe that isn't actually in the DB,
+  // fall back to the default (1m) so the dashboard doesn't render an
+  // empty chart.
+  if (!state.availableTimeframes.includes(state.activeTimeframe)) {
+    state.activeTimeframe = state.availableTimeframes[0] || DEFAULT_TIMEFRAME;
+  }
+
   let metas = [];
   try {
     const res = await fetch(`${apiBase}/sessions`);
@@ -342,22 +399,31 @@ async function bootstrapFromApi(apiBase) {
     state.replay.dataDriven = false;
     return;
   }
-  await _loadAllSessionsFromApi(apiBase, metas);
+  await _loadAllSessionsFromApi(apiBase, metas, state.activeTimeframe);
+  _syncTimeframeSelectorUI();
 }
 
-async function _loadAllSessionsFromApi(apiBase, metas) {
+async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
+  // Phase 5: fetch each session's bars at the active timeframe. The same
+  // /bars endpoint is used for every timeframe; the server filters by
+  // `WHERE timeframe = ?`. Sessions that produce zero bars at this
+  // timeframe (e.g. a degenerate 1h on a holiday-shortened day) are
+  // skipped — startIdx/endIdx only covers sessions with actual rows so
+  // the cursor's bar-by-index navigation never points at a phantom day.
+  const tf = timeframe || DEFAULT_TIMEFRAME;
   const datas = await Promise.all(metas.map(async (meta) => {
-    const url = `${apiBase}/bars?session_date=${encodeURIComponent(meta.session_date)}`;
+    const url = `${apiBase}/bars?timeframe=${encodeURIComponent(tf)}`
+      + `&session_date=${encodeURIComponent(meta.session_date)}`;
     try {
       const r = await fetch(url);
       if (!r.ok) {
-        console.warn('Failed to load API session bars', meta.session_date, r.status);
+        console.warn('Failed to load API session bars', meta.session_date, tf, r.status);
         return null;
       }
       const j = await r.json();
       return { meta, data: j };
     } catch (err) {
-      console.warn('Failed to load API session bars', meta.session_date, err.message);
+      console.warn('Failed to load API session bars', meta.session_date, tf, err.message);
       return null;
     }
   }));
@@ -403,6 +469,10 @@ async function _loadAllSessionsFromApi(apiBase, metas) {
       // thresholds JSON mode used in synthetic-tuning days; Phase 5+ can
       // round-trip tunings through the DB if we need per-session drift.
       tunings: SYNTH_TUNINGS,
+      // Phase 5: per-timeframe bar count dict from /sessions, used by
+      // the status banner so it can render counts at any timeframe
+      // without re-querying. Optional — older API versions omit it.
+      barCounts: meta.bar_counts || null,
     });
   }
 
@@ -425,15 +495,176 @@ async function _loadAllSessionsFromApi(apiBase, metas) {
   populateSessionList();
   const sel = document.getElementById('sessionSelect');
   if (sel) sel.value = state.replay.current.file;
-  const badge = document.getElementById('modeBadge');
-  if (badge) {
-    badge.textContent = `Real · ES · API · v2 regime`;
-    badge.style.background = 'rgba(33, 160, 149, 0.18)';
-  }
+  _renderModeBadge();
   _renderModeSubtitle();
 
   seek(0);
   precomputeAllFires();
+}
+
+// Phase 5: switch the active timeframe in API mode.
+//
+// 1. Snapshot the cursor's bar_time so we can snap the new-timeframe
+//    cursor to the bar that contains it.
+// 2. Adjust the matrix-occupancy range: switching to '1h' auto-bumps
+//    to "All loaded" (saving the prior selection); switching back to
+//    1m / 15m restores the saved selection.
+// 3. Re-fetch every loaded session's bars at the new timeframe and
+//    rebuild the concatenated allBars array + per-session indices.
+// 4. Snap the cursor: find the bar in the new timeframe whose
+//    [bar_time, bar_time + bin_ms) window contains the snapshot
+//    instant; fall back to the nearest by absolute time.
+// 5. Clear the brushing selection (cells are tied to timeframe-
+//    specific ranks; carrying them over would point at the wrong bars
+//    in the new context). Clear profile + occupancy fetch caches —
+//    cache keys ARE timeframe-aware so this is belt-and-suspenders to
+//    keep memory bounded after multiple toggles.
+// 6. precomputeAllEvents + precomputeAllFires + repaint chrome.
+async function setActiveTimeframe(tf) {
+  if (state.replay.mode !== 'real' || !state.replay.apiBase) return;
+  if (!TIMEFRAMES.includes(tf)) return;
+  if (tf === state.activeTimeframe) return;
+
+  // Snapshot prior cursor's bar_time for cursor-snap. If the cursor is
+  // at 0 we don't have a "previous" bar; treat it as "stay at session
+  // start" by snapping to bar 0 in the new timeframe. Otherwise read
+  // the bar just behind the cursor (the most recently committed bar).
+  let prevBarTimeMs = null;
+  if (state.replay.cursor > 0 && state.replay.allBars.length) {
+    const prevBar = state.replay.allBars[Math.min(state.replay.cursor - 1, state.replay.allBars.length - 1)];
+    prevBarTimeMs = prevBar?.time instanceof Date ? prevBar.time.getTime() : null;
+  }
+
+  const prevTf = state.activeTimeframe;
+  _adjustMatrixRangeForTfSwitch(prevTf, tf);
+
+  state.activeTimeframe = tf;
+
+  // Drop in-flight selection + caches. Cells reference per-tf ranks
+  // and would highlight the wrong bars after the switch.
+  state.selection = { kind: null, cells: [], barTimes: null, fireBarTime: null, fireWindowEndMs: null };
+  clearProfileCache();
+  clearOccupancyCache();
+
+  // Reload bars at the new timeframe. Reuses the existing /sessions
+  // metadata array so we don't need a second /sessions round trip.
+  const apiBase = state.replay.apiBase;
+  const metas = state.replay.sessions.map(s => ({
+    session_date: s.date,
+    session_start: s.sessionStart,
+    session_end: s.sessionEnd,
+    bar_counts: s.barCounts || null,
+  }));
+  await _loadAllSessionsFromApi(apiBase, metas, tf);
+
+  // Cursor snap: find the bar at the new timeframe whose
+  // [bar_time, bar_time + bin_ms) window contains the prior cursor's
+  // instant. seek(idx + 1) keeps the prior bar visible at the right
+  // edge — same convention seekStep / jumpToNextFire use.
+  let newCursor = 0;
+  if (prevBarTimeMs !== null && state.replay.allBars.length) {
+    newCursor = _snapCursorToTimeframe(prevBarTimeMs, tf);
+  }
+  seek(newCursor);
+
+  // _loadAllSessionsFromApi has already painted the badge / subtitle
+  // for the post-load state. Re-call here defensively so a future
+  // refactor of the bootstrap path can't desync the chrome from the
+  // active timeframe.
+  _renderModeBadge();
+  _renderModeSubtitle();
+  _syncTimeframeSelectorUI();
+}
+
+function _snapCursorToTimeframe(prevBarTimeMs, tf) {
+  // Find the bar whose [bar_time, bar_time + bin_ms) covers the prior
+  // instant. Bars are sorted by time so a binary search lands the
+  // right candidate; if the candidate's window doesn't actually cover
+  // the instant (edge case at session boundaries — partial last bar
+  // dropped at 1h, or a bar gap between sessions), fall back to the
+  // nearest absolute time.
+  const bars = state.replay.allBars;
+  const binMs = BIN_MS_BY_TF[tf] || BIN_MS_BY_TF[DEFAULT_TIMEFRAME];
+
+  let lo = 0, hi = bars.length - 1, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = bars[mid].time.getTime();
+    if (t <= prevBarTimeMs) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  // best = last bar with bar_time <= prevBarTimeMs. Confirm it covers
+  // prevBarTimeMs; if not, snap to the nearest absolute-time bar.
+  const candidate = bars[best];
+  if (candidate) {
+    const startMs = candidate.time.getTime();
+    if (prevBarTimeMs >= startMs && prevBarTimeMs < startMs + binMs) {
+      return best + 1;          // seek(idx+1): land just after the bar
+    }
+    // Nearest neighbor lookup
+    const a = bars[best];
+    const b = bars[best + 1];
+    if (a && b) {
+      const da = Math.abs(prevBarTimeMs - a.time.getTime());
+      const db = Math.abs(prevBarTimeMs - b.time.getTime());
+      return (db < da ? best + 2 : best + 1);
+    }
+    return best + 1;
+  }
+  return 0;
+}
+
+function _adjustMatrixRangeForTfSwitch(prevTf, newTf) {
+  // Phase 5 heatmap auto-bump: switching to '1h' saves the prior range
+  // and forces 'all'; switching back to 1m / 15m restores. 15m never
+  // auto-bumps — the user's selection is preserved across the
+  // 1m ↔ 15m boundary. The saved-range slot is shared because there's
+  // only ever one "before-1h" snapshot at a time.
+  if (newTf === '1h' && prevTf !== '1h') {
+    state.savedMatrixRangeBeforeTf1h = JSON.parse(JSON.stringify(state.matrixState.range));
+    state.matrixState.range = { kind: 'all', n: null, from: null, to: null, label: 'All loaded' };
+    return;
+  }
+  if (newTf !== '1h' && prevTf === '1h') {
+    if (state.savedMatrixRangeBeforeTf1h) {
+      state.matrixState.range = state.savedMatrixRangeBeforeTf1h;
+      state.savedMatrixRangeBeforeTf1h = null;
+    } else {
+      // Saved range was never set (e.g. user reloaded into 1h). Default
+      // 1m / 15m to 'session' so the matrix has a sensible starting
+      // window after a leave-1h.
+      state.matrixState.range = { kind: 'session', n: null, from: null, to: null, label: 'Current session' };
+    }
+  }
+}
+
+function _syncTimeframeSelectorUI() {
+  // Toggle .active and aria-selected on the segmented control. Buttons
+  // for timeframes the DB doesn't have data for are dimmed via
+  // disabled (the UI builds them all up-front and only enables what
+  // /timeframes confirms).
+  const sel = document.getElementById('timeframeSelect');
+  if (!sel) return;
+  const available = new Set(state.availableTimeframes || TIMEFRAMES);
+  sel.querySelectorAll('.tf-btn').forEach(btn => {
+    const tf = btn.dataset.tf;
+    const isActive = tf === state.activeTimeframe;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    btn.disabled = !available.has(tf);
+  });
+}
+
+function _renderModeBadge() {
+  const badge = document.getElementById('modeBadge');
+  if (!badge) return;
+  const tfLabel = (state.activeTimeframe || DEFAULT_TIMEFRAME).toUpperCase();
+  badge.textContent = `Real · ES · API · v2 regime · ${tfLabel}`;
+  badge.style.background = 'rgba(33, 160, 149, 0.18)';
 }
 
 function populateSessionList() {
@@ -466,8 +697,9 @@ function _renderModeSubtitle() {
     ? `${first.date}`
     : `${first.date} → ${last.date}`;
   const sessText = state.replay.sessions.length === 1 ? 'session' : 'sessions';
+  const tfLabel = state.activeTimeframe || '1m';
   document.getElementById('modeSubtitle').textContent =
-    `${first.contract || ''} · ${state.replay.sessions.length} ${sessText} · ${span} · ${state.replay.allBars.length} bars · scrub or stream to replay`;
+    `${first.contract || ''} · ${tfLabel} · ${state.replay.sessions.length} ${sessText} · ${span} · ${state.replay.allBars.length} bars · scrub or stream to replay`;
 }
 
-export { sessionForBar, _syncCurrentSession, _resetReplayAccumulators, _resetForSessionBoundary, _commitRealBar, seek, seekStep, _renderReplayChrome, onScrubberInput, onScrubberCommit, precomputeAllFires, precomputeAllEvents, jumpToNextFire, bootstrapReplay, bootstrapFromApi, populateSessionList, onSessionChange, _renderModeSubtitle };
+export { sessionForBar, _syncCurrentSession, _resetReplayAccumulators, _resetForSessionBoundary, _commitRealBar, seek, seekStep, _renderReplayChrome, onScrubberInput, onScrubberCommit, precomputeAllFires, precomputeAllEvents, jumpToNextFire, bootstrapReplay, bootstrapFromApi, populateSessionList, onSessionChange, _renderModeSubtitle, setActiveTimeframe, _syncTimeframeSelectorUI, _renderModeBadge };

@@ -155,7 +155,7 @@ function handleWatchFire(watchId, canonical, watchState, cellDef) {
     const toggleId = watchId === 'fade' ? 'fadeAutoPauseToggle' : 'autoPauseToggle';
     const toggle = document.getElementById(toggleId);
     // If the modal is closed, the toggle isn't in the DOM. Use the cached preference
-    // (defaults to true). When the modal is open, sync the cached preference.
+    // (defaults to false). When the modal is open, sync the cached preference.
     if (toggle) state.autoPausePrefs[watchId] = toggle.checked;
     const autoPauseEnabled = state.autoPausePrefs[watchId];
     if (autoPauseEnabled && state.interval) {

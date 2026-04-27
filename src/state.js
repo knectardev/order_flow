@@ -10,7 +10,7 @@
 // constants live in `./config/constants.js`. DOM canvas refs are owned by
 // the modules that draw to them (they're acquired once, never reassigned).
 // ───────────────────────────────────────────────────────────
-import { MATRIX_ROWS, MATRIX_COLS, BASE_TICK_MS, SYNTH_TUNINGS } from './config/constants.js';
+import { MATRIX_ROWS, MATRIX_COLS, BASE_TICK_MS, DEFAULT_TIMEFRAME, SYNTH_TUNINGS, SYNTH_TUNINGS_BY_TF, TIMEFRAMES, getSynthTunings } from './config/constants.js';
 
 export const state = {
   // Bars + events on the rolling window
@@ -34,15 +34,31 @@ export const state = {
   },
 
   // Auto-pause preferences — persist outside modal lifecycle since toggles only exist when modal is open
-  autoPausePrefs: { breakout: true, fade: true },
+  autoPausePrefs: { breakout: false, fade: false },
 
-  // Scenario forcer — drives demo buttons.
-  // scenarioLockBars pins state to scenarioLockCell for that many bars.
-  scenarioLockBars: 0,
-  scenarioLockCell: null,       // BREAKOUT_CELL or FADE_CELL or null
-  primeNextSweep: false,        // next bar guaranteed to produce a sweep (breakout demo)
-  primedDisplacement: 0,        // remaining bars of forced directional drift (fade demo)
-  primedDirection: 0,           // -1 or +1 for forced drift
+  // Scenario forcer — drives demo buttons (synthetic mode only).
+  //
+  // Phase 5: per-timeframe scenario buckets so a forced breakout at 15m
+  // does not bleed into 1m state and vice versa. In synthetic mode the
+  // dashboard is always single-timeframe so only the '1m' bucket is
+  // ever written to today, but the structure is in place for future
+  // multi-timeframe synthetic / mixed scenarios.
+  //
+  // Each bucket's fields:
+  //   scenarioLockBars   - pin state to scenarioLockCell for N bars
+  //   scenarioLockCell   - BREAKOUT_CELL or FADE_CELL or null
+  //   primeNextSweep     - next bar guaranteed to produce a sweep (breakout demo)
+  //   primedDisplacement - remaining bars of forced directional drift (fade demo)
+  //   primedDirection    - -1 or +1 for forced drift
+  scenarioByTf: Object.fromEntries(
+    TIMEFRAMES.map(tf => [tf, {
+      scenarioLockBars: 0,
+      scenarioLockCell: null,
+      primeNextSweep: false,
+      primedDisplacement: 0,
+      primedDirection: 0,
+    }])
+  ),
 
   // Synthetic-mode walk state
   sim: {
@@ -167,17 +183,47 @@ export const state = {
   seekInProgress: false,  // suppresses fire-banner pause during seek/precompute
 
   interval: null,         // setInterval handle for the streaming tick
-  speedMultiplier: 1,     // 1×..8× tick-speed multiplier from the speed slider
+  speedMultiplier: 5.5,   // 1×..8× tick-speed multiplier from the speed slider
 
   lastFiredWatch: null,   // 'breakout' | 'fade' | null — used by Details button
   currentModal: null,     // 'breakout' | 'fade' | 'sweep' | 'absorption' | 'stoprun' | 'divergence' | null
 
   isPanningChart: false,  // chart is currently being click-dragged horizontally
+
+  // Phase 5 multi-timeframe context. Drives the segmented control in
+  // the header, every API request URL, and the per-timeframe selection
+  // of regime ranks / events / fires the dashboard renders. Default
+  // '1m' preserves existing behavior on first paint and on full reload.
+  // The selector is populated from /timeframes (API mode) or falls back
+  // to TIMEFRAMES (synthetic).
+  activeTimeframe: DEFAULT_TIMEFRAME,
+  availableTimeframes: TIMEFRAMES.slice(),
+  // Saved matrix-range selection from the timeframe the user was on
+  // before switching to '1h'. Used to restore the selection when they
+  // switch back to 1m/15m. null ⇒ no saved selection (first paint).
+  savedMatrixRangeBeforeTf1h: null,
 };
 
-// Effective tunings: real-session overrides default synthetic.
+// Effective tunings: real-session overrides default synthetic, scoped
+// to the active timeframe. The replay session's `.tunings` block is
+// 1m-shaped (legacy JSON), so for higher timeframes we always read
+// from SYNTH_TUNINGS_BY_TF (which currently holds copies of 1m values
+// — per-timeframe calibration is a follow-up).
 export function getTunings() {
-  return state.replay.tunings || SYNTH_TUNINGS;
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  if (tf === '1m') {
+    return state.replay.tunings || getSynthTunings('1m');
+  }
+  return getSynthTunings(tf);
+}
+
+// Active timeframe's scenario bucket. Synthetic engine + force-* demo
+// buttons read/write through here so per-timeframe state stays
+// independent. In synthetic mode the dashboard is always 1m so the
+// helper effectively returns the '1m' bucket every call.
+export function getScenario() {
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  return state.scenarioByTf[tf] || state.scenarioByTf[DEFAULT_TIMEFRAME];
 }
 
 // Streaming tick interval, scaled by the speed slider.
