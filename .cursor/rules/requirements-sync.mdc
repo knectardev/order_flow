@@ -1,0 +1,31 @@
+---
+description: Keep requirements.md synchronized with behavior changes
+alwaysApply: true
+---
+
+# Requirements Sync Rule
+
+When a change modifies implemented behavior, data contracts, user-visible workflows, API endpoints, pipeline outputs, schema semantics, or non-regression constraints, update `requirements.md` in the same task.
+
+## Must-Do Checks Before Finishing
+
+- Compare the current task's code changes with `requirements.md`.
+- Add or revise requirements sections for any newly implemented behavior.
+- Remove or correct stale statements that no longer match implementation.
+- Keep wording implementation-accurate (describe what exists now, not plans).
+
+## Scope Hints
+
+Treat these as strong signals that `requirements.md` likely needs edits:
+
+- Changes in `src/main.js`, `src/state.js`, `src/data/replay.js`, `src/ui/*`, `src/render/*`
+- Changes in `api/main.py` or endpoint/query behavior
+- Changes in `pipeline/src/orderflow_pipeline/*` affecting outputs, schema, or contracts
+- Changes to mode semantics (`synthetic` vs `api`) or timeframe behavior
+
+## Completion Gate
+
+Do not mark work complete until one of these is true:
+
+1. `requirements.md` was updated to match the change, or
+2. You explicitly state why no requirements change is needed.

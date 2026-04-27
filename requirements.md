@@ -9,7 +9,7 @@
 The dashboard is a market microstructure visualization and hypothesis tool with two operating modes:
 
 - **Synthetic mode:** local simulation, no backend required.
-- **API replay mode (`?source=api`):** real ES session playback backed by FastAPI + DuckDB.
+- **API replay mode (`?source=api`):** real ES session playback backed by FastAPI + DuckDB with multi-timeframe support (`1m`, `15m`, `1h`).
 
 Design intent remains unchanged:
 
@@ -32,13 +32,17 @@ Design intent remains unchanged:
 ### 2.2 Data Pipeline and API
 
 - Pipeline: `pipeline/src/orderflow_pipeline/*` computes bars, events, fires, regime ranks (`v_rank`, `d_rank`), and DB writes.
+  - Aggregation contract supports `1m` / `15m` / `1h` bins.
+  - DuckDB schema keys rows by `(bar_time, timeframe)` and keeps per-timeframe isolation for bars/events/fires/profile rows.
 - API: `api/main.py` exposes read-only endpoints:
+  - `/timeframes`
   - `/sessions`
   - `/bars`
   - `/events`
   - `/fires`
   - `/profile`
   - `/occupancy`
+- API endpoints that return market rows are timeframe-aware (`timeframe` query parameter, default `1m`), and must not mix contexts across timeframes.
 - Storage: DuckDB (`data/orderflow.duckdb` by default).
 
 ### 2.3 Mode Loading
@@ -56,6 +60,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Stream data:** `bars`, `formingBar`, `events`, `canonicalFires`, `trail`, `matrixScores`.
 - **Watch state:** `breakoutWatch`, `fadeWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
 - **Replay state:** `replay.mode`, session metadata, full loaded bars/events/fires, cursor, data source flags.
+- **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
 - **Viewport state:** `chartViewEnd` for panned history vs live edge.
 - **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds).
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
@@ -166,11 +171,22 @@ Event log (`src/render/eventLog.js`) must:
 When sessions are loaded (real mode), show replay row with:
 
 - Session selector.
+- Timeframe selector (`1m` / `15m` / `1h`) with disabled states for unavailable DB timeframes.
 - Step backward / forward buttons.
 - Scrubber slider.
 - Time readout.
 
 Seeking must keep matrix/charts/log in sync and maintain deterministic selection behavior.
+
+### 9.1 Timeframe Switching Contract
+
+Timeframe changes in API mode must:
+
+- Reload bars for all loaded sessions at the selected timeframe.
+- Preserve user context by snapping cursor to the equivalent bar-time window in the new timeframe.
+- Clear timeframe-specific brush selections and invalidate profile/occupancy caches.
+- Auto-adjust matrix heatmap range when entering/leaving `1h` (switch to `All loaded` on enter, restore prior range on exit).
+- Keep replay chrome labels (mode badge/subtitle, counts/readout) synchronized with the active timeframe.
 
 ---
 
@@ -198,6 +214,9 @@ Fallback behavior:
 6. Keep brush-and-link consistency across matrix, chart, and event log.
 7. Keep event log interleaving and clickable fire-row selection.
 8. Keep `/profile` as primary profile source in API mode with safe fallback path.
+9. Preserve multi-timeframe parity across pipeline, DB, API, and replay UI (`1m` / `15m` / `1h`).
+10. Keep timeframe isolation strict (queries and writes always scoped by `timeframe`).
+11. Keep timeframe-switch UX deterministic (cursor snap, range handoff, cache/selection reset).
 
 ---
 
@@ -208,6 +227,7 @@ Fallback behavior:
 - App bootstrapping and wiring: `src/main.js`
 - Runtime state contract: `src/state.js`
 - Replay and seek behavior: `src/data/replay.js`
+- Timeframe controls and mode chrome wiring: `src/main.js`, `src/ui/controls.js`, `src/data/replay.js`
 - Matrix rendering and occupancy integration: `src/render/matrix.js`, `src/ui/matrixRange.js`, `src/data/occupancyApi.js`
 - Price chart and profile integration: `src/render/priceChart.js`, `src/data/profileApi.js`
 - Event log and interactions: `src/render/eventLog.js`, `src/ui/selection.js`
