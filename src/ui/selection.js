@@ -29,8 +29,10 @@
 //     the active cells
 // ───────────────────────────────────────────────────────────
 import { state } from '../state.js';
+import { _syncCurrentSession } from '../data/replay.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { renderEventLog } from '../render/eventLog.js';
+import { _refreshMatrixForView } from './pan.js';
 import { repaintMatrix } from './matrixRange.js';
 
 // Length of the fire-anchored highlight window, expressed as a count of
@@ -123,7 +125,20 @@ function selectFire(fire) {
     fireBarTime: fireMs,
     fireWindowEndMs: lastMs,
   };
+
+  // So the 31-bar highlight and ◆/★ glyph are actually on-canvas. Without
+  // this, a random pan leaves every visible bar outside `barTimes` (all
+  // dim) and the marker off-screen.
+  if (state.replay.mode === 'real' && all.length) {
+    const endExclusive = Math.max(1, Math.min(last + 1, all.length));
+    state.chartViewEnd = endExclusive;
+    _syncCurrentSession();
+  }
+
   _repaint();
+  if (state.replay.mode === 'real' && all.length) {
+    _refreshMatrixForView();
+  }
 }
 
 function clearSelection() {

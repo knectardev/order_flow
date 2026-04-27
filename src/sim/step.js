@@ -1,7 +1,7 @@
 import { BREAKOUT_CELL, FADE_CELL, FORMING_STEPS, MAX_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
-import { detectEvents, detectStopRun } from '../analytics/events.js';
+import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldownBars, isCanonicalFireRepeatTooSoon } from '../analytics/events.js';
 import { computeMatrixScores } from '../analytics/regime.js';
 import { _commitRealBar, _renderReplayChrome, _syncCurrentSession } from '../data/replay.js';
 import { renderEventLog } from '../render/eventLog.js';
@@ -51,8 +51,8 @@ function step() {
   const fadeCanonical     = evaluateFadeCanonical();
 
   if (state.replay.mode !== 'real') {
-    handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL);
-    handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL);
+    handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, null);
+    handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, null);
   }
 
   // Render
@@ -97,7 +97,10 @@ function _stepSynthetic() {
     if (state.bars.length > MAX_BARS) state.bars.shift();
     const newEvs = detectEvents(state.formingBar, state.bars.slice(0, -1),
                                   { biasH1: state.formingBar.biasH1 ?? null });
-    for (const ev of newEvs) state.events.push(ev);
+    const { eventCooldownBars } = getSignalCooldownBars();
+    const deduped = filterNewEventsCooldown(
+      newEvs, state.events, state.bars, eventCooldownBars, null);
+    for (const ev of deduped) state.events.push(ev);
     detectStopRun();
     if (state.events.length > 80) state.events = state.events.slice(-80);
     state.formingBar = null;
@@ -137,26 +140,37 @@ function _stepReal() {
   }
 }
 
-function handleWatchFire(watchId, canonical, watchState, cellDef) {
+function handleWatchFire(watchId, canonical, watchState, cellDef, sessionStartIdx = null) {
   if (canonical.fired && !watchState.firedThisCycle) {
     watchState.firedThisCycle = true;
     const lastBar = state.bars[state.bars.length - 1];
     if (lastBar) {
-      // Phase 6: every fire — including SUPPRESSED — gets recorded so
-      // the event log can display them under `state.showSuppressed=true`.
-      // What SUPPRESSED *does* skip is the user-visible banner + auto-
-      // pause logic below; the dashboard renderers (event log, watch
-      // panel) read the persisted tag to apply gradient tints, glyphs,
-      // and "filtered by HTF" indicators.
-      state.canonicalFires.push({
-        watchId,
-        barTime: lastBar.time,
-        direction: canonical.direction,
-        price: lastBar.close,
-        tag:        canonical.tag        || null,
-        alignment:  canonical.alignment  || null,
-      });
-      if (state.canonicalFires.length > 20) state.canonicalFires.shift();
+      const { fireCooldownBars } = getSignalCooldownBars();
+      const skipNearDup = isCanonicalFireRepeatTooSoon(
+        watchId, canonical.direction, lastBar.time,
+        state.canonicalFires, state.bars, fireCooldownBars, sessionStartIdx);
+      if (!skipNearDup) {
+        // Phase 6: every fire — including SUPPRESSED — gets recorded so
+        // the event log can display them under `state.showSuppressed=true`.
+        // What SUPPRESSED *does* skip is the user-visible banner + auto-
+        // pause logic below; the dashboard renderers (event log, watch
+        // panel) read the persisted tag to apply gradient tints, glyphs,
+        // and "filtered by HTF" indicators.
+        state.canonicalFires.push({
+          watchId,
+          barTime: lastBar.time,
+          direction: canonical.direction,
+          price: lastBar.close,
+          tag:        canonical.tag        || null,
+          alignment:  canonical.alignment  || null,
+          // Persist the gate results at fire time so the watch modal can show
+          // the same breakdown as when the user opens it from a chart marker.
+          checks:  { ...canonical.checks },
+          passing: canonical.passing,
+          total:   canonical.total,
+        });
+        if (state.canonicalFires.length > 20) state.canonicalFires.shift();
+      }
     }
     // SUPPRESSED never triggers banner / auto-pause — the whole point of
     // hard-mode is to silently filter; the row is still in the log for

@@ -37,7 +37,11 @@ function dismissFire() {
 }
 
 function openFireDetails() {
-  if (state.lastFiredWatch) openModal(state.lastFiredWatch);
+  const w = state.lastFiredWatch;
+  if (!w) return;
+  const forWatch = state.canonicalFires.filter(f => f.watchId === w);
+  const last = forWatch.length ? forWatch[forWatch.length - 1] : null;
+  openModal(w, last ? { fire: last } : undefined);
 }
 
 export { pauseForFire, dismissFire, openFireDetails };

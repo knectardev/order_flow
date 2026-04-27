@@ -64,8 +64,8 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Watch state:** `breakoutWatch`, `fadeWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
 - **Replay state:** `replay.mode`, session metadata, full loaded bars/events/fires, cursor, data source flags.
 - **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
-- **Viewport state:** `chartViewEnd` for panned history vs live edge.
-- **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds).
+- **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). Chart halos for ★/◆ merge `allFires` and `canonicalFires` and match `bar` times by epoch ms so a Date/string mismatch does not drop markers. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
+- **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds). A fire selection from the event log or chart (`selectFire`) also sets `chartViewEnd` so the fire bar and the 31-bar window sit in the current viewport, runs `_syncCurrentSession` and `_refreshMatrixForView` (so the panned path isn’t “all dim, marker off-screen”), and the price chart adds a teal focus ring on the active ◆/★.
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
 - **Bias filter state:** `biasFilterMode` (`'soft'` | `'hard'` | `'off'`, default `'soft'`) and `showSuppressed` (`boolean`, default `false`). Bootstrapped from `?biasFilter=` and `?showSuppressed=` URL params (Phase 6 — see §13).
@@ -113,6 +113,19 @@ Fade watch now evaluates **six** criteria. The five technical gates plus an HTF-
 Breakout watch likewise evaluates **five** criteria: `cell`, `sweep`, `flow`, `clean`, plus the same `alignment` gate.
 
 All watch diagnostics and flip tracking must remain persistent across modal open/close cycles.
+
+### 5.1a Canonical fire log rows (chart & event log)
+
+Each row pushed to `state.canonicalFires` (and the full pre-scan `state.replay.allFires` in real mode) must include, in addition to `watchId`, `barTime`, `direction`, `price`, and optional `tag` / `alignment`:
+
+- `checks` — shallow copy of the watch’s `canonical.checks` at commit time
+- `passing` and `total` — same as the evaluator’s `passing` / `total` at that bar
+
+**Watch modal (★ / ◆) behavior**
+
+- **Glossary (no fire context):** the modal uses live `evaluateBreakoutCanonical()` / `evaluateFadeCanonical()` for the current bar.
+- **Shift+click a chart fire halo** (or **Details** on the post-fire banner after a pause): if the log row has `checks`, the modal shows that **frozen** gate list and a short “snapshot” note; the flip-tick / `lastCanonical` path is skipped for that one paint so live tracking is not clobbered. Rows recorded before this contract (no `checks`) show the same note and fall back to live evaluation.
+- **Plain click on a chart fire** still only brushes the bar window; the chart tooltip hint documents Shift+click vs. click.
 
 ### 5.2 Force Controls in Real Mode
 
@@ -177,7 +190,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 
 `src/render/priceChart.js` must support:
 
-- Candles + event markers + fire halos. Fire halos render the watch-type
+- Candles + event markers + fire halos. When a **sweep** and **divergence** both fire on the same bar and the same side (e.g. both at the low), their glyphs are vertically separated: the sweep triangle stays farther from the candle body and the divergence warning is offset toward the body so the two do not overlap. Standalone sweeps/divergences keep their prior single-event offsets. Fire halos render the watch-type
   glyph above the bar high (★ for breakout, ◆ for fade). The fade diamond
   is drawn first at its tuned position (centered on the bar, alphabetic
   baseline, 11px), then a smaller (9px) directional arrow (`↑` / `↓`)
@@ -199,6 +212,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
   - `1h`: one self-strip showing the active timeframe's own bias.
 
   Ribbon hit regions emit `kind === 'bias'` hover hits consumed by the chart tooltip.
+- **Repeat cooldown (chart signals):** After `detectEvents` produces candidates for a settled bar, `filterNewEventsCooldown` in `src/analytics/events.js` drops primitives that match the same signature `(type, dir)` as a recently kept event when the bar index gap in the current `bars` slice is smaller than `eventCooldownBars` (default **4** from `SYNTH_TUNINGS` / per-session replay tunings). For `1m` replay, cooldown does not reach backward across a session start when comparing against prior events (session `startIdx` gate). `precomputeAllEvents()` applies the same rule to `replay.allEvents` using `allBars[0..i]` indices. Canonical chart halos (★ / ◆): `handleWatchFire` skips appending when `isCanonicalFireRepeatTooSoon` finds the same `(watchId, direction)` within `fireCooldownBars` (default equals `eventCooldownBars` unless tunings set `fireCooldownBars` separately). Suppressed near-duplicates are omitted from `state.canonicalFires` / `replay.allFires` (no banner row for that edge).
 
 ### 7.2 Interaction
 
@@ -292,6 +306,7 @@ Fallback behavior:
     3. **Off-range fallback**: any rejected price falls through to the existing off-range arrow indicator in `_drawRefLine` (POC/VAH/VAL pinned to top/bottom edge with a price label and ↑/↓ marker).
 
     Rejected carry-overs fall through to the deterministic OHLC proxy (`computeProfile(profileBars)`) which is computed fresh from the current bars and is by construction candle-aligned. Higher timeframes (`15m`, `1h`) keep their candle-only Y-fit (`fitProfileToRange === false`).
+20. **Signal repeat cooldown** must remain wired end-to-end: `eventCooldownBars` / `fireCooldownBars` in effective tunings (`getTunings()`), `filterNewEventsCooldown` on `state.events` at synthetic + replay commit, the same helper in `precomputeAllEvents`, and `isCanonicalFireRepeatTooSoon` inside `handleWatchFire` (see §7.1).
 
 ---
 

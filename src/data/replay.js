@@ -1,7 +1,7 @@
 import { BREAKOUT_CELL, DEFAULT_TIMEFRAME, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUNINGS, TIMEFRAMES, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
-import { detectEvents, detectStopRun } from '../analytics/events.js';
+import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldownBars } from '../analytics/events.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { clearOccupancyCache } from './occupancyApi.js';
 import { clearProfileCache } from './profileApi.js';
@@ -135,7 +135,11 @@ function _commitRealBar(idx) {
   // Synthetic / warmup bars without a stamped parent fall back to ×1.0.
   const newEvs = detectEvents(realBar, state.bars.slice(0, -1),
                                 { biasH1: realBar.biasH1 ?? null });
-  for (const ev of newEvs) state.events.push(ev);
+  const { eventCooldownBars } = getSignalCooldownBars();
+  const sessionStartIdx = sess ? sess.startIdx : null;
+  const deduped = filterNewEventsCooldown(
+    newEvs, state.events, state.bars, eventCooldownBars, sessionStartIdx);
+  for (const ev of deduped) state.events.push(ev);
   detectStopRun();
   if (state.events.length > 80) state.events = state.events.slice(-80);
 
@@ -150,8 +154,8 @@ function _commitRealBar(idx) {
 
   const breakoutCanonical = evaluateBreakoutCanonical();
   const fadeCanonical = evaluateFadeCanonical();
-  handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL);
-  handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL);
+  handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, sessionStartIdx);
+  handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, sessionStartIdx);
   return { breakoutCanonical, fadeCanonical };
 }
 
@@ -239,9 +243,14 @@ function precomputeAllFires() {
     return;
   }
   const savedCursor = state.replay.cursor;
+  // `seek()` always clears `chartViewEnd` (re-couples the chart to the live
+  // stream). The caller may be panned; restore so we don't yank the viewport.
+  const savedViewEnd = state.chartViewEnd;
   seek(state.replay.allBars.length);
   state.replay.allFires = state.canonicalFires.slice();
   seek(savedCursor);
+  state.chartViewEnd = savedViewEnd;
+  if (savedViewEnd !== null) _syncCurrentSession();
 }
 
 function precomputeAllEvents() {
@@ -267,20 +276,25 @@ function precomputeAllEvents() {
         const avgRange= recent.reduce((s,b)=>s+(b.high-b.low),0)/recent.length;
         const range = newBar.high - newBar.low;
 
+        const batch = [];
         if (newBar.high > recentHigh && newBar.volume > avgVol * t.sweepVolMult) {
-          all.push({ type: 'sweep', dir: 'up', price: newBar.high, time: newBar.time });
+          batch.push({ type: 'sweep', dir: 'up', price: newBar.high, time: newBar.time });
         } else if (newBar.low < recentLow && newBar.volume > avgVol * t.sweepVolMult) {
-          all.push({ type: 'sweep', dir: 'down', price: newBar.low, time: newBar.time });
+          batch.push({ type: 'sweep', dir: 'down', price: newBar.low, time: newBar.time });
         }
         if (newBar.volume > avgVol * t.absorbVolMult && range < avgRange * t.absorbRangeMult) {
-          all.push({ type: 'absorption', price: newBar.close, time: newBar.time });
+          batch.push({ type: 'absorption', price: newBar.close, time: newBar.time });
         }
         const cumD = recent.slice(-8).reduce((s,b)=>s+b.delta, 0) + newBar.delta;
         if (newBar.high > recentHigh && cumD < -avgVol * t.divergenceFlowMult) {
-          all.push({ type: 'divergence', dir: 'up', price: newBar.high, time: newBar.time });
+          batch.push({ type: 'divergence', dir: 'up', price: newBar.high, time: newBar.time });
         } else if (newBar.low < recentLow && cumD > avgVol * t.divergenceFlowMult) {
-          all.push({ type: 'divergence', dir: 'down', price: newBar.low, time: newBar.time });
+          batch.push({ type: 'divergence', dir: 'down', price: newBar.low, time: newBar.time });
         }
+        const cd = t.eventCooldownBars ?? SYNTH_TUNINGS.eventCooldownBars ?? 4;
+        const barsUpToI = state.replay.allBars.slice(0, i + 1);
+        const toAdd = filterNewEventsCooldown(batch, all, barsUpToI, cd, sess.startIdx);
+        for (const ev of toAdd) all.push(ev);
       }
       // Stop-run review: sweep + reverse on consecutive state.bars. Skip if the
       // sweep bar lives in a different session (i.e. last bar of Day N → first

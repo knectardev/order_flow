@@ -1331,6 +1331,17 @@
   .variant-breakout .modal-meta-num { color: var(--warn); }
   .variant-fade     .modal-meta-num { color: var(--absorb); }
 
+  .watch-snapshot-hint {
+    font-size: 10.5px;
+    color: var(--muted-2);
+    line-height: 1.5;
+    margin: 0 0 12px 0;
+    padding: 8px 10px;
+    background: rgba(138, 146, 166, 0.06);
+    border-radius: 3px;
+    border: 1px solid var(--border-2);
+  }
+
   /* Glossary items become clickable */
   .glossary-list li {
     cursor: pointer;

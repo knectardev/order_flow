@@ -79,7 +79,7 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
       `<span class="tt-meta">${meta}</span>` +
     `</div>` +
     `<div class="tt-desc">${info.desc}</div>` +
-    `<div class="tt-hint">click marker for full breakdown</div>`;
+    `<div class="tt-hint">Shift+click for at-fire criteria · click to select bar range</div>`;
 
   // Position: prefer right-of-cursor; flip if it would clip the chart.
   const wrap = priceCanvas.parentElement.getBoundingClientRect();
@@ -158,7 +158,9 @@ priceCanvas.addEventListener('click', (e) => {
     // a fire-halo brush were Esc / event-log ✕ / clicking outside the
     // halo, none of which are obvious from the chart alone.
     if (e.shiftKey) {
-      openModal(hit.payload.watchId);
+      // Pass the log row so the watch modal can show the gate snapshot
+      // from the fire bar, not the current live bar.
+      openModal(hit.payload.watchId, { fire: hit.payload });
       return;
     }
     const sel = state.selection;

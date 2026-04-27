@@ -58,6 +58,13 @@ const _BASE_TUNINGS_1M = {
   absorbRangeMult:     0.55,
   divergenceFlowMult:  0.6,
   largePrintThreshold: 50,
+  /** Minimum settled bars between two chart events with the same (type, dir) signature. */
+  eventCooldownBars: 4,
+  /**
+   * Minimum bars between canonical fires with the same watch + trade direction.
+   * When omitted, `eventCooldownBars` is used.
+   */
+  fireCooldownBars:    4,
 };
 
 export const SYNTH_TUNINGS_BY_TF = {

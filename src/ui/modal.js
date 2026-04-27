@@ -65,7 +65,13 @@ const EVENT_INFO = {
   },
 };
 
-function openModal(modalId) {
+/**
+ * @param {string} modalId
+ * @param {{ fire?: { watchId: string, checks?: object, barTime: *, passing?: number, total?: number } }} [openOpts]
+ *        When opening from a chart fire marker, pass the fire log row so the
+ *        checklist can use the criteria snapshot at fire time.
+ */
+function openModal(modalId, openOpts) {
   const cfg = MODAL_CONFIG[modalId];
   if (!cfg) return;
   state.currentModal = modalId;
@@ -75,10 +81,28 @@ function openModal(modalId) {
   panel.className = 'modal-panel variant-' + cfg.variant;
   document.getElementById('modalGlyph').textContent = cfg.glyph;
   document.getElementById('modalName').textContent = cfg.name;
-  document.getElementById('modalMeta').innerHTML = '';
+  const headMeta = document.getElementById('modalMeta');
+  if (modalId === 'breakout' || modalId === 'fade') {
+    const total = modalId === 'breakout' ? 5 : 6;
+    headMeta.innerHTML = `<span class="modal-meta-num" id="modalMetaNum">0</span> / ${total}`;
+  } else {
+    headMeta.innerHTML = '';
+  }
 
   const body = document.getElementById('modalBody');
   body.innerHTML = cfg.build();
+
+  const fire = openOpts && openOpts.fire ? openOpts.fire : null;
+  if (fire && (modalId === 'breakout' || modalId === 'fade')) {
+    const hint = document.createElement('div');
+    hint.className = 'watch-snapshot-hint';
+    if (fire.checks) {
+      hint.textContent = 'Gates below are the snapshot from when this entry fired; they do not follow the current bar.';
+    } else {
+      hint.textContent = 'This log entry has no stored gate snapshot; values below are live state.';
+    }
+    body.insertBefore(hint, body.firstChild);
+  }
 
   // Wire force-scenario buttons that were emitted into the modal body. We use
   // data-force=breakout|fade rather than inline onclick= so this works under
@@ -92,9 +116,42 @@ function openModal(modalId) {
 
   overlay.classList.add('visible');
 
-  // For canonical watch modals, immediately update with current state
-  if (modalId === 'breakout') renderBreakoutWatch(evaluateBreakoutCanonical());
-  if (modalId === 'fade')     renderFadeWatch(evaluateFadeCanonical());
+  const fromFireSnapshot = !!(fire && fire.checks);
+  if (modalId === 'breakout') {
+    let c;
+    if (fire && fire.watchId === 'breakout' && fire.checks) {
+      c = {
+        checks: { ...fire.checks },
+        passing: fire.passing,
+        total: fire.total,
+        fired: fire.passing === fire.total,
+        direction: fire.direction,
+        alignment: fire.alignment,
+        tag: fire.tag,
+      };
+    } else {
+      c = evaluateBreakoutCanonical();
+    }
+    renderBreakoutWatch(c, { fromFireSnapshot });
+  }
+  if (modalId === 'fade') {
+    let c;
+    if (fire && fire.watchId === 'fade' && fire.checks) {
+      c = {
+        checks: { ...fire.checks },
+        passing: fire.passing,
+        total: fire.total,
+        fired: true,
+        direction: fire.direction,
+        stretchDir: null,
+        alignment: fire.alignment,
+        tag: fire.tag,
+      };
+    } else {
+      c = evaluateFadeCanonical();
+    }
+    renderFadeWatch(c, { fromFireSnapshot });
+  }
 }
 
 function closeModal() {
@@ -107,12 +164,7 @@ function onOverlayClick(e) {
 }
 
 function buildBreakoutModalBody() {
-  // Append match counter to modal meta
-  setTimeout(() => {
-    const meta = document.getElementById('modalMeta');
-    if (meta) meta.innerHTML = '<span class="modal-meta-num" id="modalMetaNum">0</span> / 5';
-  }, 0);
-
+  // Match counter `modalMetaNum` is set by `renderBreakoutWatch` in `openModal`.
   return `
     <div class="watch-summary">
       <strong>Watching for:</strong> sweep into thin book with cumulative-Δ confirmation. Predicts directional travel toward next structural level (opposite VAH/VAL, prior session extreme) within ~15 bars after entry.
@@ -142,11 +194,7 @@ function buildBreakoutModalBody() {
 }
 
 function buildFadeModalBody() {
-  setTimeout(() => {
-    const meta = document.getElementById('modalMeta');
-    if (meta) meta.innerHTML = '<span class="modal-meta-num" id="modalMetaNum">0</span> / 6';
-  }, 0);
-
+  // Match counter `modalMetaNum` is set by `renderFadeWatch` in `openModal`.
   return `
     <div class="watch-summary">
       <strong>Watching for:</strong> price stretched ≥1σ from POC for 3+ bars, confirmed by anchored VWAP, with no fresh momentum in stretch direction. Predicts drift back toward POC within ~25-40 bars (slower, longer horizon than breakout).

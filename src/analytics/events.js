@@ -1,4 +1,77 @@
+import { SYNTH_TUNINGS } from '../config/constants.js';
 import { getTunings, state } from '../state.js';
+
+/** Stable key for "similar" primitive events (cooldown groups sweeps by direction, etc.). */
+function eventSignature(ev) {
+  return `${ev.type}|${ev.dir ?? ''}`;
+}
+
+function _barIndexForTime(bars, time) {
+  return bars.findIndex(b => b.time === time);
+}
+
+/**
+ * Drop primitive events that repeat the same signature within `cooldownBars` of the
+ * most recent kept event still present in `bars`. When `sessionStartIdx` is set
+ * (per-session replay scan), prior events from an earlier session are ignored so
+ * cooldown does not span the day boundary.
+ */
+function filterNewEventsCooldown(newEvs, existingEvents, bars, cooldownBars, sessionStartIdx = null) {
+  if (!newEvs.length || cooldownBars <= 0) return newEvs.slice();
+  const pool = existingEvents.slice();
+  const out = [];
+  for (const ev of newEvs) {
+    const idx = _barIndexForTime(bars, ev.time);
+    if (idx < 0) {
+      out.push(ev);
+      pool.push(ev);
+      continue;
+    }
+    const sig = eventSignature(ev);
+    let tooSoon = false;
+    for (let i = pool.length - 1; i >= 0; i--) {
+      const prev = pool[i];
+      if (eventSignature(prev) !== sig) continue;
+      const pidx = _barIndexForTime(bars, prev.time);
+      if (pidx < 0) break;
+      if (sessionStartIdx != null && pidx < sessionStartIdx) break;
+      if (idx >= pidx && idx - pidx < cooldownBars) tooSoon = true;
+      break;
+    }
+    if (tooSoon) continue;
+    out.push(ev);
+    pool.push(ev);
+  }
+  return out;
+}
+
+/**
+ * True when a new canonical fire should be skipped as a near-duplicate of the last
+ * same-watch, same-direction fire still visible in `bars`.
+ */
+function isCanonicalFireRepeatTooSoon(watchId, direction, barTime, existingFires, bars, cooldownBars, sessionStartIdx = null) {
+  if (cooldownBars <= 0 || direction == null) return false;
+  const idx = _barIndexForTime(bars, barTime);
+  if (idx < 0) return false;
+  for (let i = existingFires.length - 1; i >= 0; i--) {
+    const f = existingFires[i];
+    if (f.watchId !== watchId || f.direction !== direction) continue;
+    const pidx = _barIndexForTime(bars, f.barTime);
+    if (pidx < 0) break;
+    if (sessionStartIdx != null && pidx < sessionStartIdx) break;
+    if (idx > pidx && idx - pidx < cooldownBars) return true;
+    break;
+  }
+  return false;
+}
+
+/** Effective cooldown bar counts from session/synth tunings (JSON may omit new keys). */
+function getSignalCooldownBars() {
+  const t = getTunings();
+  const evCd = t.eventCooldownBars ?? SYNTH_TUNINGS.eventCooldownBars ?? 4;
+  const fireCd = t.fireCooldownBars ?? t.eventCooldownBars ?? SYNTH_TUNINGS.fireCooldownBars ?? evCd;
+  return { eventCooldownBars: evCd, fireCooldownBars: fireCd };
+}
 
 // Phase 6 follow-up: bias-adaptive detection multipliers.
 //
@@ -101,4 +174,11 @@ function detectStopRun() {
   }
 }
 
-export { detectEvents, detectStopRun, _biasScale };
+export {
+  detectEvents,
+  detectStopRun,
+  _biasScale,
+  filterNewEventsCooldown,
+  isCanonicalFireRepeatTooSoon,
+  getSignalCooldownBars,
+};

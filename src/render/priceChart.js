@@ -20,6 +20,25 @@ function _isoZ(t) {
   return (t instanceof Date) ? t.toISOString() : new Date(t).toISOString();
 }
 
+function _barTimeMs(t) {
+  if (t == null) return NaN;
+  return t instanceof Date ? t.getTime() : +new Date(t);
+}
+
+/** Merged list for draw: panned = full scan (if any) + live ring buffer; live = ring only. */
+function _chartFireListForDraw(isPanned) {
+  if (state.replay.mode !== 'real') return state.canonicalFires;
+  if (!isPanned) return state.canonicalFires;
+  const m = new Map();
+  for (const f of state.replay.allFires) {
+    m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
+  }
+  for (const f of state.canonicalFires) {
+    m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
+  }
+  return [...m.values()];
+}
+
 // Anti-flicker carry-over for the right-side volume profile sidebar.
 // During streaming, every `FORMING_STEPS`-th frame settles a new bar
 // which shifts `state.bars` forward → both endpoints of the (from, to)
@@ -103,6 +122,44 @@ function _resetFoldHysteresis(pid) {
 function _profileIdentity(p) {
   if (!p) return null;
   return `${p.priceLo}|${p.binStep}|${p.bins?.length ?? 0}`;
+}
+
+/** Bar-time + direction keys where both a sweep and a divergence fire (same side). */
+function _coSweepDivergePairKeySet(viewedEvents) {
+  const byT = new Map();
+  for (const ev of viewedEvents) {
+    const t = ev.time instanceof Date ? ev.time.getTime() : Date.parse(String(ev.time));
+    if (!byT.has(t)) byT.set(t, { sweep: new Set(), div: new Set() });
+    const b = byT.get(t);
+    if (ev.type === 'sweep' && (ev.dir === 'up' || ev.dir === 'down')) b.sweep.add(ev.dir);
+    if (ev.type === 'divergence' && (ev.dir === 'up' || ev.dir === 'down')) b.div.add(ev.dir);
+  }
+  const out = new Set();
+  for (const [t, b] of byT) {
+    for (const dir of b.sweep) {
+      if (b.div.has(dir)) out.add(`${t}|${dir}`);
+    }
+  }
+  return out;
+}
+
+/** Pixel Y offset for event glyphs; when `coPair` is true, sweep and divergence on the same wick are separated. */
+function _eventMarkerYOffset(ev, fontSize, coPair) {
+  if (ev.type === 'sweep') {
+    if (coPair) {
+      return ev.dir === 'up' ? -fontSize * 0.9 : fontSize * 0.9;
+    }
+    return ev.dir === 'up' ? -fontSize * 0.7 : fontSize * 0.7;
+  }
+  if (ev.type === 'absorption') return 0;
+  if (ev.type === 'stoprun') return 0;
+  if (ev.type === 'divergence') {
+    if (coPair) {
+      return ev.dir === 'up' ? -fontSize * 0.2 : fontSize * 0.2;
+    }
+    return ev.dir === 'up' ? -fontSize * 0.5 : fontSize * 0.5;
+  }
+  return 0;
 }
 
 function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
@@ -313,20 +370,33 @@ function drawPriceChart() {
     }
   }
 
-  // Anchored VWAP — computed up front (same reason as profile: we want to
-  // fold its visible price range into the chart's y-axis so the dashed
-  // yellow line can't fall off-screen).
-  // Live edge: compute from the rolling `state.bars` window.
-  // Panned (real): compute on the entire concatenated timeline up through
-  //                the right edge so the cumulative VWAP is correct, then
-  //                render only the slice visible in the current viewport.
+  // Anchored VWAP — same cumulative basis for live and panned in real mode:
+  // build from allBars[0..cursor) (full day/session anchor semantics), then
+  // take only the visible window. A narrow rolling-window build at the live
+  // edge made the line look artificially straight vs the panned view.
+  // Synthetic: keep rolling `state.bars` only.
   let vwapDisplay = null;
   const vwapAnchors = getVwapAnchors();
-  if (isPanned) {
-    const fullSlice = state.replay.allBars.slice(0, panViewStart + viewedBars.length);
+  if (state.replay.mode === 'real' && state.replay.allBars.length >= 2 && state.replay.cursor > 0) {
+    const fullSlice = state.replay.allBars.slice(0, state.replay.cursor);
     if (fullSlice.length >= 2) {
       const fullVwap = computeAnchoredVWAP(fullSlice, vwapAnchors);
-      vwapDisplay = fullVwap.slice(panViewStart);
+      if (isPanned) {
+        const n = viewedBars.length;
+        const hi = panViewStart + n;
+        if (n > 0 && fullVwap.length > panViewStart) {
+          vwapDisplay = fullVwap.slice(panViewStart, Math.min(hi, fullVwap.length));
+        }
+      } else if (state.bars.length) {
+        const n = state.bars.length;
+        const start = Math.max(0, state.replay.cursor - n);
+        let slice = fullVwap.slice(start, Math.min(start + n, fullVwap.length));
+        if (state.formingBar && slice.length) {
+          const last = slice[slice.length - 1];
+          slice = [...slice, { time: state.formingBar.time, vwap: last.vwap, segmentStart: false }];
+        }
+        vwapDisplay = slice;
+      }
     }
   } else if (state.bars.length >= 2) {
     vwapDisplay = computeAnchoredVWAP(state.bars, vwapAnchors);
@@ -678,13 +748,13 @@ function drawPriceChart() {
                   Math.min(lastX + 4, PAD.l + chartW - 80), lastY + 3);
   }
 
-  // Canonical fire halos — drawn underneath event markers so the SWEEP/etc.
-  // glyph sits on top. When panned (real mode), use the full session's fire
-  // log (state.replay.allFires) so historic fires remain visible; when live, use the
-  // online `state.canonicalFires` ring buffer (capped at 20).
-  const fireSource = isPanned && state.replay.allFires.length ? state.replay.allFires : state.canonicalFires;
+  // Canonical fire halos — merge `allFires` (full-timeline pre-scan) with the
+  // online ring buffer so streaming fires after the scan still show when panned.
+  // `Date` vs string `time` is normalized with _barTimeMs for matching.
+  const fireSource = _chartFireListForDraw(isPanned);
   for (const fire of fireSource) {
-    const barIdx = viewedBars.findIndex(b => b.time === fire.barTime);
+    const ft = _barTimeMs(fire.barTime);
+    const barIdx = viewedBars.findIndex(b => _barTimeMs(b.time) === ft);
     if (barIdx < 0) continue;
     const xCenter = PAD.l + (barIdx + 0.5) * slotW;
     const bar = viewedBars[barIdx];
@@ -693,6 +763,8 @@ function drawPriceChart() {
 
     // Color by watch type. Breakout = amber (warn). Fade = blue (absorb).
     const isFade = fire.watchId === 'fade';
+    const isSel = state.selection.kind === 'fire' && state.selection.fireBarTime
+      && ft === state.selection.fireBarTime;
     const ringMain = isFade ? 'rgba(107, 140, 206, 0.55)' : 'rgba(212, 160, 74, 0.55)';
     const ringDim  = isFade ? 'rgba(107, 140, 206, 0.22)' : 'rgba(212, 160, 74, 0.22)';
     const glyphCol = isFade ? 'rgba(107, 140, 206, 0.95)' : 'rgba(212, 160, 74, 0.95)';
@@ -710,6 +782,16 @@ function drawPriceChart() {
     pctx.beginPath();
     pctx.arc(xCenter, yMid, haloR * 1.45, 0, Math.PI * 2);
     pctx.stroke();
+    // Brushed target from the event log / chart: extra focus ring
+    if (isSel) {
+      pctx.strokeStyle = 'rgba(33, 160, 149, 0.85)';
+      pctx.lineWidth = 2;
+      pctx.setLineDash([2, 2]);
+      pctx.beginPath();
+      pctx.arc(xCenter, yMid, Math.max(14, haloR * 1.65), 0, Math.PI * 2);
+      pctx.stroke();
+      pctx.setLineDash([]);
+    }
     // Glyph above bar — exactly as it was pre-Phase-6 follow-up. Critical
     // not to change xCenter / y / textAlign / textBaseline here, because
     // the diamond's halo + the chart's per-bar slot geometry are tuned
@@ -747,14 +829,19 @@ function drawPriceChart() {
   }
 
   // Event markers (sparse, only on settled state.bars)
+  const coSweepDiv = _coSweepDivergePairKeySet(viewedEvents);
   for (const ev of viewedEvents) {
     const barIdx = viewedBars.findIndex(b => b.time === ev.time);
     if (barIdx < 0) continue;
     const xCenter = PAD.l + (barIdx + 0.5) * slotW;
     const yEv = yScale(ev.price);
-    drawEventMarker(pctx, ev, xCenter, yEv, slotW);
+    const fontSize = Math.max(9, Math.min(slotW * 0.95, 14));
+    const t = ev.time instanceof Date ? ev.time.getTime() : Date.parse(String(ev.time));
+    const coPair = (ev.type === 'sweep' || ev.type === 'divergence') && coSweepDiv.has(`${t}|${ev.dir}`);
+    const yOff = _eventMarkerYOffset(ev, fontSize, coPair);
+    drawEventMarker(pctx, ev, xCenter, yEv, slotW, coPair);
     state.chartHits.push({
-      x: xCenter, y: yEv, r: Math.max(slotW * 0.7, 8),
+      x: xCenter, y: yEv + yOff, r: Math.max(slotW * 0.7, 8),
       kind: 'event', payload: ev,
     });
   }
@@ -898,7 +985,7 @@ function drawPriceChart() {
   _refreshTooltipFromLastMouse();
 }
 
-function drawEventMarker(ctx, ev, x, y, slotW) {
+function drawEventMarker(ctx, ev, x, y, slotW, coSweepDivergePair = false) {
   // Render as text glyphs using the same Unicode characters as the Event Glossary,
   // so chart icons and legend icons are visually identical (no path-vs-glyph drift).
   const fontSize = Math.max(9, Math.min(slotW * 0.95, 14));
@@ -907,11 +994,10 @@ function drawEventMarker(ctx, ev, x, y, slotW) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  let glyph, color, yOffset = 0;
+  let glyph, color;
   if (ev.type === 'sweep') {
     color = '#b07ac9';
     glyph = ev.dir === 'up' ? '▲' : '▼';
-    yOffset = ev.dir === 'up' ? -fontSize * 0.7 : fontSize * 0.7;
   } else if (ev.type === 'absorption') {
     color = '#6b8cce';
     glyph = '◉';
@@ -921,10 +1007,10 @@ function drawEventMarker(ctx, ev, x, y, slotW) {
   } else if (ev.type === 'divergence') {
     color = '#d4a04a';
     glyph = '⚠';
-    yOffset = ev.dir === 'up' ? -fontSize * 0.5 : fontSize * 0.5;
   }
 
   if (glyph) {
+    const yOffset = _eventMarkerYOffset(ev, fontSize, coSweepDivergePair);
     ctx.fillStyle = color;
     ctx.fillText(glyph, x, y + yOffset);
   }

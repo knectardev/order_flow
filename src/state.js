@@ -19,7 +19,7 @@ export const state = {
   events: [],          // {type, dir, time, price, barIndex}
   trail: [],           // [{r, c}, ...] last TRAIL_LEN cells the regime visited
   matrixScores: Array.from({ length: MATRIX_ROWS }, () => Array(MATRIX_COLS).fill(0)),
-  canonicalFires: [],  // {watchId, barTime, direction, price}
+  canonicalFires: [],  // {watchId, barTime, direction, price, tag?, alignment?, checks?, passing?, total?}
 
   // Per-watch state. Each watch tracks its own fire-edge, last evaluation, and flip ticks.
   breakoutWatch: {

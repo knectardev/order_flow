@@ -1,24 +1,28 @@
 import { BREAKOUT_LABELS, FADE_LABELS } from '../config/constants.js';
 import { state } from '../state.js';
 
-function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical) {
-  // Always track TRUE→FALSE flips per criterion regardless of modal visibility,
-  // so the diagnostic stays accurate when the modal is reopened.
-  if (watchState.lastCanonical) {
-    for (const key of criterionKeys) {
-      if (watchState.lastCanonical.checks[key] && !canonical.checks[key]) {
-        watchState.flipTicks[key] = state.sim.tick;
+function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical, renderOpts = null) {
+  const skipWatchMutation = !!(renderOpts && renderOpts.fromFireSnapshot);
+  if (!skipWatchMutation) {
+    // Always track TRUE→FALSE flips per criterion regardless of modal visibility,
+    // so the diagnostic stays accurate when the modal is reopened.
+    if (watchState.lastCanonical) {
+      for (const key of criterionKeys) {
+        if (watchState.lastCanonical.checks[key] && !canonical.checks[key]) {
+          watchState.flipTicks[key] = state.sim.tick;
+        }
       }
     }
+    watchState.lastCanonical = { checks: { ...canonical.checks } };
   }
-  watchState.lastCanonical = { checks: { ...canonical.checks } };
 
   // DOM updates only if this watch's modal is currently open.
   if (state.currentModal !== prefix) return;
 
+  // The modal uses `modalMetaNum` in the panel head; a legacy `fadeMatchNum` slot
+  // is optional. Never skip the checklist when the match id is absent.
   const matchEl = document.getElementById(prefix + 'MatchNum');
-  if (!matchEl) return;
-  matchEl.textContent = canonical.passing;
+  if (matchEl) matchEl.textContent = canonical.passing;
 
   const items = document.querySelectorAll('#' + prefix + 'CriteriaList .criterion');
   items.forEach(li => {
@@ -76,14 +80,14 @@ function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical) 
   if (metaNum) metaNum.textContent = canonical.passing;
 }
 
-function renderBreakoutWatch(canonical) {
+function renderBreakoutWatch(canonical, renderOpts) {
   renderWatchPanel('breakout', ['cell','sweep','flow','clean','alignment'],
-                    BREAKOUT_LABELS, state.breakoutWatch, canonical);
+                    BREAKOUT_LABELS, state.breakoutWatch, canonical, renderOpts);
 }
 
-function renderFadeWatch(canonical) {
+function renderFadeWatch(canonical, renderOpts) {
   renderWatchPanel('fade', ['balanced','cell','stretchPOC','stretchVWAP','noMomentum','alignment'],
-                    FADE_LABELS, state.fadeWatch, canonical);
+                    FADE_LABELS, state.fadeWatch, canonical, renderOpts);
 }
 
 export { renderWatchPanel, renderBreakoutWatch, renderFadeWatch };

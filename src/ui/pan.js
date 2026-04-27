@@ -2,7 +2,7 @@ import { MAX_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
-import { _syncCurrentSession } from '../data/replay.js';
+import { _syncCurrentSession, precomputeAllFires } from '../data/replay.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { _hideTooltip } from './tooltip.js';
@@ -33,6 +33,13 @@ function _setViewEnd(idx) {
   // sits in. Sync the dropdown so users see which day they've panned to.
   _syncCurrentSession();
   _syncSessionDropdown();
+  // First time we leave the live edge, build the full-timeline fire list if
+  // it is missing; otherwise the chart would fall back to the online ring
+  // buffer and historical halos on screen would not match the viewport.
+  const panned = state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor;
+  if (panned && !state.replay.allFires.length && state.replay.allBars.length) {
+    precomputeAllFires();
+  }
   drawPriceChart();
   // Keep the regime matrix synced to whatever bar the NOW line points at,
   // so the user can scroll through vol×depth states across the session.
