@@ -1,0 +1,161 @@
+import { BREAKOUT_CELL, FADE_CELL, FORMING_STEPS, MAX_BARS, TRAIL_LEN } from '../config/constants.js';
+import { state } from '../state.js';
+import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { detectEvents, detectStopRun } from '../analytics/events.js';
+import { computeMatrixScores } from '../analytics/regime.js';
+import { _commitRealBar, _renderReplayChrome, _syncCurrentSession } from '../data/replay.js';
+import { renderEventLog } from '../render/eventLog.js';
+import { drawFlowChart } from '../render/flowChart.js';
+import { renderMatrix } from '../render/matrix.js';
+import { drawPriceChart } from '../render/priceChart.js';
+import { renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
+import { evolveSimState, generateBar } from './synthetic.js';
+import { pauseForFire } from '../ui/fireBanner.js';
+import { _refreshMatrixForView } from '../ui/pan.js';
+import { rand } from '../util/math.js';
+
+function step() {
+  state.sim.tick++;
+
+  if (state.replay.mode === 'real') {
+    _stepReal();
+  } else {
+    _stepSynthetic();
+  }
+
+  // Update state.trail and scores (works for both modes — state.sim.volState/depthState
+  // are kept current by either evolveSimState (synth) or deriveRegimeState
+  // (real, applied during _commitRealBar)).
+  state.matrixScores = computeMatrixScores();
+  const r = 4 - state.sim.volState;
+  const c = state.sim.depthState;
+  if (state.trail.length === 0 || state.trail[state.trail.length-1].r !== r || state.trail[state.trail.length-1].c !== c) {
+    state.trail.push({ r, c });
+    if (state.trail.length > TRAIL_LEN) state.trail.shift();
+  }
+
+  // Evaluate both canonical entries. Edge-trigger per watch.
+  // (In real mode, _commitRealBar already evaluated + recorded the fire for
+  // the most recent settled bar, so handleWatchFire here is a no-op for the
+  // already-fired case. We still re-evaluate so the matrix/watch panels
+  // reflect the live state including the unsettled forming bar.)
+  const breakoutCanonical = evaluateBreakoutCanonical();
+  const fadeCanonical     = evaluateFadeCanonical();
+
+  if (state.replay.mode !== 'real') {
+    handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL);
+    handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL);
+  }
+
+  // Render
+  document.getElementById('barCount').textContent =
+    (state.replay.mode === 'real' ? '1m bars · ' : '') +
+    `${state.bars.length} ${state.replay.mode === 'real' ? 'shown' : 'bars'} · last ${state.formingBar ? 'forming' : 'settled'}`;
+  drawPriceChart();
+  drawFlowChart();
+  renderMatrix(breakoutCanonical, fadeCanonical);
+  renderBreakoutWatch(breakoutCanonical);
+  renderFadeWatch(fadeCanonical);
+  renderEventLog();
+  if (state.replay.mode === 'real') _renderReplayChrome();
+  // If the user is panned over history while streaming, override the live
+  // matrix render with the regime at the NOW line so the panel keeps showing
+  // the historical vol×depth state.
+  if (state.replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor) {
+    _refreshMatrixForView();
+  }
+}
+
+function _stepSynthetic() {
+  if (!state.formingBar) {
+    evolveSimState();
+    state.formingBar = generateBar();
+    state.sim.formingProgress = 1;
+  } else {
+    state.sim.formingProgress++;
+    // Slightly perturb forming bar to simulate intra-bar tick movement
+    const wiggle = (Math.random() - 0.5) * 0.4;
+    state.formingBar.close += wiggle;
+    state.formingBar.high = Math.max(state.formingBar.high, state.formingBar.close + Math.random() * 0.2);
+    state.formingBar.low  = Math.min(state.formingBar.low,  state.formingBar.close - Math.random() * 0.2);
+    state.formingBar.volume += Math.round(rand(40, 120));
+    const range = state.formingBar.high - state.formingBar.low || 0.01;
+    const closePos = (state.formingBar.close - state.formingBar.low) / range;
+    state.formingBar.delta = Math.round(state.formingBar.volume * (closePos - 0.5) * 2 * 0.6);
+  }
+
+  if (state.sim.formingProgress >= FORMING_STEPS) {
+    state.bars.push(state.formingBar);
+    if (state.bars.length > MAX_BARS) state.bars.shift();
+    const newEvs = detectEvents(state.formingBar, state.bars.slice(0, -1));
+    for (const ev of newEvs) state.events.push(ev);
+    detectStopRun();
+    if (state.events.length > 80) state.events = state.events.slice(-80);
+    state.formingBar = null;
+    state.sim.formingProgress = 0;
+  }
+}
+
+function _stepReal() {
+  if (!state.formingBar) {
+    if (state.replay.cursor >= state.replay.allBars.length) {
+      // End of state.replay — pause the stream.
+      if (state.interval) {
+        clearInterval(state.interval);
+        state.interval = null;
+        document.getElementById('streamBtn').textContent = 'End of session';
+      }
+      return;
+    }
+    // Copy the next real bar; it's drawn as forming for FORMING_STEPS sub-ticks
+    // before being settled and committed.
+    state.formingBar = { ...state.replay.allBars[state.replay.cursor] };
+    state.sim.formingProgress = 1;
+  } else {
+    state.sim.formingProgress++;
+    // No wiggle: real values are sacred.
+  }
+
+  if (state.sim.formingProgress >= FORMING_STEPS) {
+    // Commit the bar — runs detection/eval/watch-fire identically to seek.
+    _commitRealBar(state.replay.cursor);
+    state.replay.cursor++;
+    state.formingBar = null;
+    state.sim.formingProgress = 0;
+    // Cursor advanced — re-derive state.replay.current so VWAP/POC/badge readouts
+    // track the new right-edge session if we just rolled into a new day.
+    _syncCurrentSession();
+  }
+}
+
+function handleWatchFire(watchId, canonical, watchState, cellDef) {
+  if (canonical.fired && !watchState.firedThisCycle) {
+    watchState.firedThisCycle = true;
+    const lastBar = state.bars[state.bars.length - 1];
+    if (lastBar) {
+      state.canonicalFires.push({
+        watchId,
+        barTime: lastBar.time,
+        direction: canonical.direction,
+        price: lastBar.close,
+      });
+      if (state.canonicalFires.length > 20) state.canonicalFires.shift();
+    }
+    // Suppress pause/banner during seek/precompute — we want to record the
+    // fire but not interrupt the user's scrub.
+    if (state.seekInProgress) return;
+    const toggleId = watchId === 'fade' ? 'fadeAutoPauseToggle' : 'autoPauseToggle';
+    const toggle = document.getElementById(toggleId);
+    // If the modal is closed, the toggle isn't in the DOM. Use the cached preference
+    // (defaults to true). When the modal is open, sync the cached preference.
+    if (toggle) state.autoPausePrefs[watchId] = toggle.checked;
+    const autoPauseEnabled = state.autoPausePrefs[watchId];
+    if (autoPauseEnabled && state.interval) {
+      pauseForFire(watchId, canonical, cellDef);
+    }
+  } else if (!canonical.fired) {
+    watchState.firedThisCycle = false;
+  }
+}
+
+export { step, _stepSynthetic, _stepReal, handleWatchFire };

@@ -19,7 +19,20 @@ for the full design rationale.
 
 ```
 order_flow/
-├── orderflow_dashboard.html   # the dashboard, reads bars/index.json on load
+├── orderflow_dashboard.html   # thin shell: <link> + <script type="module" src="src/main.js">
+├── styles/
+│   └── dashboard.css          # all CSS for the dashboard
+├── src/                       # ES modules (no build step)
+│   ├── main.js                # entry: imports + DOM event wiring + init block
+│   ├── state.js               # shared mutable state singleton (bars, sim, replay, watches, …)
+│   ├── config/
+│   │   └── constants.js       # MAX_BARS, VOL_LABELS, BREAKOUT_CELL, SYNTH_TUNINGS, …
+│   ├── util/                  # rand/clamp/quintileBreaks, canvas helpers
+│   ├── analytics/             # profile, vwap, regime, events, canonical evaluators
+│   ├── sim/                   # synthetic random-walk + step() dispatcher
+│   ├── data/replay.js         # bootstrap + multi-session load + seek/scrub
+│   ├── render/                # priceChart, flowChart, matrix, watch, eventLog
+│   └── ui/                    # modal, fireBanner, tooltip, pan, controls
 ├── data/
 │   ├── raw/                   # gitignored — Databento .dbn.zst downloads
 │   │   ├── GLBX-20260426-6CCNUHXDNK/   # ES.FUT, 2026-04-19 → 2026-04-24 (working)
@@ -31,6 +44,10 @@ order_flow/
 ├── notes.txt
 └── requirements.md            # original dashboard design doc
 ```
+
+The dashboard ships as plain ES modules with no build step — `src/main.js`
+is loaded as a `<script type="module">`, which means it must be served over
+HTTP (not opened via `file://`). See **Quick start** below.
 
 ## Quick start (use existing bars)
 

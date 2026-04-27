@@ -85,6 +85,7 @@ def write_index(
     sessions: list[dict],
     *,
     out_dir: Path,
+    merge_existing: bool = True,
 ) -> Path:
     """Write data/bars/index.json listing all session files in chronological order.
 
@@ -92,15 +93,40 @@ def write_index(
         {"file": "es_2026-04-21_rth.json", "date": "2026-04-21",
          "symbol": "ES", "contract": "ESM6", "session": "rth",
          "barCount": 390, "sessionStart": "...", "sessionEnd": "..."}
+
+    When `merge_existing` is True (default) and an `index.json` already exists at
+    `out_dir`, its entries are merged with the new ones — keyed by (date, session,
+    symbol). New entries from this run replace existing entries with the same
+    key, so re-aggregating a date refreshes its row but does not blow away
+    sessions produced by earlier runs (e.g. a different raw_dir batch).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    sessions_sorted = sorted(sessions, key=lambda s: (s["date"], s.get("session", "")))
+    path = out_dir / "index.json"
+
+    merged: dict[tuple[str, str, str], dict] = {}
+    if merge_existing and path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                prev = json.load(f)
+            for s in prev.get("sessions", []):
+                key = (s.get("date", ""), s.get("session", ""), s.get("symbol", ""))
+                merged[key] = s
+        except (OSError, json.JSONDecodeError):
+            # Corrupt or unreadable index — fall back to a clean rewrite.
+            merged = {}
+
+    for s in sessions:
+        key = (s.get("date", ""), s.get("session", ""), s.get("symbol", ""))
+        merged[key] = s
+
+    sessions_sorted = sorted(
+        merged.values(), key=lambda s: (s["date"], s.get("session", ""))
+    )
 
     payload = {
         "version":  1,
         "sessions": sessions_sorted,
     }
-    path = out_dir / "index.json"
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
         f.write("\n")

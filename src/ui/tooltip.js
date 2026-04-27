@@ -1,0 +1,131 @@
+import { state } from '../state.js';
+import { _continuePan, consumePanMoved } from './pan.js';
+import { openModal } from './modal.js';
+import { priceCanvas } from '../util/dom.js';
+
+const TOOLTIP_INFO = {
+  sweep:      { name: 'Sweep',      glyph: '▲▼', variant: 'sweep',
+                desc: 'New 10-bar extreme + elevated volume. Direction-tagged: ▲ above bar = up-sweep, ▼ below = down-sweep.' },
+  absorption: { name: 'Absorption', glyph: '◉',  variant: 'absorb',
+                desc: 'High volume in a compressed bar — flow met liquidity, liquidity won.' },
+  stoprun:    { name: 'Stop Run',   glyph: '⚡',  variant: 'stop',
+                desc: 'Sweep whose next bar fully reverses past the swept level. Often "last buyers/sellers in".' },
+  divergence: { name: 'Divergence', glyph: '⚠',  variant: 'diverge',
+                desc: 'New price extreme NOT confirmed by cumulative Δ. Flow disagrees with price.' },
+  breakout:   { name: 'Breakout Fire', glyph: '★', variant: 'breakout',
+                desc: 'All 4 criteria met for [Impulsive · Light] entry — predicts directional travel.' },
+  fade:       { name: 'Fade Fire',     glyph: '◆', variant: 'fade',
+                desc: 'All 4 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.' },
+};
+
+function _hitTestChart(x, y) {
+  let best = null, bestD2 = Infinity;
+  for (const hit of state.chartHits) {
+    const dx = x - hit.x, dy = y - hit.y;
+    const d2 = dx*dx + dy*dy;
+    if (d2 <= hit.r * hit.r && d2 < bestD2) {
+      best = hit; bestD2 = d2;
+    }
+  }
+  return best;
+}
+
+function _hideTooltip() {
+  const tt = document.getElementById('chartTooltip');
+  if (tt) {
+    tt.classList.remove('visible');
+    tt.setAttribute('aria-hidden', 'true');
+  }
+  priceCanvas.style.cursor = state.isPanningChart ? 'grabbing' : 'crosshair';
+}
+
+function _showTooltipForHit(hit, mouseX, mouseY) {
+  const tt = document.getElementById('chartTooltip');
+  if (!tt) return;
+  let info, meta;
+  if (hit.kind === 'event') {
+    info = TOOLTIP_INFO[hit.payload.type];
+    if (!info) return;
+    const dirTag = hit.payload.dir ? ` · ${hit.payload.dir.toUpperCase()}` : '';
+    meta = `@ ${(hit.payload.price ?? 0).toFixed(2)}${dirTag}`;
+  } else if (hit.kind === 'fire') {
+    info = TOOLTIP_INFO[hit.payload.watchId];
+    if (!info) return;
+    const dirTag = hit.payload.direction ? ` · ${hit.payload.direction.toUpperCase()}` : '';
+    meta = `@ ${(hit.payload.price ?? 0).toFixed(2)}${dirTag}`;
+  } else {
+    return;
+  }
+
+  // Reset variant classes, then apply the matching one.
+  tt.className = 'chart-tooltip visible variant-' + info.variant;
+  tt.setAttribute('aria-hidden', 'false');
+  tt.innerHTML =
+    `<div class="tt-head">` +
+      `<span class="tt-glyph">${info.glyph}</span>` +
+      `<span class="tt-name">${info.name}</span>` +
+      `<span class="tt-meta">${meta}</span>` +
+    `</div>` +
+    `<div class="tt-desc">${info.desc}</div>` +
+    `<div class="tt-hint">click marker for full breakdown</div>`;
+
+  // Position: prefer right-of-cursor; flip if it would clip the chart.
+  const wrap = priceCanvas.parentElement.getBoundingClientRect();
+  const ttW = tt.offsetWidth || 220;
+  const ttH = tt.offsetHeight || 60;
+  let left = mouseX + 14;
+  let top  = mouseY + 14;
+  if (left + ttW > wrap.width - 4)  left = mouseX - ttW - 14;
+  if (top + ttH > wrap.height - 4)  top  = mouseY - ttH - 14;
+  if (left < 4) left = 4;
+  if (top < 4)  top  = 4;
+  tt.style.left = left + 'px';
+  tt.style.top  = top  + 'px';
+  tt.style.transform = 'none';
+  priceCanvas.style.cursor = 'pointer';
+}
+
+function _refreshTooltipFromLastMouse() {
+  if (!_lastMouse) return;
+  const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
+  if (hit) _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
+  else     _hideTooltip();
+}
+
+let _lastMouse = null;   // {x, y} CSS-pixel coords inside the canvas
+
+
+
+
+
+priceCanvas.addEventListener('mousemove', (e) => {
+  const rect = priceCanvas.getBoundingClientRect();
+  _lastMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  // If we're actively click-dragging a pan, suppress the tooltip — pan UX wins.
+  if (state.isPanningChart) {
+    _continuePan(e);
+    _hideTooltip();
+    return;
+  }
+  const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
+  if (hit) _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
+  else     _hideTooltip();
+});
+priceCanvas.addEventListener('mouseleave', () => {
+  _lastMouse = null;
+  _hideTooltip();
+});
+priceCanvas.addEventListener('click', (e) => {
+  // Suppress modal-open if this click was the tail of a drag-pan.
+  if (consumePanMoved()) return;
+  const rect = priceCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const hit = _hitTestChart(x, y);
+  if (!hit) return;
+  if (hit.kind === 'event')      openModal(hit.payload.type);
+  else if (hit.kind === 'fire')  openModal(hit.payload.watchId);
+});
+
+// ───────────────────────────────────────────────────────────
+
+export { TOOLTIP_INFO, _hitTestChart, _hideTooltip, _showTooltipForHit, _refreshTooltipFromLastMouse };

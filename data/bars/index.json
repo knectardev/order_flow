@@ -2,6 +2,586 @@
   "version": 1,
   "sessions": [
     {
+      "file": "es_2026-01-26_rth.json",
+      "date": "2026-01-26",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-01-26T14:30:00Z",
+      "sessionEnd": "2026-01-26T21:00:00Z"
+    },
+    {
+      "file": "es_2026-01-27_rth.json",
+      "date": "2026-01-27",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-01-27T14:30:00Z",
+      "sessionEnd": "2026-01-27T21:00:00Z"
+    },
+    {
+      "file": "es_2026-01-28_rth.json",
+      "date": "2026-01-28",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-01-28T14:30:00Z",
+      "sessionEnd": "2026-01-28T21:00:00Z"
+    },
+    {
+      "file": "es_2026-01-29_rth.json",
+      "date": "2026-01-29",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-01-29T14:30:00Z",
+      "sessionEnd": "2026-01-29T21:00:00Z"
+    },
+    {
+      "file": "es_2026-01-30_rth.json",
+      "date": "2026-01-30",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-01-30T14:30:00Z",
+      "sessionEnd": "2026-01-30T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-02_rth.json",
+      "date": "2026-02-02",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-02T14:30:00Z",
+      "sessionEnd": "2026-02-02T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-03_rth.json",
+      "date": "2026-02-03",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-03T14:30:00Z",
+      "sessionEnd": "2026-02-03T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-04_rth.json",
+      "date": "2026-02-04",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-04T14:30:00Z",
+      "sessionEnd": "2026-02-04T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-05_rth.json",
+      "date": "2026-02-05",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-05T14:30:00Z",
+      "sessionEnd": "2026-02-05T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-06_rth.json",
+      "date": "2026-02-06",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-06T14:30:00Z",
+      "sessionEnd": "2026-02-06T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-09_rth.json",
+      "date": "2026-02-09",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-09T14:30:00Z",
+      "sessionEnd": "2026-02-09T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-10_rth.json",
+      "date": "2026-02-10",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-10T14:30:00Z",
+      "sessionEnd": "2026-02-10T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-11_rth.json",
+      "date": "2026-02-11",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-11T14:30:00Z",
+      "sessionEnd": "2026-02-11T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-12_rth.json",
+      "date": "2026-02-12",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-12T14:30:00Z",
+      "sessionEnd": "2026-02-12T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-13_rth.json",
+      "date": "2026-02-13",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-13T14:30:00Z",
+      "sessionEnd": "2026-02-13T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-16_rth.json",
+      "date": "2026-02-16",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 210,
+      "sessionStart": "2026-02-16T14:30:00Z",
+      "sessionEnd": "2026-02-16T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-17_rth.json",
+      "date": "2026-02-17",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-17T14:30:00Z",
+      "sessionEnd": "2026-02-17T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-18_rth.json",
+      "date": "2026-02-18",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-18T14:30:00Z",
+      "sessionEnd": "2026-02-18T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-19_rth.json",
+      "date": "2026-02-19",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-19T14:30:00Z",
+      "sessionEnd": "2026-02-19T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-20_rth.json",
+      "date": "2026-02-20",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-20T14:30:00Z",
+      "sessionEnd": "2026-02-20T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-23_rth.json",
+      "date": "2026-02-23",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-23T14:30:00Z",
+      "sessionEnd": "2026-02-23T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-24_rth.json",
+      "date": "2026-02-24",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-24T14:30:00Z",
+      "sessionEnd": "2026-02-24T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-25_rth.json",
+      "date": "2026-02-25",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-25T14:30:00Z",
+      "sessionEnd": "2026-02-25T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-26_rth.json",
+      "date": "2026-02-26",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-26T14:30:00Z",
+      "sessionEnd": "2026-02-26T21:00:00Z"
+    },
+    {
+      "file": "es_2026-02-27_rth.json",
+      "date": "2026-02-27",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-02-27T14:30:00Z",
+      "sessionEnd": "2026-02-27T21:00:00Z"
+    },
+    {
+      "file": "es_2026-03-02_rth.json",
+      "date": "2026-03-02",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-02T14:30:00Z",
+      "sessionEnd": "2026-03-02T21:00:00Z"
+    },
+    {
+      "file": "es_2026-03-03_rth.json",
+      "date": "2026-03-03",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-03T14:30:00Z",
+      "sessionEnd": "2026-03-03T21:00:00Z"
+    },
+    {
+      "file": "es_2026-03-04_rth.json",
+      "date": "2026-03-04",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-04T14:30:00Z",
+      "sessionEnd": "2026-03-04T21:00:00Z"
+    },
+    {
+      "file": "es_2026-03-05_rth.json",
+      "date": "2026-03-05",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-05T14:30:00Z",
+      "sessionEnd": "2026-03-05T21:00:00Z"
+    },
+    {
+      "file": "es_2026-03-06_rth.json",
+      "date": "2026-03-06",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-06T14:30:00Z",
+      "sessionEnd": "2026-03-06T21:00:00Z"
+    },
+    {
+      "file": "es_2026-03-09_rth.json",
+      "date": "2026-03-09",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-09T13:30:00Z",
+      "sessionEnd": "2026-03-09T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-10_rth.json",
+      "date": "2026-03-10",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-10T13:30:00Z",
+      "sessionEnd": "2026-03-10T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-11_rth.json",
+      "date": "2026-03-11",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-11T13:30:00Z",
+      "sessionEnd": "2026-03-11T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-12_rth.json",
+      "date": "2026-03-12",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-12T13:30:00Z",
+      "sessionEnd": "2026-03-12T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-13_rth.json",
+      "date": "2026-03-13",
+      "symbol": "ES",
+      "contract": "ESH6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-13T13:30:00Z",
+      "sessionEnd": "2026-03-13T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-16_rth.json",
+      "date": "2026-03-16",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-16T13:30:00Z",
+      "sessionEnd": "2026-03-16T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-17_rth.json",
+      "date": "2026-03-17",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-17T13:30:00Z",
+      "sessionEnd": "2026-03-17T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-18_rth.json",
+      "date": "2026-03-18",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-18T13:30:00Z",
+      "sessionEnd": "2026-03-18T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-19_rth.json",
+      "date": "2026-03-19",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-19T13:30:00Z",
+      "sessionEnd": "2026-03-19T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-20_rth.json",
+      "date": "2026-03-20",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-20T13:30:00Z",
+      "sessionEnd": "2026-03-20T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-23_rth.json",
+      "date": "2026-03-23",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-23T13:30:00Z",
+      "sessionEnd": "2026-03-23T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-24_rth.json",
+      "date": "2026-03-24",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-24T13:30:00Z",
+      "sessionEnd": "2026-03-24T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-25_rth.json",
+      "date": "2026-03-25",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-25T13:30:00Z",
+      "sessionEnd": "2026-03-25T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-26_rth.json",
+      "date": "2026-03-26",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-26T13:30:00Z",
+      "sessionEnd": "2026-03-26T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-27_rth.json",
+      "date": "2026-03-27",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-27T13:30:00Z",
+      "sessionEnd": "2026-03-27T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-30_rth.json",
+      "date": "2026-03-30",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-30T13:30:00Z",
+      "sessionEnd": "2026-03-30T20:00:00Z"
+    },
+    {
+      "file": "es_2026-03-31_rth.json",
+      "date": "2026-03-31",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-03-31T13:30:00Z",
+      "sessionEnd": "2026-03-31T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-01_rth.json",
+      "date": "2026-04-01",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-01T13:30:00Z",
+      "sessionEnd": "2026-04-01T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-02_rth.json",
+      "date": "2026-04-02",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-02T13:30:00Z",
+      "sessionEnd": "2026-04-02T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-06_rth.json",
+      "date": "2026-04-06",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-06T13:30:00Z",
+      "sessionEnd": "2026-04-06T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-07_rth.json",
+      "date": "2026-04-07",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-07T13:30:00Z",
+      "sessionEnd": "2026-04-07T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-08_rth.json",
+      "date": "2026-04-08",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-08T13:30:00Z",
+      "sessionEnd": "2026-04-08T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-09_rth.json",
+      "date": "2026-04-09",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-09T13:30:00Z",
+      "sessionEnd": "2026-04-09T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-10_rth.json",
+      "date": "2026-04-10",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-10T13:30:00Z",
+      "sessionEnd": "2026-04-10T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-13_rth.json",
+      "date": "2026-04-13",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-13T13:30:00Z",
+      "sessionEnd": "2026-04-13T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-14_rth.json",
+      "date": "2026-04-14",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-14T13:30:00Z",
+      "sessionEnd": "2026-04-14T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-15_rth.json",
+      "date": "2026-04-15",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-15T13:30:00Z",
+      "sessionEnd": "2026-04-15T20:00:00Z"
+    },
+    {
+      "file": "es_2026-04-16_rth.json",
+      "date": "2026-04-16",
+      "symbol": "ES",
+      "contract": "ESM6",
+      "session": "rth",
+      "barCount": 390,
+      "sessionStart": "2026-04-16T13:30:00Z",
+      "sessionEnd": "2026-04-16T20:00:00Z"
+    },
+    {
       "file": "es_2026-04-20_rth.json",
       "date": "2026-04-20",
       "symbol": "ES",
