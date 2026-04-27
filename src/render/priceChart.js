@@ -30,13 +30,36 @@ function _isoZ(t) {
 // second. Stashing the most-recent resolved API profile and reusing it
 // on miss keeps the sidebar visually stable — the new fetch's onResolve
 // hook still triggers a re-render with the up-to-date data, so
-// staleness is bounded to one bar's worth of data (max).
+// staleness is bounded to one bar's worth of data (max) at steady
+// state.
 //
 // Scoped to the active timeframe so a tf-switch doesn't show stale
 // 1m bins under 1h candles. Cleared by setActiveTimeframe()'s
 // clearProfileCache() call → handled below in the resolve path.
+//
+// Cross-session staleness guard: at 1m the chart's Y-range fits the
+// profile's price extent, so reusing a stale `_lastApiProfile` from a
+// far-away session compresses candles into a thin band at the top/
+// bottom (visible bug: panning then resuming live left the previous
+// session's POC stuck on screen at e.g. 6848 while candles streamed at
+// 6993). `_isApiProfileCompatibleWith()` rejects the carry-over when
+// its price extent doesn't overlap the visible candle range, falling
+// back to the deterministic OHLC proxy until the in-flight fetch lands.
 let _lastApiProfile = null;
 let _lastApiProfileTf = null;
+
+function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
+  if (!apiProfile || !Number.isFinite(candleLo) || !Number.isFinite(candleHi)) return false;
+  const pLo = apiProfile.priceLo;
+  if (!Number.isFinite(pLo)) return false;
+  const pHi = pLo + (apiProfile.bins?.length ?? 0) * (apiProfile.binStep ?? 0);
+  if (!Number.isFinite(pHi) || pHi <= pLo) return false;
+  // Allow up to one candle-range of slack on either side; beyond that
+  // the profile is from a structurally different price level (likely a
+  // different session) and reusing it produces the squish bug.
+  const candleRange = Math.max(candleHi - candleLo, 1.0);
+  return !(pHi < candleLo - candleRange || pLo > candleHi + candleRange);
+}
 
 function _getViewedBars() {
   if (state.replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor) {
@@ -190,7 +213,23 @@ function drawPriceChart() {
         // do NOT reuse stale API profiles — panned navigation should show
         // the exact window/session selection immediately, so we use the
         // deterministic proxy until the matching API window resolves.
-        if (!isPanned && _lastApiProfile && _lastApiProfileTf === activeTf) {
+        //
+        // Compatibility guard: refuse the carry-over when its price
+        // extent doesn't overlap the current candle range. Without this
+        // a stale `_lastApiProfile` (e.g. resolved during a prior pan
+        // session at a different price level) drags the 1m chart's
+        // Y-fit down/up by ~150 points, compressing live candles into a
+        // thin band. The proxy fallback is computed from the current
+        // `profileBars` so its range is always candle-aligned.
+        let candleLo = Infinity, candleHi = -Infinity;
+        for (const b of profileBars) {
+          if (b.low  < candleLo) candleLo = b.low;
+          if (b.high > candleHi) candleHi = b.high;
+        }
+        if (!isPanned
+            && _lastApiProfile
+            && _lastApiProfileTf === activeTf
+            && _isApiProfileCompatibleWith(_lastApiProfile, candleLo, candleHi)) {
           profile = _lastApiProfile;
         } else {
           profile = computeProfile(profileBars);
@@ -247,9 +286,24 @@ function drawPriceChart() {
     profile.bins.length > 0 &&
     profile.binStep > 0
   ) {
+    // Defensive cap: only fold a profile-derived price into the y-fit
+    // when it's within `slack` of the candle range. Anything farther is
+    // treated as off-range and falls through to the existing
+    // _drawRefLine off-range arrow path (POC/VAH/VAL pinned to the
+    // top/bottom edge with a price label). Without this guard, a
+    // mismatched profile (stale carry-over, or a server response that
+    // straddled a session-open gap) would expand the chart's y-axis to
+    // span both the profile and candles, squishing the candles into a
+    // thin band — the original 1m streaming bug.
+    const candleRange = Math.max(hi - lo, 1.0);
+    const slack = candleRange * 1.5;
+    const minOk = lo - slack;
+    const maxOk = hi + slack;
+    const _foldLo = (p) => (Number.isFinite(p) && p >= minOk && p <= maxOk) ? p : Infinity;
+    const _foldHi = (p) => (Number.isFinite(p) && p >= minOk && p <= maxOk) ? p : -Infinity;
     const profileHi = profile.priceLo + profile.bins.length * profile.binStep;
-    lo = Math.min(lo, profile.priceLo, profile.valPrice ?? Infinity, profile.pocPrice ?? Infinity, profile.vahPrice ?? Infinity);
-    hi = Math.max(hi, profileHi, profile.valPrice ?? -Infinity, profile.pocPrice ?? -Infinity, profile.vahPrice ?? -Infinity);
+    lo = Math.min(lo, _foldLo(profile.priceLo), _foldLo(profile.valPrice), _foldLo(profile.pocPrice), _foldLo(profile.vahPrice));
+    hi = Math.max(hi, _foldHi(profileHi),       _foldHi(profile.valPrice), _foldHi(profile.pocPrice), _foldHi(profile.vahPrice));
   }
   const padPrice = (hi - lo) * 0.05 + 0.05;
   lo -= padPrice; hi += padPrice;

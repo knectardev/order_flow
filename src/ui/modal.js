@@ -110,7 +110,7 @@ function buildBreakoutModalBody() {
   // Append match counter to modal meta
   setTimeout(() => {
     const meta = document.getElementById('modalMeta');
-    if (meta) meta.innerHTML = '<span class="modal-meta-num" id="modalMetaNum">0</span> / 4';
+    if (meta) meta.innerHTML = '<span class="modal-meta-num" id="modalMetaNum">0</span> / 5';
   }, 0);
 
   return `
@@ -122,6 +122,7 @@ function buildBreakoutModalBody() {
       <li class="criterion" data-key="sweep"><span class="check">○</span><span class="text">Sweep event in last 3 settled bars</span></li>
       <li class="criterion" data-key="flow"><span class="check">○</span><span class="text">Cumulative Δ over last 5 bars aligned with sweep direction</span></li>
       <li class="criterion" data-key="clean"><span class="check">○</span><span class="text">No contradictory absorption / divergence in last 8 bars</span></li>
+      <li class="criterion" data-key="alignment"><span class="check">○</span><span class="text">1h bias not opposing trade direction</span></li>
     </ul>
     <div class="watch-diagnostic" id="breakoutDiagnostic">
       <span class="diag-label">last to break:</span>
@@ -143,7 +144,7 @@ function buildBreakoutModalBody() {
 function buildFadeModalBody() {
   setTimeout(() => {
     const meta = document.getElementById('modalMeta');
-    if (meta) meta.innerHTML = '<span class="modal-meta-num" id="modalMetaNum">0</span> / 5';
+    if (meta) meta.innerHTML = '<span class="modal-meta-num" id="modalMetaNum">0</span> / 6';
   }, 0);
 
   return `
@@ -156,6 +157,7 @@ function buildFadeModalBody() {
       <li class="criterion" data-key="stretchPOC"><span class="check">○</span><span class="text">Price displaced ≥1σ from POC for 3+ consecutive bars</span></li>
       <li class="criterion" data-key="stretchVWAP"><span class="check">○</span><span class="text">Price also displaced from anchored VWAP in same direction</span></li>
       <li class="criterion" data-key="noMomentum"><span class="check">○</span><span class="text">No sweep events in last 5 bars in stretch direction</span></li>
+      <li class="criterion" data-key="alignment"><span class="check">○</span><span class="text">1h bias not opposing trade direction</span></li>
     </ul>
     <div class="watch-diagnostic" id="fadeDiagnostic">
       <span class="diag-label">last to break:</span>

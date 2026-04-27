@@ -95,7 +95,8 @@ function _stepSynthetic() {
   if (state.sim.formingProgress >= FORMING_STEPS) {
     state.bars.push(state.formingBar);
     if (state.bars.length > MAX_BARS) state.bars.shift();
-    const newEvs = detectEvents(state.formingBar, state.bars.slice(0, -1));
+    const newEvs = detectEvents(state.formingBar, state.bars.slice(0, -1),
+                                  { biasH1: state.formingBar.biasH1 ?? null });
     for (const ev of newEvs) state.events.push(ev);
     detectStopRun();
     if (state.events.length > 80) state.events = state.events.slice(-80);

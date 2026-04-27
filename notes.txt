@@ -1,139 +1,69 @@
- In Wyckoff theory, the "Phase" of the market (Accumulation, Reaccumulation, Distribution, etc.) is established on the higher timeframe (HTF), while the "Spring" or "Upthrust" (the actual entry trigger) is executed on the lower timeframe (LTF).
+You've reached the point where the "Tactical" logic (the 1-minute events) meets the "Structural" logic (the 15m/1h Bias). 
 
-To support this, we need to move from **Independent Contexts** to a **Relational Bias Engine**. 
+In the current code, `events.js` and `canonical.js` are largely **momentum-based** and **context-blind**. They look at the last 8-10 bars to determine if a move is "extreme," but they don't know if that extremity is happening in the direction of an institutional trend or against it.
 
+Here is an analysis of how to refactor these triggers to utilize the new Phase 6 Bias Engine.
 
-***
+### 1. Refactoring `events.js` (The Raw Signals)
+Currently, `detectEvents` uses hard multipliers (like `t.sweepVolMult`). To account for trend bias, you should transition from "Static Thresholds" to "Bias-Adaptive Thresholds."
 
-**Phase 6: Directional Bias & Cross-Timeframe Filtering**.
+* **The "Sweep" Logic:** * *Current:* `newBar.volume > avgVol * t.sweepVolMult`.
+    * *Refactor:* If `parent_1h_bias` is `STRONG_BULLISH`, the threshold for an "Up Sweep" should be **lowered** (it’s easier to sweep higher in a trend), and the threshold for a "Down Sweep" should be **raised** (it takes more effort to sweep against the trend).
+* **The "Divergence" Logic:** * *Current:* Uses `cumD` (cumulative delta) over 8 bars.
+    * *Refactor:* A "Bearish Divergence" (Price up, Delta down) is a much more powerful signal if it occurs when the 1h Bias is `DISTRIBUTION`. If it occurs during `STRONG_BULLISH` markup, it's often just a "rest" before higher prices. 
 
-**Goal:** Implement a Directional Bias engine that uses 1h and 15m Regimes to filter and annotate 1m Events and Canonical Entries.
+**Proposed Code Change in `events.js`:**
+```javascript
+// Add bias-aware multipliers
+const bias = newBar.parent_1h_bias;
+let sweepMult = t.sweepVolMult;
 
-**Architectural Context:**
-The system now has 1m, 15m, and 1h bars/regimes pre-computed in DuckDB. Currently, these are siloed. This phase introduces "Alignment"—the ability for an LTF entry to be aware of HTF structure.
-
-**1. Define the "Bias" Logic (New `bias.py` or equivalent):**
-- Create a `BiasEngine` that classifies the "Trend State" of a higher timeframe bar based on its Regime (v_rank, d_rank).
-- **Bullish Bias:** HTF is in a "Steady/Deep" state (Low-Mid Vol, High Depth) or "Impulsive/Stacked" (Mid-High Vol, High Depth) moving upward.
-- **Bearish Bias:** HTF is in a "Slippage/Void" state (High Vol, Low Depth) moving downward or "Heavy/Absorptive" at a top.
-- **Neutral/Caution:** HTF is "Climactic" (Rank 5,5) or "Ghost Town" (Rank 1,1).
-
-
-
-**2. Cross-Timeframe Data Enrichment:**
-- Modify the `api/bars` and `api/events` endpoints. When fetching 1m data, the API should "look up" the concurrent 1h and 15m regime states.
-- Every 1m bar object should be enriched with `bias_1h` and `bias_15m` strings (e.g., "BULLISH", "BEARISH", "NEUTRAL").
-
-**3. Event Filtering (The "Wyckoff Filter"):**
-- Update the client-side event detection (or canonical entry logic) to support **Bias Filtering**.
-- Example: A 1m "Fade" (Reversal) fire should be downgraded or suppressed if the 1h bias is "Strongly Impulsive" in the opposite direction (don't fade a freight train).
-- Example: A 1m "Breakout" fire is upgraded to "High Conviction" if it aligns with the 1h and 15m bias (Triple Alignment).
-
-**4. UI Updates:**
-- Add a "Bias Ribbon" to the top of the price chart. This ribbon shows the 1h and 15m bias state as a color-coded strip (Green for Bullish, Red for Bearish, Grey for Neutral).
-- This allows the user to see the "Context" without switching timeframes.
-- Update the **Event Log**: Add a column or icon for "Alignment." A 1m event that matches the 1h bias gets a specific visual badge (e.g., a triple arrow ⇶).
-
-
-
-**5. Implementation Plan Required:**
-- Describe the DuckDB SQL join strategy to efficiently map 1m bars to their parent 1h/15m bars.
-- Define the specific (v_rank, d_rank) coordinates that constitute "Bullish" vs "Bearish" bias for the 1h timeframe.
-- Explain how the "Alignment" score is calculated for a 1m entry.
-
-**Verification:**
-- Pick a known trend day. Confirm that the 1h Bias Ribbon remains Green while the 1m chart shows various rotations. 
-- Confirm that 1m "Short" entries are filtered out or flagged as "Low Probability" during a strong 1h Bullish bias.
-
-***
-
-### Why this is the "Next Level"
-By implementing this, you are coding the **"Composite Operator"** logic from Wyckoff. You are no longer just looking at a 1-minute "Breakout" in a vacuum; you are asking: *"Is the 1-hour 'Big Money' actually supporting this move with depth, or is this a 1-minute liquidity trap?"*
-
-**A Note on Wyckoff "Springs":** In your 1m chart, a "Spring" often looks like an **Absorption Reversal** (High Vol, High Depth at a low). This prompt ensures that the system only tells you to buy that Spring if the 15m/1h context suggests the market is in an "Accumulation" or "Markup" phase.
-
-***
-
-## Phase 6 — Implementation Status & Verification Notes
-_(2026-04-27 — implementation completed against the VWAP-Anchor model.)_
-
-### What landed
-
-Pipeline (`pipeline/src/orderflow_pipeline/`):
-- `aggregate.py` — `Bar.vwap` field; running session VWAP stamped via `_stamp_session_vwap` using typical-price `(h+l+c)/3 * volume / Σvolume`. Empty bars carry forward.
-- `bias.py` (new) — `BIAS_LEVELS` (7-level alphabet), `VWAP_BAND_TICKS_BY_TF` (1m=4t, 15m=8t, 1h=16t), `vwap_position(close, vwap, band_ticks)`, `classify_bias(v_rank, d_rank, vwap_pos)`, `compute_bias_column(df, tf)`. Priority: warmup → inside-band → Wyckoff anomalies (5,5 bolder-read; 5,1 distribution; 4,1 / 4,4 strong) → depth-leads-location → mild default.
-- `db.py` — additive schema: `bars.vwap DOUBLE`, `bars.bias_state VARCHAR`, `bars.parent_1h_bias VARCHAR`, `bars.parent_15m_bias VARCHAR`; `idx_bars_tf_bartime` on `(timeframe, bar_time)` for the half-open join. Uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` so existing Phase 5 DBs upgrade in place.
-- `cli.py` — `TIMEFRAMES = ("1h", "15m", "1m")` so HTF rows land first; `_stamp_parent_bias` runs `UPDATE` per `(ltf → htf)` using the half-open predicate `LTF.bar_time >= HTF.bar_time AND LTF.bar_time < HTF.bar_time + INTERVAL <htf width>`.
-
-API (`api/main.py`):
-- `_attach_htf_bias(row, base_tf)` projects denormalized parent biases into camelCase JSON (`biasH1`, `bias15m`).
-- `/bars`, `/events`, `/fires` now surface `vwap`, `biasState`, `biasH1`, `bias15m`. `/events` and `/fires` LEFT JOIN bars to read the columns.
-
-Client (`src/`):
-- `data/replay.js` — surfaces `vwap`, `biasState`, `biasH1`, `bias15m` per bar; bootstraps `?biasFilter=` and `?showSuppressed=` URL params.
-- `state.js` — `state.biasFilterMode` ('soft'|'hard'|'off', default 'soft') and `state.showSuppressed` (default `false`).
-- `analytics/canonical.js` — `BIAS_VOTE` palette, `vote()`, `buildAlignment()` returning `{score (-4..+4), vote_1h, vote_15m, tag}`. `tag` ∈ {`HIGH_CONVICTION`, `STANDARD`, `LOW_CONVICTION`, `SUPPRESSED`} via the anchor-priority rule (1h gates conviction; 1h-opposes ⇒ SUPPRESSED in hard mode, LOW_CONVICTION otherwise; both-aligned ⇒ HIGH).
-- `sim/step.js` — every fire (incl. SUPPRESSED) is persisted to `state.canonicalFires` with `{tag, alignment}`. SUPPRESSED skips banner + auto-pause; renderers filter on `showSuppressed`.
-- `render/biasRibbon.js` (new) — two color strips (1h, 15m) above the candle pane on 1m; one strip on 15m; self strip on 1h. 7-level palette. Hover hits emitted for tooltip.
-- `render/priceChart.js` — top padding reserved for the ribbon (`RIBBON_H`, `RIBBON_TOP`, `RIBBON_GAP`).
-- `render/eventLog.js` — Align column + row tints driven by `tag`/`score`; SUPPRESSED rows hidden unless `state.showSuppressed`.
-- `render/watch.js` — diag tail messages: `(filtered by HTF — 1h opposes)`, `(CAUTION — HTF mixed)`, `(HIGH conviction — HTF aligned)`.
-- `ui/tooltip.js` — `kind === 'bias'` hover renders a small bias-label tooltip from the ribbon hits.
-
-Tests: `pipeline/tests/test_bias.py` (new) covers the full 5×5×3 matrix, warmup short-circuit, band edges, `compute_bias_column` end-to-end, determinism. `pipeline/tests/test_aggregate.py` adds VWAP first-bar, monotonic-with-carry-forward, and cross-timeframe convergence tests. `pytest -q` → **54 passed**.
-
-### Schema migration (live DB)
-
-The existing `data\orderflow.duckdb` was migrated in place — `init_schema(con)` added the four Phase 6 columns and the `idx_bars_tf_bartime` index. **Existing rows have `vwap`, `bias_state`, `parent_*_bias` all NULL** because backfilling them requires VWAP, which requires re-running `aggregate` from the raw `.dbn.zst` files. The dashboard handles NULLs gracefully — bias ribbon collapses to background, alignment column blank, fires fall back to STANDARD without tag tints.
-
-### How to run a true rebuild end-to-end
-
-The workspace currently has no `.dbn.zst` files locally, so the rebuild step couldn't be executed in-session. When the raw archive is back on disk (typical path: `data/raw/glbx-mdp3-*.trades.dbn.zst`), the rebuild is one command:
-
-```
-python -m orderflow_pipeline rebuild \
-    --raw-dir data/raw \
-    --out-dir data/sessions \
-    --db-path data/orderflow.duckdb \
-    --symbol ES --session rth --large-print-threshold 100
+if (bias === 'STRONG_BULLISH' && dir === 'up') sweepMult *= 0.8; // More sensitive
+if (bias === 'STRONG_BULLISH' && dir === 'down') sweepMult *= 1.2; // Less sensitive
 ```
 
-The `rebuild` subcommand drops and recreates the DB, then loops sessions in `1h → 15m → 1m` order so `_stamp_parent_bias` always sees parent rows already written. After it completes, run a smoke check:
+---
 
+### 2. Refactoring `canonical.js` (The Entries)
+This is where the **Anchor-Priority Rules** you just implemented really shine. The current `canonical.js` already has the "Triple Alignment" logic in the comments, but we need to ensure the `check` objects are actively filtered.
+
+#### The "Breakout" (★) Refactor:
+A breakout is a "Trend Continuation" play. 
+* **Logic:** It should essentially be **disabled** if the 1h Bias is opposite. 
+* **Refinement:** Add a `checks.biasAlignment` property. If the 1m breakout direction matches the 1h `bias_state`, this check passes. If they oppose, the fire is suppressed.
+
+#### The "Fade" (◆) Refactor:
+A fade is a "Mean Reversion" play. This is the most dangerous trade to take against a trend.
+* **Logic:** The "Brick Wall" (Absorption) must be significantly larger if fading against a 1h Trend.
+* **Wyckoff Integration:** A Fade-Long (buying a dip) should only be `HIGH_CONVICTION` if the 1h Bias is `ACCUMULATION`. If the 1h is `STRONG_BULLISH`, a Fade-Long is a "Trend Pullback" entry (high probability). If the 1h is `STRONG_BEARISH`, the Fade-Long is "Catching a Falling Knife" (low probability).
+
+
+
+---
+
+### 3. Proposed "Bias-Weighted" Scoring Model
+Instead of a simple "5 out of 5 checks pass" model, I recommend moving to a **Weighted Conviction Score**:
+
+1.  **Core Technicals (30%):** The existing checks in `canonical.js` (POC stretch, VWAP stretch, No Momentum).
+2.  **Regime Context (30%):** Is the 1m bar in the `BREAKOUT_CELL` or `FADE_CELL`?
+3.  **HTF Alignment (40%):** Does the 1h and 15m Bias support this direction?
+
+**In `canonical.js`, this would look like:**
+```javascript
+const biasVote = computeBiasVote(direction, lastBar.parent_1h_bias, lastBar.parent_15m_bias);
+
+// Suppression logic
+if (biasVote <= -2) {
+    return { fired: false, tag: 'SUPPRESSED', reason: 'Hard Anchor Opposition' };
+}
 ```
-SELECT timeframe, COUNT(*) AS bars,
-       COUNT(vwap) AS w_vwap,
-       COUNT(bias_state) AS w_bias,
-       COUNT(parent_1h_bias) AS w_p1h,
-       COUNT(parent_15m_bias) AS w_p15
-FROM bars GROUP BY 1 ORDER BY 1;
-```
 
-Expect: `w_vwap == bars` for all tfs; `w_bias == bars` for all tfs (modulo warmup → NEUTRAL but still non-NULL); `w_p1h` = 1m+15m bar count; `w_p15` = 1m bar count.
+### 4. Summary of Necessary Changes
 
-### Fire-count delta protocol
+1.  **`events.js`**: Update `detectEvents` to accept `parent_1h_bias` as an argument and adjust `sweepVolMult` and `divergenceFlowMult` dynamically.
+2.  **`canonical.js`**: 
+    * Import the `BIAS_VOTE` magnitudes (already in the file's comments).
+    * Implement the "Anchor-Priority" branch logic to assign the `tag` (STANDARD, HIGH, LOW, SUPPRESSED).
+    * Ensure that the `checks` object includes `alignment` as a required boolean for `fired` status.
 
-To document the filter's economic impact run, in two passes against the same session range:
-
-1. Baseline (Phase 6 disabled): launch the dashboard with `?biasFilter=off&showSuppressed=1`. Walk through known trend days. Record `state.canonicalFires.length` per session in a CSV: `date, watchId, fires_off`.
-2. Soft mode (default): reload with `?biasFilter=soft`. Record same metric as `fires_soft`. The delta `fires_soft − fires_off` is always `0` because soft mode never drops fires; instead, capture the breakdown by `tag`: count `HIGH_CONVICTION`, `STANDARD`, `LOW_CONVICTION` per session.
-3. Hard mode: reload with `?biasFilter=hard`. Record `fires_hard`. The delta `fires_off − fires_hard` is the count of fires the 1h anchor vetoed.
-
-Append the resulting table here under a `### Fire-count deltas` heading once the rebuild has been run. A healthy filter on a known trend day should suppress 30–60% of counter-trend Fade fires while leaving with-trend Breakout fires untouched (HIGH_CONVICTION ratio rises).
-
-### Warmup-gap monitoring at 10:30 ET
-
-Phase 5 regime ranks need 30 bars to populate. On the 1h timeframe that's ~30 sessions of seed history (the seed loader pulls cross-session); on the 1m timeframe it's the first 30 minutes of the session. Together these mean the **earliest a 1m fire can carry a 1h-derived `tag` is 10:30 ET** (RTH open 09:30 + 30×1m + 1h-bin already populated from seed).
-
-When auditing a session:
-- Any 1m fire with `bar_time < 09:30 ET` is impossible (RTH gating).
-- A 1m fire with `09:30 ≤ bar_time < 10:30 ET` and `tag === null` is **expected** — the 1m regime hadn't warmed up yet and `evaluateBreakoutCanonical / evaluateFadeCanonical` short-circuit `alignment` to `null` during warmup. These should render in the event log with an empty Align cell, no tint.
-- A 1m fire with `bar_time ≥ 10:30 ET` and `tag === null` is **a bug** — it means either the LTF bar's `biasH1`/`bias15m` didn't get denormalized, or the seed-history loader returned no parent rows. Spot check by querying:
-  ```
-  SELECT bar_time, bias_state, parent_1h_bias, parent_15m_bias
-  FROM bars
-  WHERE timeframe='1m' AND session_date=DATE '<your day>'
-    AND bar_time = TIMESTAMP '<your day> 10:35:00';
-  ```
-  All four columns should be non-NULL. If `parent_1h_bias` is NULL, the half-open join in `_stamp_parent_bias` missed; verify the 1h row for the 10:00–11:00 ET window exists for that session.
-
+By refactoring these files, you are moving away from "Indicator-based" trading and toward **"Contextual" trading**. You are no longer just looking for a "Sweep"; you are looking for a "Sweep that confirms the 1-hour Markup." 

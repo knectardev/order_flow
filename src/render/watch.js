@@ -77,12 +77,12 @@ function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical) 
 }
 
 function renderBreakoutWatch(canonical) {
-  renderWatchPanel('breakout', ['cell','sweep','flow','clean'],
+  renderWatchPanel('breakout', ['cell','sweep','flow','clean','alignment'],
                     BREAKOUT_LABELS, state.breakoutWatch, canonical);
 }
 
 function renderFadeWatch(canonical) {
-  renderWatchPanel('fade', ['balanced','cell','stretchPOC','stretchVWAP','noMomentum'],
+  renderWatchPanel('fade', ['balanced','cell','stretchPOC','stretchVWAP','noMomentum','alignment'],
                     FADE_LABELS, state.fadeWatch, canonical);
 }
 

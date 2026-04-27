@@ -101,12 +101,16 @@ Two canonical watches continue to run continuously with edge-trigger fire behavi
 
 ### 5.1 Fade Criteria Update
 
-Fade watch now evaluates **five** criteria (not four), including the new `balanced` gate in addition to:
+Fade watch now evaluates **six** criteria. The five technical gates plus an HTF-alignment gate (Phase 6 follow-up — see §5.4):
 
+- `balanced`
 - `cell`
 - `stretchPOC`
 - `stretchVWAP`
 - `noMomentum`
+- `alignment` (1h bias not opposing trade direction)
+
+Breakout watch likewise evaluates **five** criteria: `cell`, `sweep`, `flow`, `clean`, plus the same `alignment` gate.
 
 All watch diagnostics and flip tracking must remain persistent across modal open/close cycles.
 
@@ -124,6 +128,30 @@ Each canonical evaluation that produces a fire also computes an `alignment` bloc
 - `tag` ∈ `{HIGH_CONVICTION, STANDARD, LOW_CONVICTION, SUPPRESSED}`.
 - During regime warmup `alignment` and `tag` are `null`; downstream renderers must handle null gracefully (no tint, no glyph).
 - `tag === 'SUPPRESSED'` is only emitted when `state.biasFilterMode === 'hard'` and the 1h bias opposes `dir1m`. Suppressed fires are still persisted to `state.canonicalFires` (so they can be audited under `state.showSuppressed === true`) but must skip the canonical-fire banner and auto-pause.
+
+### 5.4 Alignment as a Gating Check
+
+`alignment` is also a **first-class criterion** in both `evaluateBreakoutCanonical` and `evaluateFadeCanonical`:
+
+- `checks.alignment = (lastBar exists) && (alignment.vote_1h >= 0)` — i.e., the 1h bias must not oppose `direction`.
+- The check evaluates `true` when biases are NULL (`vote_1h` defaults to `0` via `vote(null, dir)`) and when `biasFilterMode === 'off'`, preserving synthetic-mode and warmup behavior.
+- `fired = passing === total` continues to be the gate, with `total = 5` for breakout and `total = 6` for fade.
+- Practical effect: in `soft` mode, an opposing 1h bias produces a `LOW_CONVICTION` tag **and** fails the `alignment` check, so the fire no longer triggers — the tag is purely diagnostic. The watch panel still surfaces partial `passing/total` and tag tints so the user can see "would-be" fires that the alignment gate filtered out.
+
+### 5.5 Fade-Specific Wyckoff Overrides
+
+For `evaluateFadeCanonical`, `buildAlignment(lastBar, dir1m, 'fade')` applies a Wyckoff overlay on top of the base anchor-priority tag:
+
+| `dir1m` | `biasH1` | Effect |
+| --- | --- | --- |
+| `up`   | `ACCUMULATION`   | Upgrade tag to `HIGH_CONVICTION`, `reason = 'wyckoff_spring'` |
+| `down` | `DISTRIBUTION`   | Upgrade tag to `HIGH_CONVICTION`, `reason = 'wyckoff_upthrust'` |
+| `up`   | `BEARISH_STRONG` | Annotate `reason = 'falling_knife'` (tag remains LOW/SUPPRESSED from base rule) |
+| `down` | `BULLISH_STRONG` | Annotate `reason = 'falling_knife'` (tag remains LOW/SUPPRESSED from base rule) |
+
+`score`, `vote_1h`, `vote_15m` are never modified by the overlay — only `tag` (and `reason`) — so score-tinted UI remains consistent with the raw vote sum.
+
+The breakout evaluator continues to use the default `watchKind = 'breakout'` (no overrides).
 
 ---
 
@@ -247,6 +275,10 @@ Fallback behavior:
 13. Preserve the anchor-priority tag contract: 1h bias gates conviction, both-aligned ⇒ `HIGH_CONVICTION`, 1h-opposes ⇒ `SUPPRESSED` only in hard mode (else `LOW_CONVICTION`). Warmup ⇒ `null` tag/alignment.
 14. Bias ribbon must remain visible above the candle pane on every timeframe and fall back gracefully (background-only strip) when bias columns are NULL.
 15. The `?biasFilter=` and `?showSuppressed=` URL params are public surface for replay deep-linking — bootstrap behavior in `src/data/replay.js` must remain stable.
+16. Detection thresholds in `events.js` (`sweepVolMult`, `divergenceFlowMult`) are bias-scaled by the bar's denormalized 1h parent (`biasH1`) via `_biasScale(biasH1, dir)` — the ×0.8 / ×1.0 / ×1.2 family. Null `biasH1` (synthetic / warmup / non-API) must fall back to ×1.0 so synthetic-mode behavior is preserved bit-for-bit. `absorbVolMult` and `absorbRangeMult` are intentionally not scaled (small-range absorption is a structural signal, not a momentum one).
+17. `alignment` is a required first-class criterion in both canonical evaluators (see §5.4). Bumping `total` past `5` (breakout) / `6` (fade) without simultaneously updating `BREAKOUT_LABELS` / `FADE_LABELS`, `criterionKeys` arrays in `src/render/watch.js`, the `flipTicks` initializer in `src/state.js`, every `flipTicks = { ... }` reset in `src/data/replay.js` and `src/ui/controls.js`, and the modal `<li class="criterion">` rows in `src/ui/modal.js` is a regression — these surfaces are coupled by `data-key`.
+18. Fade-specific Wyckoff overrides in `buildAlignment` must never modify `score`, `vote_1h`, or `vote_15m`; only `tag` and (optionally) `reason`. Score-tinted UI assumes the raw vote sum.
+19. The 1m price chart's Y-axis must not compress candles into a thin band when the profile's price extent diverges from the visible candles (e.g. a stale `_lastApiProfile` carry-over from a prior session). Two guards in `src/render/priceChart.js` enforce this: (a) `_isApiProfileCompatibleWith()` rejects the API-profile carry-over when its price range doesn't overlap the current candle range; (b) the Y-range fit folds in profile prices only when they sit within `1.5×` the candle range of the candle bounds — otherwise POC/VAH/VAL fall through to the existing off-range arrow indicator in `_drawRefLine`. Higher timeframes (`15m`, `1h`) keep their candle-only Y-fit (`fitProfileToRange === false`).
 
 ---
 
@@ -322,7 +354,7 @@ Aggregation order is `1h → 15m → 1m`; `_stamp_parent_bias(con, session_date,
 
 - `BIAS_VOTE` maps each of the 7 bias levels to a directional vote `{-2, -1, 0, +1, +2}`.
 - `vote(biasState, dir1m)` returns `+v` when the bias agrees with `dir1m`, `-v` when it opposes, `0` for neutral.
-- `buildAlignment(lastBar, dir1m)` returns `{score, vote_1h, vote_15m, tag, biasH1, bias15m}` where `score = vote_1h + vote_15m ∈ [-4, +4]`.
+- `buildAlignment(lastBar, dir1m, watchKind = 'breakout')` returns `{score, vote_1h, vote_15m, tag, biasH1, bias15m}` (and optionally `reason` when fade overrides apply) where `score = vote_1h + vote_15m ∈ [-4, +4]`. `watchKind === 'fade'` enables the Wyckoff overlay documented in §5.5.
 
 Tag rule (anchor-priority — the 1h vote dominates):
 
@@ -336,12 +368,35 @@ Tag rule (anchor-priority — the 1h vote dominates):
 
 ### 13.5 Bias Filter Modes
 
-- `state.biasFilterMode === 'soft'` (default): no fires are dropped; tags are surfaced as visual hints in the watch panel and event log.
+- `state.biasFilterMode === 'soft'` (default): no fires are dropped by the tag rule; tags are surfaced as visual hints in the watch panel and event log. Note: the `alignment` gating check in §5.4 still applies — soft-mode `LOW_CONVICTION` fires that have `vote_1h < 0` will fail `checks.alignment` and therefore not reach `fired === true`, even though their tag is not `SUPPRESSED`.
 - `state.biasFilterMode === 'hard'`: 1h-opposes fires are tagged `SUPPRESSED`; banner + auto-pause are skipped, but the fire is still recorded so it can be reviewed.
-- `state.biasFilterMode === 'off'`: alignment is still computed for diagnostic purposes but tags never escalate beyond `STANDARD`.
+- `state.biasFilterMode === 'off'`: alignment is still computed for diagnostic purposes but tags never escalate beyond `STANDARD`. The `alignment` gating check is also force-passed (`vote_1h = 0` ⇒ `vote_1h >= 0`), so `'off'` truly disables HTF filtering at every layer.
 - `state.showSuppressed === true` reveals SUPPRESSED rows in the event log; default is hidden.
 
 ### 13.6 Verification Rules
 
 - A 1m fire with `bar_time < 10:30 ET` may legitimately have `tag === null` (1m regime warmup not yet complete). At or after 10:30 ET a null tag indicates a denormalization bug and should be investigated against `_stamp_parent_bias` join coverage.
 - Fire-count protocol for documenting filter impact lives in `notes.txt` (Phase 6 section).
+
+### 13.7 Bias-Adaptive Detection Multipliers
+
+`src/analytics/events.js` exports `_biasScale(biasH1, dir)`, which scales `sweepVolMult` and `divergenceFlowMult` by the bar's 1h parent bias. The shape captures "easier to confirm trend continuation, harder to confirm against-trend":
+
+| `biasH1` | `dir = 'up'` | `dir = 'down'` |
+| --- | --- | --- |
+| `BULLISH_STRONG` | 0.8 | 1.2 |
+| `BULLISH_MILD`   | 0.9 | 1.1 |
+| `ACCUMULATION` / `NEUTRAL` / `DISTRIBUTION` / `null` | 1.0 | 1.0 |
+| `BEARISH_MILD`   | 1.1 | 0.9 |
+| `BEARISH_STRONG` | 1.2 | 0.8 |
+
+Application:
+
+- **Sweeps**: the up-extreme branch uses `_biasScale(biasH1, 'up')`; the down-extreme branch uses `_biasScale(biasH1, 'down')`. A bullish trend lowers the bar for up-sweeps and raises it for down-sweeps (and symmetric).
+- **Divergences**: convention is to type the event by the *price extreme* direction, but the *signal* points against it. So the up-extreme divergence branch (price up, delta down — failed rally) is scaled by `_biasScale(biasH1, 'down')` because it confirms markdown continuation; the down-extreme branch is scaled by `_biasScale(biasH1, 'up')`.
+- **Absorption** (`absorbVolMult`, `absorbRangeMult`) is **not** scaled. Absorption is a structural signal about depth-vs-flow asymmetry rather than a directional momentum signal, and the existing 1.75× threshold was tuned against the watched cell's small-wick state.
+- `ACCUMULATION` and `DISTRIBUTION` are intentionally neutral at the threshold layer (they're depth-leads-Location *anomalies*, not directional trends). The fade Wyckoff overrides in §5.5 pick them up at the tag layer instead.
+
+### 13.8 Phase 2 — Weighted Conviction Score (deferred)
+
+The current model is binary: `fired = passing === total` (5 for breakout, 6 for fade). A future migration will replace this with a normalized `convictionScore ∈ [0, 1]` weighted 30 / 30 / 40 across core technicals / regime cell match / HTF alignment respectively, firing at `convictionScore >= 0.70` (threshold to be calibrated). `SUPPRESSED` would still hard-veto regardless of score. This phase is documented but not yet implemented; the binary gate above is the current contract.

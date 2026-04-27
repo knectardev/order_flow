@@ -35,8 +35,8 @@ export const FADE_CELL = {
 // Backward-compatible alias for any straggling references.
 export const WATCHED_CELL = BREAKOUT_CELL;
 
-export const BREAKOUT_LABELS = { cell: 'cell', sweep: 'sweep', flow: 'flow', clean: 'clean' };
-export const FADE_LABELS     = { balanced: 'balance', cell: 'cell', stretchPOC: 'POC stretch', stretchVWAP: 'VWAP stretch', noMomentum: 'momentum' };
+export const BREAKOUT_LABELS = { cell: 'cell', sweep: 'sweep', flow: 'flow', clean: 'clean', alignment: 'HTF align' };
+export const FADE_LABELS     = { balanced: 'balance', cell: 'cell', stretchPOC: 'POC stretch', stretchVWAP: 'VWAP stretch', noMomentum: 'momentum', alignment: 'HTF align' };
 
 // ───────────────────────────────────────────────────────────
 // Synthetic-default detection thresholds — match the inline numbers in

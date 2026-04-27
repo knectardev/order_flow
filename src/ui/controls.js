@@ -87,10 +87,10 @@ function resetStream() {
   // Reset both watches
   state.breakoutWatch.lastCanonical = null;
   state.breakoutWatch.firedThisCycle = false;
-  state.breakoutWatch.flipTicks = { cell: null, sweep: null, flow: null, clean: null };
+  state.breakoutWatch.flipTicks = { cell: null, sweep: null, flow: null, clean: null, alignment: null };
   state.fadeWatch.lastCanonical = null;
   state.fadeWatch.firedThisCycle = false;
-  state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null };
+  state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null, alignment: null };
   // Reset scenario state for the active timeframe's bucket. Synthetic
   // mode is always 1m so this is functionally a 1m reset; the per-tf
   // structure lets future multi-timeframe synthetic / mixed scenarios

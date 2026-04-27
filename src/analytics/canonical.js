@@ -54,11 +54,54 @@ function vote(biasState, dir1m) {
   return dir1m === 'up' ? v : -v;
 }
 
+// Fade-only Wyckoff overrides applied on top of the base anchor-priority
+// tag. Captures the qualitative asymmetry that pure +1/-1 vote sums lose:
+//
+//   Fade-Long under ACCUMULATION  (depth-leads-Location bullish anomaly)
+//     → textbook "spring" entry; upgrade STANDARD to HIGH_CONVICTION even
+//       when 15m is neutral. The base rule with vote_1h=+1 and
+//       vote_15m=0 yields STANDARD; the override re-tags it.
+//   Fade-Short under DISTRIBUTION (depth-leads-Location bearish anomaly)
+//     → textbook "upthrust" entry; symmetric upgrade.
+//   Fade-Long against BEARISH_STRONG → "catching a falling knife".
+//     Base rule with vote_1h=-2 yields SUPPRESSED (hard) or LOW_CONVICTION
+//     (soft, off). The override does NOT change the tag — it annotates
+//     `reason` for downstream tooltips so the user sees why this fade is
+//     being de-rated even when it would otherwise look reasonable on
+//     core technicals.
+//   Fade-Short against BULLISH_STRONG → symmetric falling-knife annotation.
+//
+// Returns the (possibly mutated) base block. The score, vote_1h, vote_15m
+// fields are always preserved so downstream score-tinted UI is unaffected.
+function _applyFadeOverrides(base, biasH1, dir1m) {
+  if (!base || !dir1m || !biasH1) return base;
+  if (dir1m === 'up') {
+    if (biasH1 === 'ACCUMULATION') {
+      base.tag = 'HIGH_CONVICTION';
+      base.reason = 'wyckoff_spring';
+    } else if (biasH1 === 'BEARISH_STRONG') {
+      base.reason = 'falling_knife';
+    }
+  } else if (dir1m === 'down') {
+    if (biasH1 === 'DISTRIBUTION') {
+      base.tag = 'HIGH_CONVICTION';
+      base.reason = 'wyckoff_upthrust';
+    } else if (biasH1 === 'BULLISH_STRONG') {
+      base.reason = 'falling_knife';
+    }
+  }
+  return base;
+}
+
 // Build the alignment block for a canonical fire. Returns null when
 // dir1m is null (canonical didn't fire / no direction yet) or the bar
 // has no HTF biases stamped (warmup / non-API mode); callers should
 // treat null as "no alignment context".
-function buildAlignment(lastBar, dir1m) {
+//
+// `watchKind` ∈ { 'breakout', 'fade' } selects the tag rule applied
+// after the base anchor-priority resolution. Defaults to 'breakout' so
+// the existing single-arg call sites continue to work unchanged.
+function buildAlignment(lastBar, dir1m, watchKind = 'breakout') {
   if (!lastBar || !dir1m) return null;
   const filterMode = state.biasFilterMode || 'soft';
   if (filterMode === 'off') {
@@ -82,11 +125,21 @@ function buildAlignment(lastBar, dir1m) {
     else                   tag = 'STANDARD';
   }
 
-  return { score, vote_1h, vote_15m, tag, biasH1, bias15m };
+  const base = { score, vote_1h, vote_15m, tag, biasH1, bias15m };
+  if (watchKind === 'fade') return _applyFadeOverrides(base, biasH1, dir1m);
+  return base;
 }
 
 function evaluateBreakoutCanonical() {
-  const checks = { cell: false, sweep: false, flow: false, clean: false };
+  // Phase 6 follow-up: `alignment` is now a true gating check. It evaluates
+  // to `true` when the 1h bias does not oppose `direction` (vote_1h >= 0),
+  // when alignment cannot be computed (synthetic / no direction yet), or
+  // when biasFilterMode is 'off' (which forces vote_1h = 0). It evaluates
+  // to `false` when the 1h bias actively opposes the trade direction —
+  // that is, even soft-mode "LOW_CONVICTION" fires now fail the gate, so
+  // an opposing 1h trend can no longer fire a breakout. The tag itself
+  // (HIGH/STANDARD/LOW/SUPPRESSED) is still surfaced for diagnostics.
+  const checks = { cell: false, sweep: false, flow: false, clean: false, alignment: false };
   let direction = null;
 
   // Regime-DB plan §2c-d: while regime is in warmup (NULL ranks for the
@@ -95,7 +148,7 @@ function evaluateBreakoutCanonical() {
   // when proxy-driven false positives historically fired (notes.txt
   // screenshot moments), so the suppression is protective, not cosmetic.
   if (state.regimeWarmup) {
-    return { checks, passing: 0, total: 4, fired: false, direction: null,
+    return { checks, passing: 0, total: 5, fired: false, direction: null,
              alignment: null, tag: null };
   }
 
@@ -136,26 +189,39 @@ function evaluateBreakoutCanonical() {
     checks.clean = false;
   }
 
-  const passing = Object.values(checks).filter(Boolean).length;
-  const fired = passing === 4;
   // Phase 6: read HTF biases off the last settled bar and compute the
   // alignment block + anchor-priority tag. The block is attached to
   // both fired and not-yet-fired evaluations so the watch panel can
-  // display "would-be" conviction even before all four checks pass.
+  // display "would-be" conviction even before all five checks pass.
+  // Order-of-ops: alignment must be computed *before* `checks.alignment`
+  // is finalized so the gating check reads from the same vote.
   const lastBar = state.bars[state.bars.length - 1];
   const alignment = buildAlignment(lastBar, direction);
   const tag = alignment ? alignment.tag : null;
-  return { checks, passing, total: 4, fired, direction, alignment, tag };
+  // Gate: 1h must not oppose direction. Null alignment (no direction
+  // yet, or no lastBar) leaves the check false — which is fine because
+  // those states can't fire on the other criteria either.
+  checks.alignment = !!alignment && alignment.vote_1h >= 0;
+
+  const passing = Object.values(checks).filter(Boolean).length;
+  const fired = passing === 5;
+  return { checks, passing, total: 5, fired, direction, alignment, tag };
 }
 
 function evaluateFadeCanonical() {
-  const checks = { balanced: false, cell: false, stretchPOC: false, stretchVWAP: false, noMomentum: false };
+  // Phase 6 follow-up: `alignment` is now a true gating check (see
+  // evaluateBreakoutCanonical for the gating semantics). For fades the
+  // tag rule is additionally Wyckoff-aware via buildAlignment's
+  // 'fade' watchKind — Fade-Long under ACCUMULATION upgrades to
+  // HIGH_CONVICTION even with a neutral 15m, and Fade-Long against
+  // BEARISH_STRONG annotates the LOW/SUPPRESSED with `falling_knife`.
+  const checks = { balanced: false, cell: false, stretchPOC: false, stretchVWAP: false, noMomentum: false, alignment: false };
   let stretchDir = null;
   let direction = null;
 
   // Regime-DB plan §2c-d: warmup short-circuit (see breakout for rationale).
   if (state.regimeWarmup) {
-    return { checks, passing: 0, total: 5, fired: false, direction: null, stretchDir: null,
+    return { checks, passing: 0, total: 6, fired: false, direction: null, stretchDir: null,
              alignment: null, tag: null };
   }
 
@@ -214,12 +280,14 @@ function evaluateFadeCanonical() {
   // Predicted trade direction is opposite of stretch
   if (stretchDir) direction = stretchDir === 'up' ? 'down' : 'up';
 
-  const passing = Object.values(checks).filter(Boolean).length;
-  const fired = passing === 5;
   const lastBar = state.bars[state.bars.length - 1];
-  const alignment = buildAlignment(lastBar, direction);
+  const alignment = buildAlignment(lastBar, direction, 'fade');
   const tag = alignment ? alignment.tag : null;
-  return { checks, passing, total: 5, fired, direction, stretchDir, alignment, tag };
+  checks.alignment = !!alignment && alignment.vote_1h >= 0;
+
+  const passing = Object.values(checks).filter(Boolean).length;
+  const fired = passing === 6;
+  return { checks, passing, total: 6, fired, direction, stretchDir, alignment, tag };
 }
 
 export { evaluateBreakoutCanonical, evaluateFadeCanonical, vote, buildAlignment, BIAS_VOTE };

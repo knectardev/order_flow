@@ -25,12 +25,12 @@ export const state = {
   breakoutWatch: {
     lastCanonical: null,
     firedThisCycle: false,
-    flipTicks: { cell: null, sweep: null, flow: null, clean: null },
+    flipTicks: { cell: null, sweep: null, flow: null, clean: null, alignment: null },
   },
   fadeWatch: {
     lastCanonical: null,
     firedThisCycle: false,
-    flipTicks: { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null },
+    flipTicks: { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null, alignment: null },
   },
 
   // Auto-pause preferences — persist outside modal lifecycle since toggles only exist when modal is open

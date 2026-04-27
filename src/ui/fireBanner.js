@@ -21,12 +21,12 @@ function pauseForFire(watchId, canonical, cellDef) {
     banner.classList.add('fade-variant');
     icon.textContent = '◆';
     headline.textContent = `Fade canonical fired · stream paused`;
-    detail.textContent = `[${cellDef.name}] · stretch ${canonical.stretchDir === 'up' ? '↑' : '↓'} from POC + VWAP · all 4 criteria met. Predicts ${arrow} drift back toward POC within ~25-40 bars.`;
+    detail.textContent = `[${cellDef.name}] · stretch ${canonical.stretchDir === 'up' ? '↑' : '↓'} from POC + VWAP · all 6 criteria met. Predicts ${arrow} drift back toward POC within ~25-40 bars.`;
   } else {
     banner.classList.add('breakout-variant');
     icon.textContent = '⚡';
     headline.textContent = `Breakout canonical fired · stream paused`;
-    detail.textContent = `[${cellDef.name}] · sweep ${dir} · all 4 criteria met. Predicts ${arrow} travel toward next structural level within ~15 bars.`;
+    detail.textContent = `[${cellDef.name}] · sweep ${dir} · all 5 criteria met. Predicts ${arrow} travel toward next structural level within ~15 bars.`;
   }
   banner.classList.add('visible');
 }

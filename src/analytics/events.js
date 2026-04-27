@@ -1,8 +1,37 @@
 import { getTunings, state } from '../state.js';
 
-function detectEvents(newBar, history) {
+// Phase 6 follow-up: bias-adaptive detection multipliers.
+//
+// `_biasScale(biasH1, dir)` returns a multiplier applied to volume-style
+// thresholds (sweepVolMult, divergenceFlowMult). Intuition: in a strong
+// 1h trend, a sweep / divergence in the trend direction needs less
+// confirmation (markup naturally produces these prints), while a sweep
+// / divergence against the trend needs more (against-trend prints are
+// rarer and more meaningful, so the bar to detect them is raised).
+//
+// Asymmetric scaling is centred on 1.0 so a null bias (synthetic mode,
+// warmup, or any bar without a stamped 1h parent) leaves thresholds
+// untouched — preserving synthetic-mode parity bit-for-bit.
+//
+// ACCUMULATION / DISTRIBUTION are deliberately neutral here: they're
+// "anomaly" labels (depth-leads-location), not directional trends, and
+// the fade Wyckoff overrides in canonical.js already pick them up at
+// the tag layer. NEUTRAL is also 1.0 by definition.
+function _biasScale(biasH1, dir) {
+  if (!biasH1 || !dir) return 1.0;
+  switch (biasH1) {
+    case 'BULLISH_STRONG': return dir === 'up'   ? 0.8 : 1.2;
+    case 'BEARISH_STRONG': return dir === 'down' ? 0.8 : 1.2;
+    case 'BULLISH_MILD':   return dir === 'up'   ? 0.9 : 1.1;
+    case 'BEARISH_MILD':   return dir === 'down' ? 0.9 : 1.1;
+    default:               return 1.0;
+  }
+}
+
+function detectEvents(newBar, history, opts = {}) {
   if (history.length < 12) return [];
   const t = getTunings();
+  const biasH1 = opts.biasH1 ?? null;
   const recent = history.slice(-10);
   const recentHigh = Math.max(...recent.map(b => b.high));
   const recentLow  = Math.min(...recent.map(b => b.low));
@@ -12,10 +41,14 @@ function detectEvents(newBar, history) {
 
   const out = [];
 
-  // Sweep: exceeds recent high/low with volume spike
-  if (newBar.high > recentHigh && newBar.volume > avgVol * t.sweepVolMult) {
+  // Sweep: exceeds recent high/low with volume spike. Threshold scaled
+  // by the bar's 1h bias — easier to confirm an up-sweep in a bullish
+  // markup, harder against the trend (and symmetric for down-sweeps).
+  const sweepUpMult   = t.sweepVolMult * _biasScale(biasH1, 'up');
+  const sweepDownMult = t.sweepVolMult * _biasScale(biasH1, 'down');
+  if (newBar.high > recentHigh && newBar.volume > avgVol * sweepUpMult) {
     out.push({ type: 'sweep', dir: 'up', price: newBar.high, time: newBar.time });
-  } else if (newBar.low < recentLow && newBar.volume > avgVol * t.sweepVolMult) {
+  } else if (newBar.low < recentLow && newBar.volume > avgVol * sweepDownMult) {
     out.push({ type: 'sweep', dir: 'down', price: newBar.low, time: newBar.time });
   }
 
@@ -27,11 +60,24 @@ function detectEvents(newBar, history) {
     out.push({ type: 'absorption', price: newBar.close, time: newBar.time });
   }
 
-  // Divergence: new extreme but cumulative delta over last 8 state.bars opposite
+  // Divergence: new extreme but cumulative delta over last 8 state.bars opposite.
+  // A divergence event is conventionally typed by the *price* extreme direction:
+  //   dir:'up'   → price made a new high but cumulative delta is negative
+  //                (bearish-divergence at a high — "weak rally")
+  //   dir:'down' → price made a new low but cumulative delta is positive
+  //                (bullish-divergence at a low — "absorbed selloff")
+  // The tactical signal therefore points *against* dir:
+  //   "up" divergence is meaningful when 1h is bearish (confirms markdown
+  //   continuation by exposing a failed rally); scale the up-extreme branch
+  //   by _biasScale(biasH1, 'down').
+  //   "down" divergence is meaningful when 1h is bullish (failed selloff →
+  //   markup continuation); scale the down-extreme branch by _biasScale(biasH1, 'up').
   const cumD = recent.slice(-8).reduce((s,b)=>s+b.delta, 0) + newBar.delta;
-  if (newBar.high > recentHigh && cumD < -avgVol * t.divergenceFlowMult) {
+  const divUpMult   = t.divergenceFlowMult * _biasScale(biasH1, 'down');
+  const divDownMult = t.divergenceFlowMult * _biasScale(biasH1, 'up');
+  if (newBar.high > recentHigh && cumD < -avgVol * divUpMult) {
     out.push({ type: 'divergence', dir: 'up', price: newBar.high, time: newBar.time });
-  } else if (newBar.low < recentLow && cumD > avgVol * t.divergenceFlowMult) {
+  } else if (newBar.low < recentLow && cumD > avgVol * divDownMult) {
     out.push({ type: 'divergence', dir: 'down', price: newBar.low, time: newBar.time });
   }
 
@@ -55,4 +101,4 @@ function detectStopRun() {
   }
 }
 
-export { detectEvents, detectStopRun };
+export { detectEvents, detectStopRun, _biasScale };

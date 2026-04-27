@@ -58,10 +58,10 @@ function _resetReplayAccumulators() {
   state.matrixScores = Array.from({length: MATRIX_ROWS}, () => Array(MATRIX_COLS).fill(0));
   state.breakoutWatch.lastCanonical = null;
   state.breakoutWatch.firedThisCycle = false;
-  state.breakoutWatch.flipTicks = { cell: null, sweep: null, flow: null, clean: null };
+  state.breakoutWatch.flipTicks = { cell: null, sweep: null, flow: null, clean: null, alignment: null };
   state.fadeWatch.lastCanonical = null;
   state.fadeWatch.firedThisCycle = false;
-  state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null };
+  state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null, alignment: null };
   state.sim.formingProgress = 0;
   state.sim.tick = 0;
   state.sim.volState = 2;
@@ -77,10 +77,10 @@ function _resetForSessionBoundary() {
   state.events = [];
   state.breakoutWatch.lastCanonical = null;
   state.breakoutWatch.firedThisCycle = false;
-  state.breakoutWatch.flipTicks = { cell: null, sweep: null, flow: null, clean: null };
+  state.breakoutWatch.flipTicks = { cell: null, sweep: null, flow: null, clean: null, alignment: null };
   state.fadeWatch.lastCanonical = null;
   state.fadeWatch.firedThisCycle = false;
-  state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null };
+  state.fadeWatch.flipTicks = { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null, alignment: null };
 }
 
 function _commitRealBar(idx) {
@@ -130,7 +130,11 @@ function _commitRealBar(idx) {
     state.regimeWarmup = true;
   }
 
-  const newEvs = detectEvents(realBar, state.bars.slice(0, -1));
+  // Phase 6 follow-up: forward the bar's denormalized 1h parent bias so
+  // detectEvents can adapt sweep / divergence thresholds to HTF context.
+  // Synthetic / warmup bars without a stamped parent fall back to ×1.0.
+  const newEvs = detectEvents(realBar, state.bars.slice(0, -1),
+                                { biasH1: realBar.biasH1 ?? null });
   for (const ev of newEvs) state.events.push(ev);
   detectStopRun();
   if (state.events.length > 80) state.events = state.events.slice(-80);
