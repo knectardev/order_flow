@@ -14,9 +14,9 @@ const TOOLTIP_INFO = {
   divergence: { name: 'Divergence', glyph: '⚠',  variant: 'diverge',
                 desc: 'New price extreme NOT confirmed by cumulative Δ. Flow disagrees with price.' },
   breakout:   { name: 'Breakout Fire', glyph: '★', variant: 'breakout',
-                desc: 'All 4 criteria met for [Impulsive · Light] entry — predicts directional travel.' },
+                desc: 'All 5 criteria met for [Impulsive · Light] entry — predicts directional travel.' },
   fade:       { name: 'Fade Fire',     glyph: '◆', variant: 'fade',
-                desc: 'All 4 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.' },
+                desc: 'All 6 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.' },
 };
 
 function _hitTestChart(x, y) {

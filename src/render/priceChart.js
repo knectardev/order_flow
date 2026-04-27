@@ -28,23 +28,30 @@ function _isoZ(t) {
 // resolve. The proxy and API profiles have different bin counts and
 // scales, so the visual swap reads as a black flash several times a
 // second. Stashing the most-recent resolved API profile and reusing it
-// on miss keeps the sidebar visually stable — the new fetch's onResolve
-// hook still triggers a re-render with the up-to-date data, so
-// staleness is bounded to one bar's worth of data (max) at steady
-// state.
+// on miss keeps the sidebar visually stable.
 //
 // Scoped to the active timeframe so a tf-switch doesn't show stale
 // 1m bins under 1h candles. Cleared by setActiveTimeframe()'s
 // clearProfileCache() call → handled below in the resolve path.
 //
-// Cross-session staleness guard: at 1m the chart's Y-range fits the
-// profile's price extent, so reusing a stale `_lastApiProfile` from a
-// far-away session compresses candles into a thin band at the top/
-// bottom (visible bug: panning then resuming live left the previous
-// session's POC stuck on screen at e.g. 6848 while candles streamed at
-// 6993). `_isApiProfileCompatibleWith()` rejects the carry-over when
-// its price extent doesn't overlap the visible candle range, falling
-// back to the deterministic OHLC proxy until the in-flight fetch lands.
+// Staleness guards: at 1m the chart's Y-range fits the profile's price
+// extent, AND the value-area highlights drive how the user reads the
+// session. Reusing a stale `_lastApiProfile` produces two distinct bugs:
+//   1. Cross-session: profile from a far-away session compresses
+//      candles into a thin band (e.g. POC stuck at 6848 while candles
+//      stream at 6993).
+//   2. Intra-session: profile resolved earlier in the same session,
+//      before the candle range widened (open spike, late-session
+//      run-up). The carry-over is fully *inside* the current candle
+//      range but missing 30-50 points of price action, so the value
+//      area highlights look anchored to a stale chop zone.
+// `_isApiProfileCompatibleWith()` rejects both. It requires the
+// carry-over to (a) overlap the candle range AND (b) cover most of it:
+// the carry-over's price extent must reach within `tolerance` of both
+// candleLo and candleHi. If the candle range has grown beyond that
+// tolerance since the carry-over was resolved, the proxy fallback
+// (which is computed fresh from the current `profileBars`) is used
+// until the new API fetch lands.
 let _lastApiProfile = null;
 let _lastApiProfileTf = null;
 
@@ -54,11 +61,18 @@ function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
   if (!Number.isFinite(pLo)) return false;
   const pHi = pLo + (apiProfile.bins?.length ?? 0) * (apiProfile.binStep ?? 0);
   if (!Number.isFinite(pHi) || pHi <= pLo) return false;
-  // Allow up to one candle-range of slack on either side; beyond that
-  // the profile is from a structurally different price level (likely a
-  // different session) and reusing it produces the squish bug.
   const candleRange = Math.max(candleHi - candleLo, 1.0);
-  return !(pHi < candleLo - candleRange || pLo > candleHi + candleRange);
+  // Tolerance ≈ 5% of the candle range (or ≥ 0.5 ticks on tiny ranges).
+  // Anything beyond that means the carry-over is missing meaningful
+  // chunks of the current price action — switch to the proxy.
+  const tolerance = Math.max(candleRange * 0.05, 0.5);
+  // (a) Disjoint check (cross-session staleness).
+  if (pHi < candleLo - candleRange || pLo > candleHi + candleRange) return false;
+  // (b) Coverage check (intra-session staleness — the candle range has
+  // grown since the carry-over was resolved).
+  if (pLo > candleLo + tolerance) return false;   // missing the bottom
+  if (pHi < candleHi - tolerance) return false;   // missing the top
+  return true;
 }
 
 function _getViewedBars() {

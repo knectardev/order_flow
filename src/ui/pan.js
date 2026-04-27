@@ -76,11 +76,15 @@ function _refreshMatrixForView() {
   // Rebuild state.trail from regime states at the most recent ~60 state.bars leading up
   // to and including idx. Each unique (r, c) cell is appended; ties to the
   // last appended cell are skipped so the state.trail shows transitions, not dwell.
+  // Warmup bars (first ~30 of each session, plus any zero-volume bar) yield
+  // null from deriveRegimeState — skip them so the trail represents only the
+  // bars where ranks were actually resolved.
   state.trail.length = 0;
   const startIdx = Math.max(0, idx - 60);
   let lastR = null, lastC = null;
   for (let i = startIdx; i <= idx; i++) {
     const r2 = deriveRegimeState(i);
+    if (!r2) continue;
     const r = 4 - r2.volState;
     const c = r2.depthState;
     if (r !== lastR || c !== lastC) {
@@ -90,8 +94,16 @@ function _refreshMatrixForView() {
     }
   }
 
-  state.sim.volState = reg.volState;
-  state.sim.depthState = reg.depthState;
+  // If the panned right-edge bar itself is in warmup (`reg === null`), keep
+  // the live state.sim values so computeMatrixScores still has a kernel
+  // center to work with. The matrix will read as "live snapshot" for that
+  // pan position, which is the least-bad fallback — alternatives (skipping
+  // the matrix entirely or zeroing the kernel) produce a visually broken
+  // panel that's worse than a slightly stale one.
+  if (reg) {
+    state.sim.volState = reg.volState;
+    state.sim.depthState = reg.depthState;
+  }
   state.matrixScores = computeMatrixScores();
 
   // Use live canonical evaluation for the fired-class indicators (panning the
