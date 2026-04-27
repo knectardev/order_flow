@@ -138,7 +138,7 @@ function _commitRealBar(idx) {
   const { eventCooldownBars } = getSignalCooldownBars();
   const sessionStartIdx = sess ? sess.startIdx : null;
   const deduped = filterNewEventsCooldown(
-    newEvs, state.events, state.bars, eventCooldownBars, sessionStartIdx);
+    newEvs, state.events, state.replay.allBars, eventCooldownBars, sessionStartIdx);
   for (const ev of deduped) state.events.push(ev);
   detectStopRun();
   if (state.events.length > 80) state.events = state.events.slice(-80);

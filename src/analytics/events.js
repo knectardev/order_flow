@@ -6,22 +6,33 @@ function eventSignature(ev) {
   return `${ev.type}|${ev.dir ?? ''}`;
 }
 
-function _barIndexForTime(bars, time) {
-  return bars.findIndex(b => b.time === time);
+function _timeMs(t) {
+  if (t == null) return NaN;
+  return t instanceof Date ? t.getTime() : +new Date(t);
+}
+
+/** Bar index in `series` using epoch-ms equality (avoids Date vs string mismatches). */
+function _barIndexForTime(series, time) {
+  if (!series?.length) return -1;
+  const ms = _timeMs(time);
+  return series.findIndex(b => _timeMs(b.time) === ms);
 }
 
 /**
  * Drop primitive events that repeat the same signature within `cooldownBars` of the
- * most recent kept event still present in `bars`. When `sessionStartIdx` is set
- * (per-session replay scan), prior events from an earlier session are ignored so
- * cooldown does not span the day boundary.
+ * most recent kept event in `indexSource`. Pass `state.replay.allBars` in API replay
+ * so indices match `sessionStartIdx` (global session start); use the rolling `state.bars`
+ * array only in synthetic mode or when `sessionStartIdx` is null.
+ *
+ * When `sessionStartIdx` is set, pool entries whose bar lies before that index belong
+ * to a prior session and are skipped (continue) rather than used as a cooldown anchor.
  */
-function filterNewEventsCooldown(newEvs, existingEvents, bars, cooldownBars, sessionStartIdx = null) {
+function filterNewEventsCooldown(newEvs, existingEvents, indexSource, cooldownBars, sessionStartIdx = null) {
   if (!newEvs.length || cooldownBars <= 0) return newEvs.slice();
   const pool = existingEvents.slice();
   const out = [];
   for (const ev of newEvs) {
-    const idx = _barIndexForTime(bars, ev.time);
+    const idx = _barIndexForTime(indexSource, ev.time);
     if (idx < 0) {
       out.push(ev);
       pool.push(ev);
@@ -32,9 +43,9 @@ function filterNewEventsCooldown(newEvs, existingEvents, bars, cooldownBars, ses
     for (let i = pool.length - 1; i >= 0; i--) {
       const prev = pool[i];
       if (eventSignature(prev) !== sig) continue;
-      const pidx = _barIndexForTime(bars, prev.time);
-      if (pidx < 0) break;
-      if (sessionStartIdx != null && pidx < sessionStartIdx) break;
+      const pidx = _barIndexForTime(indexSource, prev.time);
+      if (pidx < 0) continue;
+      if (sessionStartIdx != null && pidx < sessionStartIdx) continue;
       if (idx >= pidx && idx - pidx < cooldownBars) tooSoon = true;
       break;
     }
@@ -47,18 +58,18 @@ function filterNewEventsCooldown(newEvs, existingEvents, bars, cooldownBars, ses
 
 /**
  * True when a new canonical fire should be skipped as a near-duplicate of the last
- * same-watch, same-direction fire still visible in `bars`.
+ * same-watch, same-direction fire in `indexSource` (see `filterNewEventsCooldown`).
  */
-function isCanonicalFireRepeatTooSoon(watchId, direction, barTime, existingFires, bars, cooldownBars, sessionStartIdx = null) {
+function isCanonicalFireRepeatTooSoon(watchId, direction, barTime, existingFires, indexSource, cooldownBars, sessionStartIdx = null) {
   if (cooldownBars <= 0 || direction == null) return false;
-  const idx = _barIndexForTime(bars, barTime);
+  const idx = _barIndexForTime(indexSource, barTime);
   if (idx < 0) return false;
   for (let i = existingFires.length - 1; i >= 0; i--) {
     const f = existingFires[i];
     if (f.watchId !== watchId || f.direction !== direction) continue;
-    const pidx = _barIndexForTime(bars, f.barTime);
-    if (pidx < 0) break;
-    if (sessionStartIdx != null && pidx < sessionStartIdx) break;
+    const pidx = _barIndexForTime(indexSource, f.barTime);
+    if (pidx < 0) continue;
+    if (sessionStartIdx != null && pidx < sessionStartIdx) continue;
     if (idx > pidx && idx - pidx < cooldownBars) return true;
     break;
   }

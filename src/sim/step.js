@@ -146,9 +146,12 @@ function handleWatchFire(watchId, canonical, watchState, cellDef, sessionStartId
     const lastBar = state.bars[state.bars.length - 1];
     if (lastBar) {
       const { fireCooldownBars } = getSignalCooldownBars();
+      const indexSource = state.replay.mode === 'real' && state.replay.allBars.length
+        ? state.replay.allBars
+        : state.bars;
       const skipNearDup = isCanonicalFireRepeatTooSoon(
         watchId, canonical.direction, lastBar.time,
-        state.canonicalFires, state.bars, fireCooldownBars, sessionStartIdx);
+        state.canonicalFires, indexSource, fireCooldownBars, sessionStartIdx);
       if (!skipNearDup) {
         // Phase 6: every fire — including SUPPRESSED — gets recorded so
         // the event log can display them under `state.showSuppressed=true`.
