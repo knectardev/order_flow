@@ -52,8 +52,58 @@ function _isoZ(t) {
 // tolerance since the carry-over was resolved, the proxy fallback
 // (which is computed fresh from the current `profileBars`) is used
 // until the new API fetch lands.
+//
+// Tolerance was originally `candleRange * 0.05` (~0.5 ticks). That was
+// too tight for a live-edge stream: every settled bar shifts the rolling
+// 60-bar window's candleLo/candleHi by a tick or so, which is enough to
+// flip the carry-over from "compatible → reuse" to "incompatible → fall
+// back to OHLC proxy" on the very next frame. The proxy's POC differs
+// from the tick-level API POC by 1-10 points (different methodologies),
+// so the chart's POC line and the slack-fold y-range both jump per
+// frame, producing a visible flicker during playback. Loosening the
+// tolerance to half the candle range keeps the carry-over engaged
+// across normal live-edge drift while still rejecting the actual stale
+// cases (cross-session, large pan jumps).
 let _lastApiProfile = null;
 let _lastApiProfileTf = null;
+
+// Profile-fold hysteresis state. The y-range fitter (in drawPriceChart)
+// optionally folds POC/VAH/VAL/profileLo/profileHi into the candle-driven
+// [lo, hi] when each price sits within `slack` of the candle range. The
+// raw decision per frame oscillates whenever a price hovers near the
+// slack boundary (one settled bar shifts candleRange enough to flip the
+// inclusion test), causing a visible y-axis jump every other frame.
+// Hysteresis replaces the single threshold with a Schmitt-trigger: once
+// folded the price stays folded at a *looser* threshold, and once
+// unfolded it must move well *inside* the tighter threshold to refold.
+// Keyed by profile identity (binStep|priceLo|binCount) so we wipe state
+// when the underlying profile changes (session boundary, pan jump,
+// timeframe switch).
+let _foldHysteresis = {
+  pid: null,
+  // booleans, persistent across frames within the same profile
+  priceLo:  false,
+  profileHi:false,
+  valPrice: false,
+  pocPrice: false,
+  vahPrice: false,
+};
+
+function _resetFoldHysteresis(pid) {
+  _foldHysteresis = {
+    pid,
+    priceLo:  false,
+    profileHi:false,
+    valPrice: false,
+    pocPrice: false,
+    vahPrice: false,
+  };
+}
+
+function _profileIdentity(p) {
+  if (!p) return null;
+  return `${p.priceLo}|${p.binStep}|${p.bins?.length ?? 0}`;
+}
 
 function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
   if (!apiProfile || !Number.isFinite(candleLo) || !Number.isFinite(candleHi)) return false;
@@ -62,14 +112,15 @@ function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
   const pHi = pLo + (apiProfile.bins?.length ?? 0) * (apiProfile.binStep ?? 0);
   if (!Number.isFinite(pHi) || pHi <= pLo) return false;
   const candleRange = Math.max(candleHi - candleLo, 1.0);
-  // Tolerance ≈ 5% of the candle range (or ≥ 0.5 ticks on tiny ranges).
-  // Anything beyond that means the carry-over is missing meaningful
-  // chunks of the current price action — switch to the proxy.
-  const tolerance = Math.max(candleRange * 0.05, 0.5);
+  // Tolerance ≈ 50% of the candle range (or ≥ 2 ticks on tiny ranges).
+  // The carry-over may legitimately lag the live edge by a few ticks
+  // each side; only reject when it's clearly missing meaningful chunks
+  // of price action (≥ half the rolling window).
+  const tolerance = Math.max(candleRange * 0.5, 2.0);
   // (a) Disjoint check (cross-session staleness).
   if (pHi < candleLo - candleRange || pLo > candleHi + candleRange) return false;
   // (b) Coverage check (intra-session staleness — the candle range has
-  // grown since the carry-over was resolved).
+  // grown beyond what the carry-over knows about).
   if (pLo > candleLo + tolerance) return false;   // missing the bottom
   if (pHi < candleHi - tolerance) return false;   // missing the top
   return true;
@@ -309,15 +360,51 @@ function drawPriceChart() {
     // straddled a session-open gap) would expand the chart's y-axis to
     // span both the profile and candles, squishing the candles into a
     // thin band — the original 1m streaming bug.
+    //
+    // Hysteresis: a single slack threshold causes the inclusion test to
+    // flip per frame whenever a price (most often POC) sits right at the
+    // boundary, which the user observed as the chart "flickering between
+    // two scales" during playback. We use a Schmitt-trigger pair —
+    // tighter `slackFold` to refold a previously-unfolded price, looser
+    // `slackKeep` to retain a previously-folded one — so the y-range
+    // doesn't oscillate when the candle range jitters by a tick or two.
+    // State is wiped whenever the underlying profile changes (session
+    // boundary, pan, timeframe switch) so we don't carry "folded"
+    // decisions across discontinuities.
+    const pid = _profileIdentity(profile);
+    if (pid !== _foldHysteresis.pid) _resetFoldHysteresis(pid);
+
     const candleRange = Math.max(hi - lo, 1.0);
-    const slack = candleRange * 1.5;
-    const minOk = lo - slack;
-    const maxOk = hi + slack;
-    const _foldLo = (p) => (Number.isFinite(p) && p >= minOk && p <= maxOk) ? p : Infinity;
-    const _foldHi = (p) => (Number.isFinite(p) && p >= minOk && p <= maxOk) ? p : -Infinity;
+    const slackFold = candleRange * 1.5;
+    const slackKeep = candleRange * 3.0;
     const profileHi = profile.priceLo + profile.bins.length * profile.binStep;
-    lo = Math.min(lo, _foldLo(profile.priceLo), _foldLo(profile.valPrice), _foldLo(profile.pocPrice), _foldLo(profile.vahPrice));
-    hi = Math.max(hi, _foldHi(profileHi),       _foldHi(profile.valPrice), _foldHi(profile.pocPrice), _foldHi(profile.vahPrice));
+
+    const _shouldFold = (p, key) => {
+      if (!Number.isFinite(p)) {
+        _foldHysteresis[key] = false;
+        return false;
+      }
+      const wasFolded = _foldHysteresis[key];
+      const slack = wasFolded ? slackKeep : slackFold;
+      const folded = p >= lo - slack && p <= hi + slack;
+      _foldHysteresis[key] = folded;
+      return folded;
+    };
+
+    if (_shouldFold(profile.priceLo, 'priceLo'))   lo = Math.min(lo, profile.priceLo);
+    if (_shouldFold(profileHi,       'profileHi')) hi = Math.max(hi, profileHi);
+    if (_shouldFold(profile.valPrice, 'valPrice')) {
+      lo = Math.min(lo, profile.valPrice);
+      hi = Math.max(hi, profile.valPrice);
+    }
+    if (_shouldFold(profile.pocPrice, 'pocPrice')) {
+      lo = Math.min(lo, profile.pocPrice);
+      hi = Math.max(hi, profile.pocPrice);
+    }
+    if (_shouldFold(profile.vahPrice, 'vahPrice')) {
+      lo = Math.min(lo, profile.vahPrice);
+      hi = Math.max(hi, profile.vahPrice);
+    }
   }
   const padPrice = (hi - lo) * 0.05 + 0.05;
   lo -= padPrice; hi += padPrice;
@@ -609,7 +696,7 @@ function drawPriceChart() {
     const ringMain = isFade ? 'rgba(107, 140, 206, 0.55)' : 'rgba(212, 160, 74, 0.55)';
     const ringDim  = isFade ? 'rgba(107, 140, 206, 0.22)' : 'rgba(212, 160, 74, 0.22)';
     const glyphCol = isFade ? 'rgba(107, 140, 206, 0.95)' : 'rgba(212, 160, 74, 0.95)';
-    const glyph    = isFade ? '◆' : '★';
+    const glyph = isFade ? '◆' : '★';
 
     // Outer warm ring
     pctx.strokeStyle = ringMain;
@@ -623,11 +710,34 @@ function drawPriceChart() {
     pctx.beginPath();
     pctx.arc(xCenter, yMid, haloR * 1.45, 0, Math.PI * 2);
     pctx.stroke();
-    // Glyph above bar
+    // Glyph above bar — exactly as it was pre-Phase-6 follow-up. Critical
+    // not to change xCenter / y / textAlign / textBaseline here, because
+    // the diamond's halo + the chart's per-bar slot geometry are tuned
+    // around it; shifting it (e.g., to share a center with a neighbouring
+    // arrow text) clipped the glyph against the canvas top edge whenever
+    // the fire bar's high sat near the visible y-max.
     pctx.fillStyle = glyphCol;
     pctx.font = '11px "IBM Plex Mono", monospace';
     pctx.textAlign = 'center';
     pctx.fillText(glyph, xCenter, yScale(bar.high) - 8);
+
+    // Phase 6 follow-up: directional tail on fade diamonds. A fade fire's
+    // trade direction is the *opposite* of the stretch (up = mean-revert
+    // from below POC; down = mean-revert from above POC), so reading it
+    // off the chart context is non-obvious. We layer a small arrow to
+    // the right of the diamond as a separate, smaller fillText so the
+    // diamond's render path above stays byte-identical to the working
+    // pre-tail behavior — the arrow is purely additive and a no-op when
+    // direction is missing (e.g., legacy fires from before the bias
+    // engine populated `canonical.direction`). Breakouts keep the bare
+    // star: their direction trivially follows the underlying sweep, so
+    // the extra glyph would just add chart noise.
+    if (isFade && (fire.direction === 'up' || fire.direction === 'down')) {
+      const arrow = fire.direction === 'up' ? '↑' : '↓';
+      pctx.font = '9px "IBM Plex Mono", monospace';
+      pctx.textAlign = 'left';
+      pctx.fillText(arrow, xCenter + 6, yScale(bar.high) - 8);
+    }
 
     // Hit-test entry for tooltip + click-to-open-modal.
     state.chartHits.push({

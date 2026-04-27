@@ -60,7 +60,38 @@
   <!-- Price + Volume Profile -->
   <div class="section">
     <div class="section-head">
-      <div class="section-title">Price · Volume Profile · Events</div>
+      <div class="section-title">
+        Price · Volume Profile · Events
+        <!--
+          HTF-bias ribbon legend. The ribbon is drawn at the top of the
+          price canvas (1h strip + 15m strip on 1m timeframe; single 1h
+          strip on 15m; the bar's own bias_state on 1h). Colors here mirror
+          BIAS_PALETTE in src/render/biasRibbon.js exactly — keep them in
+          sync if either side changes. CSS-only popover; show on
+          :hover or :focus-within for keyboard reachability.
+        -->
+        <span class="bias-legend" tabindex="0" role="button"
+              aria-label="HTF bias ribbon legend"
+              aria-describedby="biasLegendPopover">
+          <span class="bias-legend-icon" aria-hidden="true">i</span>
+          <div class="bias-legend-popover" id="biasLegendPopover" role="tooltip">
+            <div class="bias-legend-title">HTF BIAS RIBBON</div>
+            <ul>
+              <li><span class="bias-swatch" style="background:#0e7d4f"></span><span class="bias-name">BULLISH_STRONG</span><span class="bias-vote">+2</span></li>
+              <li><span class="bias-swatch" style="background:#3aa776"></span><span class="bias-name">BULLISH_MILD</span><span class="bias-vote">+1</span></li>
+              <li><span class="bias-swatch" style="background:#3fb6a3"></span><span class="bias-name">ACCUMULATION</span><span class="bias-vote">+1</span></li>
+              <li><span class="bias-swatch" style="background:#5b6470"></span><span class="bias-name">NEUTRAL</span><span class="bias-vote">0</span></li>
+              <li><span class="bias-swatch" style="background:#d39145"></span><span class="bias-name">DISTRIBUTION</span><span class="bias-vote">&minus;1</span></li>
+              <li><span class="bias-swatch" style="background:#c45a5a"></span><span class="bias-name">BEARISH_MILD</span><span class="bias-vote">&minus;1</span></li>
+              <li><span class="bias-swatch" style="background:#933030"></span><span class="bias-name">BEARISH_STRONG</span><span class="bias-vote">&minus;2</span></li>
+            </ul>
+            <div class="bias-legend-foot">
+              Top strip = 1h · Bottom strip = 15m (1m view)<br>
+              Vote sums to alignment score in &minus;4&hellip;+4
+            </div>
+          </div>
+        </span>
+      </div>
       <div class="section-meta" id="barCount">0 bars</div>
     </div>
     <div class="price-wrap">

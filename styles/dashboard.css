@@ -278,6 +278,122 @@
     letter-spacing: 0.5px;
   }
 
+  /* HTF-bias ribbon legend popover.
+     Anchor element is `.bias-legend` rendered inline in the price-section
+     section-title. The icon is a subtle 11px lowercase "i" in a circle;
+     hover OR keyboard focus reveals the popover with the 7-color palette
+     mirrored from BIAS_PALETTE (src/render/biasRibbon.js). Popover is
+     position: absolute relative to the trigger so it doesn't push layout
+     when shown, and z-index above the canvas so it stacks over the chart. */
+  .bias-legend {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    cursor: help;
+    outline: none;
+  }
+  .bias-legend-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1px solid var(--muted-2);
+    color: var(--muted);
+    font-size: 8.5px;
+    font-style: italic;
+    font-family: Georgia, "Times New Roman", serif;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: 0;
+    transition: border-color 120ms, color 120ms;
+  }
+  .bias-legend:hover .bias-legend-icon,
+  .bias-legend:focus-within .bias-legend-icon {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .bias-legend-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 50;
+    min-width: 220px;
+    padding: 10px 12px 8px;
+    background: var(--panel-2);
+    border: 1px solid #2a3142;
+    border-radius: 4px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition: opacity 140ms, transform 140ms, visibility 140ms;
+    pointer-events: none;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .bias-legend:hover .bias-legend-popover,
+  .bias-legend:focus-within .bias-legend-popover {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  .bias-legend-title {
+    font-size: 9px;
+    color: var(--accent);
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .bias-legend-popover ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    column-gap: 8px;
+    row-gap: 3px;
+    font-size: 10.5px;
+    color: var(--text-2);
+  }
+  .bias-legend-popover li {
+    display: contents;
+  }
+  .bias-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 8px;
+    border-radius: 1px;
+    align-self: center;
+  }
+  .bias-name {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9.5px;
+    color: var(--text-2);
+    align-self: center;
+    letter-spacing: 0.2px;
+  }
+  .bias-vote {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9.5px;
+    color: var(--muted);
+    align-self: center;
+    text-align: right;
+  }
+  .bias-legend-foot {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #2a3142;
+    font-size: 9px;
+    color: var(--muted);
+    line-height: 1.5;
+    letter-spacing: 0.3px;
+  }
+
   /* Canvases */
   .price-wrap {
     position: relative;

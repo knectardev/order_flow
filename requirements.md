@@ -177,7 +177,15 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 
 `src/render/priceChart.js` must support:
 
-- Candles + event markers + fire halos.
+- Candles + event markers + fire halos. Fire halos render the watch-type
+  glyph above the bar high (★ for breakout, ◆ for fade). The fade diamond
+  is drawn first at its tuned position (centered on the bar, alphabetic
+  baseline, 11px), then a smaller (9px) directional arrow (`↑` / `↓`)
+  is layered to the *right* of the diamond reflecting `fire.direction`.
+  The arrow is additive — the diamond's render path is unchanged from
+  the pre-tail implementation — so legacy fires with `direction == null`
+  and breakout fires both render exactly as before. The tail is fade-only
+  because breakout direction trivially follows the underlying sweep.
 - Session-anchored VWAP with reset by session boundaries (real mode).
 - Profile overlays (POC/VAH/VAL).
 - RTH session open dividers and date labeling in replay timelines.
@@ -278,7 +286,12 @@ Fallback behavior:
 16. Detection thresholds in `events.js` (`sweepVolMult`, `divergenceFlowMult`) are bias-scaled by the bar's denormalized 1h parent (`biasH1`) via `_biasScale(biasH1, dir)` — the ×0.8 / ×1.0 / ×1.2 family. Null `biasH1` (synthetic / warmup / non-API) must fall back to ×1.0 so synthetic-mode behavior is preserved bit-for-bit. `absorbVolMult` and `absorbRangeMult` are intentionally not scaled (small-range absorption is a structural signal, not a momentum one).
 17. `alignment` is a required first-class criterion in both canonical evaluators (see §5.4). Bumping `total` past `5` (breakout) / `6` (fade) without simultaneously updating `BREAKOUT_LABELS` / `FADE_LABELS`, `criterionKeys` arrays in `src/render/watch.js`, the `flipTicks` initializer in `src/state.js`, every `flipTicks = { ... }` reset in `src/data/replay.js` and `src/ui/controls.js`, and the modal `<li class="criterion">` rows in `src/ui/modal.js` is a regression — these surfaces are coupled by `data-key`.
 18. Fade-specific Wyckoff overrides in `buildAlignment` must never modify `score`, `vote_1h`, or `vote_15m`; only `tag` and (optionally) `reason`. Score-tinted UI assumes the raw vote sum.
-19. The 1m price chart's Y-axis must not compress candles into a thin band when the profile's price extent diverges from the visible candles (e.g. a stale `_lastApiProfile` carry-over from a prior session). Two guards in `src/render/priceChart.js` enforce this: (a) `_isApiProfileCompatibleWith()` rejects the API-profile carry-over both when its price range is disjoint from the candle range (cross-session staleness) **and** when its price range fails to cover the candle range within a small tolerance (~5%) on either side — i.e. intra-session staleness where the candle range has grown since the carry-over was resolved (open spike, late-session run-up); (b) the Y-range fit folds in profile prices only when they sit within `1.5×` the candle range of the candle bounds — otherwise POC/VAH/VAL fall through to the existing off-range arrow indicator in `_drawRefLine`. Rejected carry-overs fall through to the deterministic OHLC proxy (`computeProfile(profileBars)`) which is computed fresh from the current bars and is by construction candle-aligned. Higher timeframes (`15m`, `1h`) keep their candle-only Y-fit (`fitProfileToRange === false`).
+19. The 1m price chart's Y-axis must not compress candles into a thin band when the profile's price extent diverges from the visible candles (e.g. a stale `_lastApiProfile` carry-over from a prior session) **and** must not visibly oscillate between two scales when the profile's POC/VAH/VAL hovers at the inclusion threshold during playback. Three layered guards in `src/render/priceChart.js` enforce this:
+    1. **Carry-over compatibility** (`_isApiProfileCompatibleWith()`) rejects the API-profile carry-over when (a) its price range is disjoint from the candle range (cross-session staleness) or (b) it fails to cover the candle range within `max(candleRange × 0.5, 2 ticks)` on either side. The 50%-of-range tolerance is intentionally loose: the live edge shifts the rolling 60-bar window by a tick or two each settle, which historically blew through a tighter (5%) tolerance on every frame and caused the renderer to flap between the API profile and the OHLC proxy mid-stream. Both methods compute POC differently, so flapping shows up as a multi-point POC jump. Cross-session detection is preserved by the disjoint check (a), which doesn't depend on the tolerance.
+    2. **Slack fold (Y-range fit)** with hysteresis: profile prices are folded into the candle-driven `[lo, hi]` only when within slack of the candle bounds. To prevent edge oscillation a Schmitt-trigger replaces the single threshold — a previously-unfolded price must come well *inside* `slackFold = candleRange × 1.5` to refold; once folded it stays folded until it moves outside `slackKeep = candleRange × 3.0`. State is keyed by profile identity (`priceLo|binStep|binCount`) and reset on profile change so we don't carry decisions across session boundaries, pans, or timeframe switches.
+    3. **Off-range fallback**: any rejected price falls through to the existing off-range arrow indicator in `_drawRefLine` (POC/VAH/VAL pinned to top/bottom edge with a price label and ↑/↓ marker).
+
+    Rejected carry-overs fall through to the deterministic OHLC proxy (`computeProfile(profileBars)`) which is computed fresh from the current bars and is by construction candle-aligned. Higher timeframes (`15m`, `1h`) keep their candle-only Y-fit (`fitProfileToRange === false`).
 
 ---
 
