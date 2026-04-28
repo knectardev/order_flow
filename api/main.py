@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,11 @@ import duckdb
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
+from pydantic import BaseModel, Field
+
+PIPELINE_SRC = (Path(__file__).resolve().parents[1] / "pipeline" / "src")
+if str(PIPELINE_SRC) not in sys.path:
+    sys.path.append(str(PIPELINE_SRC))
 
 
 # Database path. Override via env var to point at a non-default DB file (e.g.
@@ -92,6 +98,7 @@ DEFAULT_TIMEFRAME = "1m"
 
 # Event types stored in DuckDB `events.event_type` (see pipeline/db.py).
 _EVENT_TYPES_ALLOWED = frozenset({"sweep", "absorption", "divergence", "stoprun"})
+_WATCH_IDS_ALLOWED = frozenset({"breakout", "fade", "absorptionWall", "valueEdgeReject"})
 
 
 app = FastAPI(
@@ -102,7 +109,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -122,6 +129,16 @@ def _connect() -> duckdb.DuckDBPyConnection:
             detail=f"DuckDB file not found at {DB_PATH}. Run `orderflow_pipeline aggregate --db-path {DB_PATH}` first.",
         )
     return duckdb.connect(str(DB_PATH), read_only=True)
+
+
+def _connect_rw() -> duckdb.DuckDBPyConnection:
+    """Open a read-write connection (used by backtest run endpoint)."""
+    if not DB_PATH.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"DuckDB file not found at {DB_PATH}. Run `orderflow_pipeline aggregate --db-path {DB_PATH}` first.",
+        )
+    return duckdb.connect(str(DB_PATH))
 
 
 def _validate_timeframe(tf: str | None) -> str:
@@ -337,6 +354,19 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
     }
     shape.update(_attach_htf_bias(b, tf))
     return shape
+
+
+class BacktestRunRequest(BaseModel):
+    timeframe: str | None = Field(default=None)
+    from_: str = Field(alias="from")
+    to: str
+    initial_capital: float = 50_000.0
+    qty: int = 1
+    slippage_ticks: float = 1.0
+    commission_per_side: float = 2.0
+    tick_size: float = 0.25
+    point_value: float = 50.0
+    watch_ids: list[str] | None = None
 
 
 # ───────────────────────────────────────────────────────────
@@ -806,6 +836,178 @@ def get_occupancy(
     return ORJSONResponse(content=body, headers=headers)
 
 
+@app.post("/api/backtest/run")
+def run_backtest(payload: BacktestRunRequest) -> dict:
+    from orderflow_pipeline.backtest_engine import BacktestEngine, BrokerConfig
+    from orderflow_pipeline.db import init_schema
+
+    tf = _validate_timeframe(payload.timeframe)
+    from_dt = _parse_iso(payload.from_)
+    to_dt = _parse_iso(payload.to)
+    if from_dt is None or to_dt is None:
+        raise HTTPException(status_code=400, detail="Provide `from` and `to` ISO timestamps.")
+    if from_dt > to_dt:
+        raise HTTPException(status_code=400, detail="`from` must be <= `to`.")
+    watch_ids = payload.watch_ids or []
+    bad_watch = [w for w in watch_ids if w not in _WATCH_IDS_ALLOWED]
+    if bad_watch:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid watch_ids={bad_watch}; allowed={sorted(_WATCH_IDS_ALLOWED)}",
+        )
+
+    con = _connect_rw()
+    try:
+        init_schema(con)
+        engine = BacktestEngine(con)
+        summary = engine.run(
+            timeframe=tf,
+            from_time=from_dt,
+            to_time=to_dt,
+            config=BrokerConfig(
+                initial_capital=payload.initial_capital,
+                qty=payload.qty,
+                slippage_ticks=payload.slippage_ticks,
+                commission_per_side=payload.commission_per_side,
+                tick_size=payload.tick_size,
+                point_value=payload.point_value,
+            ),
+            watch_ids=set(watch_ids) if watch_ids else None,
+        )
+        return summary
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        con.close()
+
+
+@app.get("/api/backtest/stats")
+def get_backtest_stats(run_id: str | None = Query(default=None, alias="runId")) -> dict:
+    con = _connect()
+    try:
+        if run_id:
+            row = con.execute(
+                """
+                SELECT run_id, created_at, timeframe, from_time, to_time, initial_capital,
+                       trade_count, win_rate, sharpe, max_drawdown, net_pnl
+                FROM backtest_runs
+                WHERE run_id = ?
+                """,
+                [run_id],
+            ).fetchone()
+        else:
+            row = con.execute(
+                """
+                SELECT run_id, created_at, timeframe, from_time, to_time, initial_capital,
+                       trade_count, win_rate, sharpe, max_drawdown, net_pnl
+                FROM backtest_runs
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No backtest runs found.")
+    return {
+        "runId": row[0],
+        "createdAt": row[1].strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timeframe": row[2],
+        "from": row[3].strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "to": row[4].strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "initialCapital": row[5],
+        "tradeCount": row[6],
+        "winRate": row[7],
+        "sharpe": row[8],
+        "maxDrawdown": row[9],
+        "netPnl": row[10],
+    }
+
+
+@app.get("/api/backtest/equity")
+def get_backtest_equity(run_id: str | None = Query(default=None, alias="runId")) -> dict:
+    con = _connect()
+    try:
+        rid = run_id
+        if rid is None:
+            latest = con.execute(
+                "SELECT run_id FROM backtest_runs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            rid = latest[0] if latest else None
+        if rid is None:
+            raise HTTPException(status_code=404, detail="No backtest runs found.")
+        rows = con.execute(
+            """
+            SELECT bar_time, equity, cash, unrealized_pnl, realized_pnl
+            FROM backtest_equity
+            WHERE run_id = ?
+            ORDER BY bar_time
+            """,
+            [rid],
+        ).fetchall()
+    finally:
+        con.close()
+    return {
+        "runId": rid,
+        "points": [
+            {
+                "time": r[0].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "equity": r[1],
+                "cash": r[2],
+                "unrealizedPnl": r[3],
+                "realizedPnl": r[4],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/backtest/trades")
+def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId")) -> dict:
+    con = _connect()
+    try:
+        rid = run_id
+        if rid is None:
+            latest = con.execute(
+                "SELECT run_id FROM backtest_runs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            rid = latest[0] if latest else None
+        if rid is None:
+            raise HTTPException(status_code=404, detail="No backtest runs found.")
+        rows = con.execute(
+            """
+            SELECT trade_id, watch_id, entry_time, exit_time, direction, qty,
+                   entry_price, exit_price, gross_pnl, commission, net_pnl, bars_held
+            FROM backtest_trades
+            WHERE run_id = ?
+            ORDER BY trade_id
+            """,
+            [rid],
+        ).fetchall()
+    finally:
+        con.close()
+    return {
+        "runId": rid,
+        "trades": [
+            {
+                "tradeId": r[0],
+                "watchId": r[1],
+                "entryTime": r[2].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "exitTime": r[3].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "direction": r[4],
+                "qty": r[5],
+                "entryPrice": r[6],
+                "exitPrice": r[7],
+                "grossPnl": r[8],
+                "commission": r[9],
+                "netPnl": r[10],
+                "barsHeld": r[11],
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.get("/")
 def root() -> dict:
     """Tiny health/discovery endpoint."""
@@ -815,6 +1017,7 @@ def root() -> dict:
         "endpoints": [
             "/timeframes", "/sessions", "/date-range", "/bars", "/events",
             "/fires", "/profile", "/occupancy",
+            "/api/backtest/run", "/api/backtest/stats", "/api/backtest/equity", "/api/backtest/trades",
         ],
         "supported_timeframes": list(SUPPORTED_TIMEFRAMES),
     }

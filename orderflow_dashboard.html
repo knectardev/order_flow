@@ -141,6 +141,41 @@
   </div><!-- /col-left -->
   <div class="col-right">
 
+  <div class="section" id="backtestSection">
+    <div class="section-head">
+      <div class="section-title">Performance</div>
+      <div class="section-meta" id="backtestStatus">Ready</div>
+    </div>
+    <div class="backtest-controls">
+      <label>Backtest scope
+        <select id="btScope">
+          <option value="all" selected>All canonical watches</option>
+          <option value="breakout">Breakout only</option>
+          <option value="fade">Fade only</option>
+          <option value="absorptionWall">Absorption Wall only</option>
+          <option value="valueEdgeReject">Value Edge only</option>
+        </select>
+      </label>
+      <label>Capital <input id="btInitialCapital" type="number" value="50000" step="1000"></label>
+      <label>Commission/side <input id="btCommission" type="number" value="2" step="0.25"></label>
+      <label>Slippage (ticks) <input id="btSlippage" type="number" value="1" step="0.25"></label>
+      <button id="btRunBtn">Run Backtest</button>
+    </div>
+    <div class="backtest-metrics">
+      <div class="bt-card"><span>Scope</span><strong id="btStatScope">all</strong></div>
+      <div class="bt-card"><span>Run</span><strong id="btStatRunId">—</strong></div>
+      <div class="bt-card"><span>Trades</span><strong id="btStatTrades">—</strong></div>
+      <div class="bt-card"><span>Win Rate</span><strong id="btStatWinRate">—</strong></div>
+      <div class="bt-card"><span>Sharpe</span><strong id="btStatSharpe">—</strong></div>
+      <div class="bt-card"><span>Max DD</span><strong id="btStatMaxDd">—</strong></div>
+      <div class="bt-card"><span>Net P&L</span><strong id="btStatNetPnl">—</strong></div>
+      <div class="bt-card"><span>Equity Pts</span><strong id="btStatEqPoints">—</strong></div>
+    </div>
+    <div class="price-wrap backtest-chart-wrap">
+      <canvas id="backtestEquityChart"></canvas>
+    </div>
+  </div>
+
   <!-- Regime Matrix -->
   <div class="section">
     <div class="section-head">

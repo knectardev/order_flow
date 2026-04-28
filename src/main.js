@@ -2,10 +2,12 @@ import { state } from './state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
 import { bootstrapReplay, setActiveTimeframe } from './data/replay.js';
+import { fetchBacktestEquity, fetchBacktestStats, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { restoreDisplayStateFromUrl } from './render/eventInventory.js';
 import { drawPriceChart } from './render/priceChart.js';
+import { renderBacktestPanel } from './render/backtestPanel.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from './render/watch.js';
 import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
 import { dismissFire, openFireDetails } from './ui/fireBanner.js';
@@ -99,6 +101,7 @@ bindMatrixRangeUI();
 //   - Esc                 → clear selection
 bindSelectionUI();
 bindEventLogClicks();
+bindBacktestUI();
 
 // The /occupancy fetch is async; when a fresh response lands we want to
 // repaint the matrix (so the heatmap layer fills in) without coupling
@@ -109,4 +112,80 @@ window.addEventListener('orderflow:matrix-repaint', () => repaintMatrix());
 window.addEventListener('orderflow:replay-ready', async () => {
   await restoreDisplayStateFromUrl();
   restoreSelectionFromUrl();
+  await refreshBacktestPanel();
 });
+
+async function refreshBacktestPanel(runId = null) {
+  try {
+    const stats = await fetchBacktestStats(runId);
+    state.backtest.stats = stats;
+    state.backtest.runId = stats.runId;
+    const [equity, trades] = await Promise.all([
+      fetchBacktestEquity(stats.runId),
+      fetchBacktestTrades(stats.runId),
+    ]);
+    state.backtest.equity = equity.points || [];
+    state.backtest.trades = trades.trades || [];
+    state.backtest.error = null;
+  } catch (_) {
+    // No prior run is a normal initial state.
+  } finally {
+    renderBacktestPanel();
+  }
+}
+
+function _windowBoundsIso() {
+  if (state.replay.mode === 'real' && state.replay.dateRange?.min && state.replay.dateRange?.max) {
+    return { from: state.replay.dateRange.min, to: state.replay.dateRange.max };
+  }
+  const now = new Date();
+  const from = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+  return {
+    from: from.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    to: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+}
+
+function bindBacktestUI() {
+  const runBtn = document.getElementById('btRunBtn');
+  const scopeInput = document.getElementById('btScope');
+  const capInput = document.getElementById('btInitialCapital');
+  const commInput = document.getElementById('btCommission');
+  const slipInput = document.getElementById('btSlippage');
+  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput) return;
+
+  runBtn.addEventListener('click', async () => {
+    if (state.backtest.loading) return;
+    state.backtest.loading = true;
+    state.backtest.error = null;
+    state.backtest.runParams = {
+      scope: String(scopeInput.value || 'all'),
+      initialCapital: Number(capInput.value || 50000),
+      commissionPerSide: Number(commInput.value || 2),
+      slippageTicks: Number(slipInput.value || 1),
+      qty: 1,
+    };
+    renderBacktestPanel();
+    try {
+      const { from, to } = _windowBoundsIso();
+      const run = await runBacktest({
+        from,
+        to,
+        timeframe: state.activeTimeframe || '1m',
+        scope: state.backtest.runParams.scope,
+        initialCapital: state.backtest.runParams.initialCapital,
+        commissionPerSide: state.backtest.runParams.commissionPerSide,
+        slippageTicks: state.backtest.runParams.slippageTicks,
+        qty: state.backtest.runParams.qty,
+      });
+      await refreshBacktestPanel(run.runId);
+    } catch (err) {
+      state.backtest.error = err?.message || 'Backtest failed.';
+      renderBacktestPanel();
+    } finally {
+      state.backtest.loading = false;
+      renderBacktestPanel();
+    }
+  });
+  renderBacktestPanel();
+}

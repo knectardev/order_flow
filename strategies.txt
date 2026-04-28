@@ -31,6 +31,8 @@ The code utilizes several Python libraries to execute this logic:
 * **Pandas:** Used for handling the time-series data and calculating the rolling `mean()` and `std()` (standard deviation).
 * **Vectorized Backtesting:** Instead of checking each day one by one, the strategy uses NumPy/Pandas to apply the logic across the entire dataset at once to calculate historical returns.
 
+
+
 ### Summary of the Strategy Cycle:
 1.  **Identify Volatility:** Calculate the rolling standard deviation of the asset.
 2.  **Wait for Extremes:** Monitor the Z-score for a breach of the $\pm2$ standard deviation bands.

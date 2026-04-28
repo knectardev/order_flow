@@ -1,21 +1,75 @@
-Gaps worth addressing
-1. Phase 2: seek shouldn't become unconditionally async — create seekAsync instead.
-The plan says "refactor the inner for loop in seek" but seek has many callers beyond _loadAllSessionsFromApi: the pan handler, jump-to-fire (which restores chartViewEnd + calls _syncCurrentSession), and the slow path inside precomputeAllFires itself. Making seek return a Promise breaks all non-awaiting callers silently. The safer path is a new seekAsync(n, onProgress?) that wraps the batched loop, and only _loadAllSessionsFromApi (and possibly the TF-switch restore seek) get migrated to await seekAsync(...).
-2. Phase 2: race condition on TF switch during in-flight async seek.
-If the user switches timeframe while an async seekAsync is yielding mid-loop, the next _loadAllSessionsFromApi starts its own seekAsync on a freshly reset allBars. You'd need a cancellation token or generation counter so the stale in-progress seek detects the invalidation and aborts early — otherwise you get state corruption from two concurrent _commitRealBar streams writing into the same singleton. The plan doesn't mention this at all.
-3. Fast path: explicitly document the chartViewEnd restore step even with no seeks.
-The plan says "restore chartViewEnd if needed (same as today after the two seeks)" but doesn't confirm whether seek() is what clobbers chartViewEnd in the first place. If seek doesn't touch chartViewEnd, the restore in the fast path is a harmless no-op. If it does (e.g. via _commitRealBar → some viewport side-effect), then the fast path bypasses that clobber and the restore is still correct — but this should be verified explicitly rather than assumed, since the requirements doc (§3) is careful about chartViewEnd semantics in panned vs live state.
-4. The "slow path still has two seek(N) calls" note is slightly misleading.
-When precomputeAllFires is triggered from the pan handler with savedCursor < N, _loadAllSessionsFromApi is not the caller — so there's no prior seek(N) in flight. The slow path is self-contained: seek(N) + copy + seek(savedCursor). Today's bug (the double seek(N)) only manifests when called from _loadAllSessionsFromApi where savedCursor === N. The plan conflates these two contexts slightly in the "slow path" description — worth clarifying so the code comment is unambiguous.
 
-Suggested addition to the requirements sync (TODO #3)
-The requirements doc (§3) currently says:
 
-"The first time the user pans off the live edge while replay.allFires is still empty, precomputeAllFires() runs (saving and restoring chartViewEnd so the viewport is not reset)."
+---
 
-After Phase 1 this should additionally note:
+## 1. Modular Backtesting Architecture
 
-When called with cursor === allBars.length, no seek is performed; allFires is snapshotted directly from canonicalFires.
-When called from _loadAllSessionsFromApi, allFires is populated inline without a separate seek pass.
+The system should be decoupled into four primary components that interact through an event loop.
 
-And after Phase 2, it should describe the loading overlay and that drawPriceChart fires once at completion of the async seek, not per-batch.
+| Component | Responsibility | Existing/New |
+| :--- | :--- | :--- |
+| **Data Engine** | Reads Databento "Trades" schema from **DuckDB**. Streams rows into the event loop one-by-one or in chunks. | **Existing** (Pipeline) |
+| **Regime Classifier** | Processes raw trades to compute `v_rank`, `d_rank`, and `bias_state`. Identifies absorption and sweeps. | **Existing** (Pipeline) |
+| **Strategy Engine** | Consumes regime data and fires. Evaluates entry/exit criteria based on your strategies (e.g., `Breakout`, `Fade`). | **New Logic** |
+| **Simulated Broker** | Tracks virtual capital, manages orders (Market/Limit), applies commissions/slippage, and records P&L. | **New Component** |
+
+---
+
+## 2. Technical Implementation Plan
+
+### Phase 1: The Execution Simulator (Backend)
+Instead of just visualizing events, you need a module that can "own" a position.
+* **Order Manager:** Create a Python class in `pipeline/src/orderflow_pipeline/` called `SimulatedBroker`. 
+* **State Tracking:** It must track `current_position`, `entry_price`, `unrealized_pnl`, and `realized_pnl`.
+* **Accounting:** Use **Mark-to-Market** accounting (especially if trading Futures like ES/MES) where cash is updated at every bar/trade tick to reflect available buying power.
+
+### Phase 2: Strategy "Triggers"
+Your requirements already define "Fires" (Breakout, Fade). You need to map these to trade actions:
+* **Entry Logic:** `If fire == "★ Breakout" AND h1_bias == "up" → Market Buy`.
+* **Exit Logic:** Define a `StopLoss` and `TakeProfit` based on the `vwap` or `value_edge` already present in your data schema.
+
+### Phase 3: Reporting & Visualization (Frontend Integration)
+* **DuckDB Storage:** Store backtest results in a new table `backtest_results` with columns: `trade_id`, `entry_time`, `exit_time`, `type`, `pnl`.
+* **Dashboard Update:** Add a "Performance" tab to your `orderflow_dashboard.html` that queries a new `/backtest/stats` endpoint to show:
+    * **Equity Curve:** Cumulative P&L over time.
+    * **Metrics:** Sharpe Ratio, Max Drawdown, and Win Rate.
+
+---
+
+## 3. Recommended Prompt for Cursor
+
+Copy and paste the following into Cursor to generate the implementation plan:
+
+> "I want to build an event-driven backtesting engine on top of my existing FastAPI/DuckDB setup.
+> 
+> **Context:**
+> - My data is in DuckDB (1m/15m/1h bars) with order flow events (sweeps, absorption, divergences).
+> - I use Databento 'Trades' schema as the base.
+> 
+> **Requirements:**
+> 1. Create a `backtest_engine.py` that iterates through the `bars` and `events` tables chronologically.
+> 2. Implement a `Strategy` class that can 'subscribe' to the existing `fires` triggers (Breakout, Fade, etc.).
+> 3. Implement a `Broker` simulator that handles market orders, slippage (e.g., 1 tick), and mark-to-market P&L for Futures (ES/MES).
+> 4. Save results to a DuckDB table `backtest_trades`.
+> 5. Create a FastAPI endpoint `/api/backtest/run` that triggers a run and returns a JSON summary of Sharpe Ratio and Max Drawdown.
+> 
+> Please provide a file-by-file implementation plan starting with the `Broker` logic."
+
+---
+
+## 4. Key Performance Metrics to Track
+
+To ensure your regime classification is actually working, your backtester should report performance **per regime**:
+
+| Metric | Trending (High V-Rank) | Ranging (Low V-Rank) |
+| :--- | :--- | :--- |
+| **Win Rate** | Target higher for Breakouts | Target higher for Fades |
+| **Avg. Trade Duration** | Usually longer | Usually shorter |
+| **Profit Factor** | Ratio of gross gains to losses | Ratio of gross gains to losses |
+
+### 5. "Backtest Module"
+* Account Simulator: A class to track Cash, PositionSize, and RealizedPnL. 
+* Trade Logger: A DuckDB table to store trade entries and exits (linked to the fires table).
+* Performance Analytics: A Python script (likely in the pipeline/ directory) to calculate the Sharpe Ratio and Drawdowns from the trade log.
+* UI Inputs: A new sidebar component in the dashboard to set your $ Capital, Commission/Tick, and Slippage/Ticks.
+* Equity Chart: A new canvas strip below the volume band to plot the cumulative P&L.

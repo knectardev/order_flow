@@ -82,7 +82,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 
@@ -154,6 +154,60 @@ _SCHEMA_SQL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_bars_tf_bartime ON bars(timeframe, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_bvp_tf_bar      ON bar_volume_profile(timeframe, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_bvp_tick        ON bar_volume_profile(price_tick)",
+    """
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+        run_id               VARCHAR    PRIMARY KEY,
+        created_at           TIMESTAMP  NOT NULL,
+        timeframe            VARCHAR    NOT NULL,
+        from_time            TIMESTAMP  NOT NULL,
+        to_time              TIMESTAMP  NOT NULL,
+        initial_capital      DOUBLE     NOT NULL,
+        qty                  INTEGER    NOT NULL,
+        slippage_ticks       DOUBLE     NOT NULL,
+        commission_per_side  DOUBLE     NOT NULL,
+        tick_size            DOUBLE     NOT NULL,
+        point_value          DOUBLE     NOT NULL,
+        trade_count          INTEGER    NOT NULL,
+        win_rate             DOUBLE,
+        sharpe               DOUBLE,
+        max_drawdown         DOUBLE,
+        net_pnl              DOUBLE     NOT NULL,
+        metadata_json        VARCHAR
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS backtest_trades (
+        run_id               VARCHAR    NOT NULL,
+        trade_id             INTEGER    NOT NULL,
+        watch_id             VARCHAR,
+        entry_time           TIMESTAMP  NOT NULL,
+        exit_time            TIMESTAMP  NOT NULL,
+        direction            VARCHAR    NOT NULL,
+        qty                  INTEGER    NOT NULL,
+        entry_price          DOUBLE     NOT NULL,
+        exit_price           DOUBLE     NOT NULL,
+        gross_pnl            DOUBLE     NOT NULL,
+        commission           DOUBLE     NOT NULL,
+        net_pnl              DOUBLE     NOT NULL,
+        bars_held            INTEGER    NOT NULL,
+        PRIMARY KEY (run_id, trade_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS backtest_equity (
+        run_id               VARCHAR    NOT NULL,
+        bar_time             TIMESTAMP  NOT NULL,
+        equity               DOUBLE     NOT NULL,
+        cash                 DOUBLE     NOT NULL,
+        unrealized_pnl       DOUBLE     NOT NULL,
+        realized_pnl         DOUBLE     NOT NULL,
+        PRIMARY KEY (run_id, bar_time)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_created ON backtest_runs(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_tf_time ON backtest_runs(timeframe, from_time, to_time)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_trades_run ON backtest_trades(run_id, entry_time)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_equity_run ON backtest_equity(run_id, bar_time)",
 )
 
 
@@ -323,6 +377,107 @@ def write_session(
                 SELECT bar_time, timeframe, price_tick, volume, delta FROM profile_df
                 """
             )
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+
+
+def write_backtest_results(
+    con: duckdb.DuckDBPyConnection,
+    run_row: dict[str, Any],
+    trades: list[dict[str, Any]],
+    equity_points: list[dict[str, Any]],
+) -> None:
+    """Persist one backtest run plus its trades/equity timeline atomically."""
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM backtest_runs WHERE run_id = ?", [run_row["run_id"]])
+        con.execute("DELETE FROM backtest_trades WHERE run_id = ?", [run_row["run_id"]])
+        con.execute("DELETE FROM backtest_equity WHERE run_id = ?", [run_row["run_id"]])
+
+        con.execute(
+            """
+            INSERT INTO backtest_runs (
+                run_id, created_at, timeframe, from_time, to_time,
+                initial_capital, qty, slippage_ticks, commission_per_side,
+                tick_size, point_value, trade_count, win_rate, sharpe,
+                max_drawdown, net_pnl, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                run_row["run_id"],
+                run_row["created_at"],
+                run_row["timeframe"],
+                run_row["from_time"],
+                run_row["to_time"],
+                run_row["initial_capital"],
+                run_row["qty"],
+                run_row["slippage_ticks"],
+                run_row["commission_per_side"],
+                run_row["tick_size"],
+                run_row["point_value"],
+                run_row["trade_count"],
+                run_row.get("win_rate"),
+                run_row.get("sharpe"),
+                run_row.get("max_drawdown"),
+                run_row["net_pnl"],
+                run_row.get("metadata_json"),
+            ],
+        )
+
+        if trades:
+            con.executemany(
+                """
+                INSERT INTO backtest_trades (
+                    run_id, trade_id, watch_id, entry_time, exit_time,
+                    direction, qty, entry_price, exit_price, gross_pnl,
+                    commission, net_pnl, bars_held
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    [
+                        t["run_id"],
+                        t["trade_id"],
+                        t.get("watch_id"),
+                        t["entry_time"],
+                        t["exit_time"],
+                        t["direction"],
+                        t["qty"],
+                        t["entry_price"],
+                        t["exit_price"],
+                        t["gross_pnl"],
+                        t["commission"],
+                        t["net_pnl"],
+                        t["bars_held"],
+                    ]
+                    for t in trades
+                ],
+            )
+
+        if equity_points:
+            con.executemany(
+                """
+                INSERT INTO backtest_equity (
+                    run_id, bar_time, equity, cash, unrealized_pnl, realized_pnl
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    [
+                        p["run_id"],
+                        p["bar_time"],
+                        p["equity"],
+                        p["cash"],
+                        p["unrealized_pnl"],
+                        p["realized_pnl"],
+                    ]
+                    for p in equity_points
+                ],
+            )
+
         con.execute("COMMIT")
     except Exception:
         con.execute("ROLLBACK")

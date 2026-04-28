@@ -36,7 +36,7 @@ Design intent remains unchanged:
   - DuckDB schema keys rows by `(bar_time, timeframe)` and keeps per-timeframe isolation for bars/events/fires/profile rows.
   - `bars` rows additionally carry `vwap`, `bias_state`, `parent_1h_bias`, `parent_15m_bias` columns (Phase 6 — see §13).
   - Aggregation order is `1h → 15m → 1m` so lower timeframes can denormalize parent biases via a half-open interval join in `_stamp_parent_bias`.
-- API: `api/main.py` exposes read-only endpoints:
+- API: `api/main.py` exposes market-data read endpoints plus a backtest run endpoint:
   - `/timeframes`
   - `/sessions`
   - `/date-range` (MIN/MAX `bar_time` in `bars` for a `timeframe` — timeline bounds)
@@ -45,6 +45,10 @@ Design intent remains unchanged:
   - `/fires`
   - `/profile`
   - `/occupancy`
+  - `POST /api/backtest/run`
+  - `GET /api/backtest/stats`
+  - `GET /api/backtest/equity`
+  - `GET /api/backtest/trades`
 - API endpoints that return market rows are timeframe-aware (`timeframe` query parameter, default `1m`), and must not mix contexts across timeframes.
 - `/bars`, `/events`, `/fires` payloads include `vwap`, `biasState`, `biasH1`, `bias15m` (camelCase) projected from the persisted columns via `_attach_htf_bias`.
 - Storage: DuckDB (`data/orderflow.duckdb` by default).
@@ -76,6 +80,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
 - **Bias filter state:** `biasFilterMode` (`'soft'` | `'hard'` | `'off'`, default `'soft'`) and `showSuppressed` (`boolean`, default `false`). Bootstrapped from `?biasFilter=` and `?showSuppressed=` URL params (Phase 6 — see §13).
+- **Backtest state:** `backtest` stores run params (`initialCapital`, `commissionPerSide`, `slippageTicks`, `qty`), latest `runId`, latest `stats`, and fetched `equity` / `trades` payloads plus loading/error UI flags.
 
 ---
 
@@ -463,3 +468,43 @@ Application:
 ### 13.8 Phase 2 — Weighted Conviction Score (deferred)
 
 The current model is binary: `fired = passing === total` (5 for breakout, 6 for fade). A future migration will replace this with a normalized `convictionScore ∈ [0, 1]` weighted 30 / 30 / 40 across core technicals / regime cell match / HTF alignment respectively, firing at `convictionScore >= 0.70` (threshold to be calibrated). `SUPPRESSED` would still hard-veto regardless of score. This phase is documented but not yet implemented; the binary gate above is the current contract.
+
+---
+
+## 14) Backtesting MVP (Existing Fires)
+
+### 14.1 Scope
+
+- The MVP backtester reuses persisted `fires` as strategy triggers (no new signal model).
+- If persisted `fires` are absent in the selected window, the engine derives deterministic fallback breakout/fade proxy signals from bars so backtests still execute.
+- Execution is single-position and deterministic: one open position max, flip on opposite signal, flatten at the window end.
+- Fire mapping:
+  - `breakout`: trade with fire direction.
+  - `fade`, `valueEdgeReject`, `absorptionWall`: trade opposite fire direction (mean-reversion read).
+
+### 14.2 DuckDB Contracts
+
+- `backtest_runs` stores one summary row per run (`run_id`, params, aggregate metrics, net P&L).
+- `backtest_trades` stores closed-trade records (`entry_time`, `exit_time`, direction, prices, gross/net P&L, bars held, source watch).
+- `backtest_equity` stores the mark-to-market equity series by bar timestamp.
+- Writes are transactional and keyed by `run_id`; re-writing an existing `run_id` replaces that run's rows in all three tables.
+
+### 14.3 Broker / Accounting
+
+- `SimulatedBroker` applies adverse slippage per side (`slippage_ticks * tick_size`) and per-side commission.
+- P&L uses futures point value (`point_value`) and quantity (`qty`):
+  - `gross_pnl = (exit - entry) * side * point_value * qty`
+  - `net_pnl = gross_pnl - entry_commission - exit_commission`
+- Equity is mark-to-market per bar: `equity = cash + unrealized_pnl`.
+
+### 14.4 API and UI Contracts
+
+- `POST /api/backtest/run` runs synchronously for a requested timeframe/window and returns run summary (`runId`, `tradeCount`, `winRate`, `sharpe`, `maxDrawdown`, `netPnl`, `endingEquity`).
+- `POST /api/backtest/run` accepts optional `watch_ids` to scope execution to specific canonical watches (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`).
+- `GET /api/backtest/stats`, `/api/backtest/equity`, `/api/backtest/trades` return latest run by default, or a specific run via `runId`.
+- Dashboard `Performance` panel includes:
+  - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params).
+  - Inputs: capital, commission-per-side, slippage ticks.
+  - Run action button.
+  - Metric cards (Sharpe, max drawdown, win rate, net P&L, trade count).
+  - Equity curve canvas rendered from `/api/backtest/equity`.

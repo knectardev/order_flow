@@ -120,6 +120,23 @@ export const state = {
     pendingSeekPromise: null,
   },
 
+  // Backtest MVP state (existing-fire replay strategy).
+  backtest: {
+    runParams: {
+      scope: 'all',
+      initialCapital: 50000,
+      commissionPerSide: 2,
+      slippageTicks: 1,
+      qty: 1,
+    },
+    runId: null,
+    stats: null,
+    equity: [],
+    trades: [],
+    loading: false,
+    error: null,
+  },
+
   // Chart viewport state for real-data history scrolling.
   // `chartViewEnd` is an exclusive index into replay.allBars; null ⇒ follow live cursor
   // (default behavior — viewport ends at the last committed/forming bar).
