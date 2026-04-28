@@ -161,17 +161,62 @@ function _windowBoundsIso() {
   };
 }
 
+function _emptyCompareUnfiltered() {
+  return {
+    runId: null,
+    stats: null,
+    equity: [],
+    benchmark: [],
+    trades: [],
+    skipped: { summary: {}, rows: [] },
+  };
+}
+
+/** Reflects compare-regime-OFF toggle: legend, OFF markers row, and stale OFF run data when disabled. */
+function syncBacktestCompareRegimeOffUI() {
+  const compareInput = document.getElementById('btCompareRegimeOff');
+  const legendOff = document.getElementById('btLegendRegimeOff');
+  const markersOffLabel = document.getElementById('btMarkersOffLabel');
+  const markersOffInput = document.getElementById('btShowMarkersOff');
+  if (!compareInput) return;
+  const on = !!state.backtest.runParams.compareRegimeOff;
+  compareInput.checked = on;
+  if (legendOff) legendOff.hidden = !on;
+  if (markersOffLabel) markersOffLabel.hidden = !on;
+  if (markersOffInput) {
+    markersOffInput.disabled = !on;
+    markersOffInput.checked = on && state.backtest.runParams.showMarkersOff !== false;
+  }
+  if (!on) {
+    state.backtest.runParams = {
+      ...state.backtest.runParams,
+      showMarkersOff: false,
+    };
+    state.backtest.compare.unfiltered = _emptyCompareUnfiltered();
+  }
+}
+
 function bindBacktestUI() {
   const runBtn = document.getElementById('btRunBtn');
   const scopeInput = document.getElementById('btScope');
   const capInput = document.getElementById('btInitialCapital');
   const commInput = document.getElementById('btCommission');
   const slipInput = document.getElementById('btSlippage');
+  const compareInput = document.getElementById('btCompareRegimeOff');
   const markersOnInput = document.getElementById('btShowMarkersOn');
   const markersOffInput = document.getElementById('btShowMarkersOff');
-  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !markersOnInput || !markersOffInput) return;
+  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !compareInput || !markersOnInput || !markersOffInput) return;
   markersOnInput.checked = state.backtest.runParams.showMarkersOn !== false;
-  markersOffInput.checked = state.backtest.runParams.showMarkersOff !== false;
+  syncBacktestCompareRegimeOffUI();
+  compareInput.addEventListener('change', () => {
+    state.backtest.runParams = {
+      ...state.backtest.runParams,
+      compareRegimeOff: !!compareInput.checked,
+    };
+    syncBacktestCompareRegimeOffUI();
+    drawPriceChart();
+    renderBacktestPanel();
+  });
   markersOnInput.addEventListener('change', () => {
     state.backtest.runParams = {
       ...state.backtest.runParams,
@@ -195,13 +240,15 @@ function bindBacktestUI() {
     state.backtest.error = null;
     state.backtest.runParams = {
       scope: String(scopeInput.value || 'all'),
+      compareRegimeOff: !!compareInput.checked,
       showMarkersOn: !!markersOnInput.checked,
-      showMarkersOff: !!markersOffInput.checked,
+      showMarkersOff: !!compareInput.checked && !!markersOffInput.checked,
       initialCapital: Number(capInput.value || 50000),
       commissionPerSide: Number(commInput.value || 2),
       slippageTicks: Number(slipInput.value || 1),
       qty: 1,
     };
+    syncBacktestCompareRegimeOffUI();
     renderBacktestPanel();
     try {
       const { from, to } = _windowBoundsIso();
@@ -215,40 +262,65 @@ function bindBacktestUI() {
         slippageTicks: state.backtest.runParams.slippageTicks,
         qty: state.backtest.runParams.qty,
       };
-      const [filteredRun, unfilteredRun] = await Promise.all([
-        runBacktest({ ...common, useRegimeFilter: true }),
-        runBacktest({ ...common, useRegimeFilter: false }),
-      ]);
-      const [eqA, eqB, trA, trB, skA, skB] = await Promise.all([
-        fetchBacktestEquity(filteredRun.runId),
-        fetchBacktestEquity(unfilteredRun.runId),
-        fetchBacktestTrades(filteredRun.runId),
-        fetchBacktestTrades(unfilteredRun.runId),
-        fetchBacktestSkippedFires(filteredRun.runId),
-        fetchBacktestSkippedFires(unfilteredRun.runId),
-      ]);
-      state.backtest.runId = filteredRun.runId;
-      state.backtest.stats = filteredRun;
-      state.backtest.equity = eqA.points || [];
-      state.backtest.trades = trA.trades || [];
-      state.backtest.compare.filtered = {
-        runId: filteredRun.runId,
-        stats: filteredRun,
-        equity: eqA.points || [],
-        benchmark: eqA.benchmark?.points || [],
-        trades: trA.trades || [],
-        skipped: { summary: skA.summary || {}, rows: skA.rows || [] },
-      };
-      state.backtest.compare.unfiltered = {
-        runId: unfilteredRun.runId,
-        stats: unfilteredRun,
-        equity: eqB.points || [],
-        benchmark: eqB.benchmark?.points || [],
-        trades: trB.trades || [],
-        skipped: { summary: skB.summary || {}, rows: skB.rows || [] },
-      };
-      state.backtest.error = null;
-      renderBacktestPanel();
+      const doCompareOff = !!state.backtest.runParams.compareRegimeOff;
+      if (!doCompareOff) {
+        const filteredRun = await runBacktest({ ...common, useRegimeFilter: true });
+        const [eqA, trA, skA] = await Promise.all([
+          fetchBacktestEquity(filteredRun.runId),
+          fetchBacktestTrades(filteredRun.runId),
+          fetchBacktestSkippedFires(filteredRun.runId),
+        ]);
+        state.backtest.runId = filteredRun.runId;
+        state.backtest.stats = filteredRun;
+        state.backtest.equity = eqA.points || [];
+        state.backtest.trades = trA.trades || [];
+        state.backtest.compare.filtered = {
+          runId: filteredRun.runId,
+          stats: filteredRun,
+          equity: eqA.points || [],
+          benchmark: eqA.benchmark?.points || [],
+          trades: trA.trades || [],
+          skipped: { summary: skA.summary || {}, rows: skA.rows || [] },
+        };
+        state.backtest.compare.unfiltered = _emptyCompareUnfiltered();
+        state.backtest.error = null;
+        renderBacktestPanel();
+      } else {
+        const [filteredRun, unfilteredRun] = await Promise.all([
+          runBacktest({ ...common, useRegimeFilter: true }),
+          runBacktest({ ...common, useRegimeFilter: false }),
+        ]);
+        const [eqA, eqB, trA, trB, skA, skB] = await Promise.all([
+          fetchBacktestEquity(filteredRun.runId),
+          fetchBacktestEquity(unfilteredRun.runId),
+          fetchBacktestTrades(filteredRun.runId),
+          fetchBacktestTrades(unfilteredRun.runId),
+          fetchBacktestSkippedFires(filteredRun.runId),
+          fetchBacktestSkippedFires(unfilteredRun.runId),
+        ]);
+        state.backtest.runId = filteredRun.runId;
+        state.backtest.stats = filteredRun;
+        state.backtest.equity = eqA.points || [];
+        state.backtest.trades = trA.trades || [];
+        state.backtest.compare.filtered = {
+          runId: filteredRun.runId,
+          stats: filteredRun,
+          equity: eqA.points || [],
+          benchmark: eqA.benchmark?.points || [],
+          trades: trA.trades || [],
+          skipped: { summary: skA.summary || {}, rows: skA.rows || [] },
+        };
+        state.backtest.compare.unfiltered = {
+          runId: unfilteredRun.runId,
+          stats: unfilteredRun,
+          equity: eqB.points || [],
+          benchmark: eqB.benchmark?.points || [],
+          trades: trB.trades || [],
+          skipped: { summary: skB.summary || {}, rows: skB.rows || [] },
+        };
+        state.backtest.error = null;
+        renderBacktestPanel();
+      }
     } catch (err) {
       state.backtest.error = err?.message || 'Backtest failed.';
       renderBacktestPanel();

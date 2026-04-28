@@ -81,7 +81,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
 - **Bias filter state:** `biasFilterMode` (`'soft'` | `'hard'` | `'off'`, default `'soft'`) and `showSuppressed` (`boolean`, default `false`). Bootstrapped from `?biasFilter=` and `?showSuppressed=` URL params (Phase 6 — see §13).
-- **Backtest state:** `backtest` stores run params (`initialCapital`, `commissionPerSide`, `slippageTicks`, `qty`), latest `runId`, latest `stats`, and fetched `equity` / `trades` payloads plus loading/error UI flags.
+- **Backtest state:** `backtest` stores run params (`compareRegimeOff`, `initialCapital`, `commissionPerSide`, `slippageTicks`, `qty`, marker toggles), latest `runId`, latest `stats`, and fetched `equity` / `trades` payloads plus loading/error UI flags.
 
 ---
 
@@ -517,19 +517,19 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 - `GET /api/backtest/equity` includes strategy equity points plus a benchmark payload (`benchmark.strategy='buy_hold'`, `benchmark.points`).
 - Dashboard `Performance` panel includes:
   - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params).
-  - On each run, a two-variant comparison:
+  - Optional **two-variant comparison:** checkbox **Compare regime filter OFF (second run)** (default off). When unchecked, only **Regime filter ON** runs (single API call); orange equity curve, OFF legend, OFF trade markers, and OFF skipped-fire summary are omitted. When checked, each click runs ON and OFF in parallel as before:
     - **Regime filter ON** (teal): current strategy behavior.
     - **Regime filter OFF** (orange): same entry/exit logic with regime gating removed.
-  - Metrics cards render both variant values in matching colors, and the equity chart overlays both curves plus a persisted buy-and-hold benchmark line in pink.
+  - Metrics cards render both variant values only when a paired OFF run exists; otherwise a single teal column. The equity chart overlays the OFF curve only when paired; buy-and-hold benchmark remains pink when returned for the ON run.
   - Price chart overlays backtest executions for the visible window:
     - entry marker = triangle
     - exit marker = X
     - entry/exit markers include explicit `E` / `X` text labels
     - markers are offset from candle bodies with a dark halo for visual separation
     - teal markers = regime-filter ON run
-    - orange markers = regime-filter OFF run
-    - marker visibility is independently toggleable via `Show Regime ON markers` and `Show Regime OFF markers`
-  - Backtest status line includes skipped-fire summaries (ON/OFF) to explain why chart fires did not become entries.
+    - orange markers = regime-filter OFF run (only when Compare OFF is enabled and that run exists)
+    - marker visibility: `Show Regime ON markers` always available; `Show Regime OFF markers` is shown only when Compare OFF is enabled.
+  - Backtest status line includes skipped-fire summary for ON always; adds OFF summary only when paired OFF run exists.
   - Inputs: capital, commission-per-side, slippage ticks.
   - Run action button.
   - Metric cards (Sharpe, max drawdown, win rate, net P&L, trade count).

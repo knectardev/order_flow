@@ -148,7 +148,7 @@
     </div>
     <div class="backtest-legend">
       <span class="legend-item"><span class="legend-dot teal"></span> Regime filter ON</span>
-      <span class="legend-item"><span class="legend-dot orange"></span> Regime filter OFF</span>
+      <span class="legend-item" id="btLegendRegimeOff" hidden><span class="legend-dot orange"></span> Regime filter OFF</span>
     </div>
     <div class="backtest-controls">
       <label>Backtest scope
@@ -163,13 +163,17 @@
       <label>Capital <input id="btInitialCapital" type="number" value="50000" step="1000"></label>
       <label>Commission/side <input id="btCommission" type="number" value="2" step="0.25"></label>
       <label>Slippage (ticks) <input id="btSlippage" type="number" value="1" step="0.25"></label>
+      <label class="bt-toggle-row">
+        <input id="btCompareRegimeOff" type="checkbox">
+        Compare regime filter OFF (second run)
+      </label>
       <div class="bt-marker-split-row">
         <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-teal">
           <input id="btShowMarkersOn" type="checkbox" checked>
           Show Regime ON markers
         </label>
-        <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-orange">
-          <input id="btShowMarkersOff" type="checkbox" checked>
+        <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-orange" id="btMarkersOffLabel" hidden>
+          <input id="btShowMarkersOff" type="checkbox">
           Show Regime OFF markers
         </label>
       </div>

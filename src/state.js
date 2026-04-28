@@ -124,8 +124,10 @@ export const state = {
   backtest: {
     runParams: {
       scope: 'all',
+      /** When true, runs a second backtest with regime gates relaxed and shows OFF equity/markers. */
+      compareRegimeOff: false,
       showMarkersOn: true,
-      showMarkersOff: true,
+      showMarkersOff: false,
       initialCapital: 50000,
       commissionPerSide: 2,
       slippageTicks: 1,
