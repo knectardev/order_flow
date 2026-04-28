@@ -19,7 +19,7 @@ export const state = {
   events: [],          // {type, dir, time, price, barIndex}
   trail: [],           // [{r, c}, ...] last TRAIL_LEN cells the regime visited
   matrixScores: Array.from({ length: MATRIX_ROWS }, () => Array(MATRIX_COLS).fill(0)),
-  canonicalFires: [],  // {watchId, barTime, direction, price, tag?, alignment?, checks?, passing?, total?}
+  canonicalFires: [],  // {watchId, barTime, direction, price, tag?, alignment?, checks?, passing?, total?, edge?, anchorPrice?}
 
   // Per-watch state. Each watch tracks its own fire-edge, last evaluation, and flip ticks.
   breakoutWatch: {
@@ -37,9 +37,14 @@ export const state = {
     firedThisCycle: false,
     flipTicks: { cell: null, stall: null, volume: null, level: null, alignment: null },
   },
+  valueEdgeRejectWatch: {
+    lastCanonical: null,
+    firedThisCycle: false,
+    flipTicks: { regime: null, failedAtEdge: null, rejectionWick: null, volume: null, alignment: null },
+  },
 
   // Auto-pause preferences — persist outside modal lifecycle since toggles only exist when modal is open
-  autoPausePrefs: { breakout: false, fade: false, absorptionWall: false },
+  autoPausePrefs: { breakout: false, fade: false, absorptionWall: false, valueEdgeReject: false },
 
   // Scenario forcer — drives demo buttons (synthetic mode only).
   //
@@ -51,7 +56,7 @@ export const state = {
   //
   // Each bucket's fields:
   //   scenarioLockBars   - pin state to scenarioLockCell for N bars
-  //   scenarioLockCell   - BREAKOUT_CELL, FADE_CELL, ABSORPTION_WALL_CELL, or null
+  //   scenarioLockCell   - BREAKOUT_CELL, FADE_CELL, ABSORPTION_WALL_CELL, VALUE_EDGE_REJECT_LOCK_CELL, or null
   //   primeNextSweep     - next bar guaranteed to produce a sweep (breakout demo)
   //   primedDisplacement - remaining bars of forced directional drift (fade demo)
   //   primedDirection    - -1 or +1 for forced drift
@@ -177,7 +182,7 @@ export const state = {
   // the first 30 bars of its session, OR a zero-volume bar. While true:
   //   - matrix dims to 0.4 opacity, suppresses watched/current borders,
   //     and overlays a centered "WARMING UP" amber label
-  //   - canonical evaluators (Breakout / Fade / Absorption Wall) return `fired: false`
+  //   - canonical evaluators (Breakout / Fade / Absorption Wall / Value Edge) return `fired: false`
   //     (suppressed even if the legacy proxy would have fired)
   //   - event log shows a sticky SYSTEM row at top until the first non-
   //     NULL rank emits
@@ -190,8 +195,8 @@ export const state = {
   interval: null,         // setInterval handle for the streaming tick
   speedMultiplier: 5.5,   // 1×..8× tick-speed multiplier from the speed slider
 
-  lastFiredWatch: null,   // 'breakout' | 'fade' | 'absorptionWall' | null — used by Details button
-  currentModal: null,     // 'breakout' | 'fade' | 'absorptionWall' | 'sweep' | 'absorption' | …
+  lastFiredWatch: null,   // 'breakout' | 'fade' | 'absorptionWall' | 'valueEdgeReject' | null — used by Details button
+  currentModal: null,     // 'breakout' | 'fade' | 'absorptionWall' | 'valueEdgeReject' | 'sweep' | 'absorption' | …
 
   isPanningChart: false,  // chart is currently being click-dragged horizontally
 
@@ -238,6 +243,14 @@ export const state = {
   // (?biasFilter=hard, ?showSuppressed=1) — see bootstrapReplay.
   biasFilterMode: 'soft',
   showSuppressed: false,
+
+  // Event-log UI filter.
+  //   type: 'all' for no filter, 'fire_<watchId>' for canonical fires, or
+  //         primitive event keys ('sweep_up' | 'sweep_down' | 'absorption' |
+  //         'stoprun_up' | 'stoprun_down' | 'divergence_up' | 'divergence_down').
+  eventLogFilter: {
+    type: 'all',
+  },
 };
 
 // Effective tunings: real-session overrides default synthetic, scoped

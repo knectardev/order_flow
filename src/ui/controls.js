@@ -1,13 +1,13 @@
-import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, FADE_CELL } from '../config/constants.js';
+import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, FADE_CELL, VALUE_EDGE_REJECT_LOCK_CELL } from '../config/constants.js';
 import { getScenario, getTickMs, state } from '../state.js';
-import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { computeMatrixScores } from '../analytics/regime.js';
 import { jumpToNextFire, seek } from '../data/replay.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
-import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
 import { step } from '../sim/step.js';
 
 function toggleStream() {
@@ -94,6 +94,9 @@ function resetStream() {
   state.absorptionWallWatch.lastCanonical = null;
   state.absorptionWallWatch.firedThisCycle = false;
   state.absorptionWallWatch.flipTicks = { cell: null, stall: null, volume: null, level: null, alignment: null };
+  state.valueEdgeRejectWatch.lastCanonical = null;
+  state.valueEdgeRejectWatch.firedThisCycle = false;
+  state.valueEdgeRejectWatch.flipTicks = { regime: null, failedAtEdge: null, rejectionWick: null, volume: null, alignment: null };
   // Reset scenario state for the active timeframe's bucket. Synthetic
   // mode is always 1m so this is functionally a 1m reset; the per-tf
   // structure lets future multi-timeframe synthetic / mixed scenarios
@@ -113,10 +116,12 @@ function resetStream() {
   const emptyBreakout = evaluateBreakoutCanonical();
   const emptyFade     = evaluateFadeCanonical();
   const emptyAbsorptionWall = evaluateAbsorptionWallCanonical();
-  renderMatrix(emptyBreakout, emptyFade, emptyAbsorptionWall);
+  const emptyValueEdge = evaluateValueEdgeReject();
+  renderMatrix(emptyBreakout, emptyFade, emptyAbsorptionWall, emptyValueEdge);
   renderBreakoutWatch(emptyBreakout);
   renderFadeWatch(emptyFade);
   renderAbsorptionWallWatch(emptyAbsorptionWall);
+  renderValueEdgeRejectWatch(emptyValueEdge);
   renderEventLog();
   drawPriceChart();
   drawFlowChart();
@@ -169,4 +174,18 @@ function forceAbsorptionWallScenario() {
   if (!state.interval) toggleStream();
 }
 
-export { toggleStream, onSpeedChange, bindPlaybackHotkeys, resetStream, forceBreakoutScenario, forceFadeScenario, forceAbsorptionWallScenario };
+function forceValueEdgeRejectScenario() {
+  if (state.replay.mode === 'real') { jumpToNextFire('valueEdgeReject'); return; }
+  document.getElementById('fireBanner').classList.remove('visible');
+  const sc = getScenario();
+  sc.scenarioLockBars = 12;
+  sc.scenarioLockCell = VALUE_EDGE_REJECT_LOCK_CELL;
+  sc.primeNextSweep = false;
+  sc.primedDisplacement = 0;
+  state.sim.volState   = VALUE_EDGE_REJECT_LOCK_CELL.volState;
+  state.sim.depthState = VALUE_EDGE_REJECT_LOCK_CELL.depthState;
+  state.valueEdgeRejectWatch.firedThisCycle = false;
+  if (!state.interval) toggleStream();
+}
+
+export { toggleStream, onSpeedChange, bindPlaybackHotkeys, resetStream, forceBreakoutScenario, forceFadeScenario, forceAbsorptionWallScenario, forceValueEdgeRejectScenario };

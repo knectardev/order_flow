@@ -16,7 +16,7 @@ function pauseForFire(watchId, canonical, cellDef) {
   const dir    = canonical.direction === 'up' ? '↑' : '↓';
   const arrow  = canonical.direction === 'up' ? 'upward' : 'downward';
 
-  banner.classList.remove('fade-variant', 'breakout-variant', 'absorption-wall-variant');
+  banner.classList.remove('fade-variant', 'breakout-variant', 'absorption-wall-variant', 'value-edge-variant');
   if (watchId === 'fade') {
     banner.classList.add('fade-variant');
     icon.textContent = '◆';
@@ -27,6 +27,14 @@ function pauseForFire(watchId, canonical, cellDef) {
     icon.textContent = '🛡';
     headline.textContent = `Absorption Wall canonical fired · stream paused`;
     detail.textContent = `[${cellDef.name}] · stalled price + vol spike at structure · all 5 criteria met. Expect ${arrow} responsive move off the passive wall.`;
+  } else if (watchId === 'valueEdgeReject') {
+    banner.classList.add('value-edge-variant');
+    icon.textContent = '🎯';
+    headline.textContent = `Value Edge Rejection fired · stream paused`;
+    const edge = canonical.edge === 'val' ? 'VAL' : (canonical.edge === 'vah' ? 'VAH' : '');
+    detail.textContent = edge
+      ? `[${cellDef.name}] · failed ${edge} probe, close in VA · all 5 met. ${arrow} toward POC.`
+      : `[${cellDef.name}] · all 5 criteria met. ${arrow} toward POC.`;
   } else {
     banner.classList.add('breakout-variant');
     icon.textContent = '⚡';

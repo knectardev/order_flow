@@ -1,6 +1,6 @@
-import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, FADE_CELL, FORMING_STEPS, MAX_BARS, TRAIL_LEN } from '../config/constants.js';
+import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, FADE_CELL, FORMING_STEPS, MAX_BARS, TRAIL_LEN, VALUE_EDGE_REJECT_LOCK_CELL } from '../config/constants.js';
 import { state } from '../state.js';
-import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldownBars, isCanonicalFireRepeatTooSoon } from '../analytics/events.js';
 import { computeMatrixScores } from '../analytics/regime.js';
 import { _commitRealBar, _renderReplayChrome, _syncCurrentSession } from '../data/replay.js';
@@ -8,7 +8,7 @@ import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
-import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
 import { evolveSimState, generateBar } from './synthetic.js';
 import { pauseForFire } from '../ui/fireBanner.js';
 import { _refreshMatrixForView } from '../ui/pan.js';
@@ -50,11 +50,13 @@ function step() {
   const breakoutCanonical = evaluateBreakoutCanonical();
   const fadeCanonical     = evaluateFadeCanonical();
   const absorptionWallCanonical = evaluateAbsorptionWallCanonical();
+  const valueEdgeRejectCanonical = evaluateValueEdgeReject();
 
   if (state.replay.mode !== 'real') {
     handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, null);
     handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, null);
     handleWatchFire('absorptionWall', absorptionWallCanonical, state.absorptionWallWatch, ABSORPTION_WALL_CELL, null);
+    handleWatchFire('valueEdgeReject', valueEdgeRejectCanonical, state.valueEdgeRejectWatch, VALUE_EDGE_REJECT_LOCK_CELL, null);
   }
 
   // Render
@@ -63,10 +65,11 @@ function step() {
     `${state.bars.length} ${state.replay.mode === 'real' ? 'shown' : 'bars'} · last ${state.formingBar ? 'forming' : 'settled'}`;
   drawPriceChart();
   drawFlowChart();
-  renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical);
+  renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical);
   renderBreakoutWatch(breakoutCanonical);
   renderFadeWatch(fadeCanonical);
   renderAbsorptionWallWatch(absorptionWallCanonical);
+  renderValueEdgeRejectWatch(valueEdgeRejectCanonical);
   renderEventLog();
   if (state.replay.mode === 'real') _renderReplayChrome();
   // If the user is panned over history while streaming, override the live
@@ -162,7 +165,7 @@ function handleWatchFire(watchId, canonical, watchState, cellDef, sessionStartId
         // pause logic below; the dashboard renderers (event log, watch
         // panel) read the persisted tag to apply gradient tints, glyphs,
         // and "filtered by HTF" indicators.
-        state.canonicalFires.push({
+        const row = {
           watchId,
           barTime: lastBar.time,
           direction: canonical.direction,
@@ -174,8 +177,18 @@ function handleWatchFire(watchId, canonical, watchState, cellDef, sessionStartId
           checks:  { ...canonical.checks },
           passing: canonical.passing,
           total:   canonical.total,
-        });
-        if (state.canonicalFires.length > 20) state.canonicalFires.shift();
+        };
+        if (watchId === 'valueEdgeReject') {
+          if (canonical.edge) row.edge = canonical.edge;
+          if (canonical.anchorPrice != null) row.anchorPrice = canonical.anchorPrice;
+        }
+        state.canonicalFires.push(row);
+        // Keep synthetic mode lightweight (rolling panel), but preserve full
+        // history in real/API mode so precomputeAllFires and inventory stats
+        // reflect the entire loaded timeline.
+        if (state.replay.mode !== 'real' && state.canonicalFires.length > 20) {
+          state.canonicalFires.shift();
+        }
       }
     }
     // SUPPRESSED never triggers banner / auto-pause — the whole point of
@@ -189,7 +202,9 @@ function handleWatchFire(watchId, canonical, watchState, cellDef, sessionStartId
       ? 'fadeAutoPauseToggle'
       : watchId === 'absorptionWall'
         ? 'absorptionWallAutoPauseToggle'
-        : 'autoPauseToggle';
+        : watchId === 'valueEdgeReject'
+          ? 'valueEdgeRejectAutoPauseToggle'
+          : 'autoPauseToggle';
     const toggle = document.getElementById(toggleId);
     // If the modal is closed, the toggle isn't in the DOM. Use the cached preference
     // (defaults to false). When the modal is open, sync the cached preference.

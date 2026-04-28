@@ -47,7 +47,21 @@ function _fireLabel(fire) {
   if (fire.watchId === 'absorptionWall') {
     return `Absorption Wall ${dirArrow} passive liquidity`;
   }
+  if (fire.watchId === 'valueEdgeReject') {
+    return `Value Edge ${dirArrow} reject toward POC`;
+  }
   return `Breakout fire ${dirArrow} impulsive light`;
+}
+
+function _eventFilterKey(ev) {
+  if (!ev) return '';
+  if (ev.type === 'absorption') return 'absorption';
+  return `${ev.type}_${ev.dir || ''}`;
+}
+
+function _rowFilterKey(row) {
+  if (row.kind === 'fire') return `fire_${row.payload.watchId || ''}`;
+  return _eventFilterKey(row.payload);
 }
 
 // Phase 6: Align column. Maps the anchor-priority tag onto a glyph + a
@@ -92,6 +106,7 @@ function _alignCellHtml(tag, score) {
 
 function renderEventLog() {
   const log = document.getElementById('eventLog');
+  const eventCountEl = document.getElementById('eventCount');
   const warmupHtml = state.regimeWarmup ? SYSTEM_WARMUP_HTML : '';
   const selBanner  = _selectionBannerHtml();
 
@@ -101,13 +116,16 @@ function renderEventLog() {
   const fires = state.replay.mode === 'real' && state.replay.allFires.length
     ? state.replay.allFires
     : state.canonicalFires;
+  const events = state.replay.mode === 'real' && state.replay.allEvents.length
+    ? state.replay.allEvents
+    : state.events;
 
   const fireRows = fires.map(f => ({
     kind: 'fire',
     time: f.barTime instanceof Date ? f.barTime : new Date(f.barTime),
     payload: f,
   }));
-  const evRows = state.events.map(ev => ({
+  const evRows = events.map(ev => ({
     kind: 'event',
     time: ev.time,
     payload: ev,
@@ -132,39 +150,53 @@ function renderEventLog() {
     if (row.payload.tag !== 'SUPPRESSED') return true;
     return !!state.showSuppressed;
   };
+  const typeFilter = (row) => {
+    const wanted = state.eventLogFilter?.type || 'all';
+    if (wanted === 'all') return true;
+    return _rowFilterKey(row) === wanted;
+  };
 
   const merged = [...evRows, ...fireRows]
     .filter(filterPredicate)
     .filter(suppressedFilter)
+    .filter(typeFilter)
     .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+  const hiddenSuppressed = fires.filter(f => f.tag === 'SUPPRESSED').length;
 
   if (merged.length === 0) {
     const emptyMsg = sel.kind
       ? '<div class="empty">no events or fires in the selected window</div>'
       : '<div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>';
     log.innerHTML = warmupHtml + selBanner + emptyMsg;
-    document.getElementById('eventCount').textContent =
+    eventCountEl.textContent =
       state.regimeWarmup ? 'warming up' : (sel.kind ? '0 in selection' : '—');
     return;
   }
 
-  document.getElementById('eventCount').textContent = sel.kind
-    ? `${merged.length} in selection`
-    : `${state.events.length} event${state.events.length===1?'':'s'}` +
+  // Show the full filtered timeline in reverse chronological order so
+  // the newest event remains at the top while preserving total context.
+  const shown = merged.length;
+  const recent = merged.slice().reverse();
+  if (sel.kind) {
+    eventCountEl.textContent = `showing ${shown} in selection`;
+  } else {
+    const base = `showing ${shown} rows`;
+    const totals = `${events.length} event${events.length===1?'':'s'}` +
       (fires.length ? ` · ${fires.length} fire${fires.length===1?'':'s'}` : '');
-
-  // Show most recent 15 in reverse chronological order so the latest
-  // sits at the top, matching the prior event-only behavior. Slight bump
-  // (was 10) since fires can crowd the visible slice.
-  const recent = merged.slice(-15).reverse();
+    const suppressedHint = !state.showSuppressed && hiddenSuppressed
+      ? ` · ${hiddenSuppressed} suppressed hidden`
+      : '';
+    eventCountEl.textContent = `${base} · ${totals}${suppressedHint}`;
+  }
   log.innerHTML = warmupHtml + selBanner + recent.map(row => {
     const tStr = row.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     if (row.kind === 'fire') {
       const f = row.payload;
       const isFade = f.watchId === 'fade';
       const isAbsorptionWall = f.watchId === 'absorptionWall';
-      const cls = isFade ? 'fire-fade' : isAbsorptionWall ? 'fire-absorption-wall' : 'fire-breakout';
-      const glyph = isFade ? '◆' : isAbsorptionWall ? '🛡' : '★';
+      const isValueEdge = f.watchId === 'valueEdgeReject';
+      const cls = isFade ? 'fire-fade' : isAbsorptionWall ? 'fire-absorption-wall' : isValueEdge ? 'fire-value-edge' : 'fire-breakout';
+      const glyph = isFade ? '◆' : isAbsorptionWall ? '🛡' : isValueEdge ? '🎯' : '★';
       const ms = row.time.getTime();
       // Phase 6: tint + align column. Tag/score come from canonical
       // alignment computed at fire time; null for legacy fires that
@@ -242,4 +274,14 @@ function bindEventLogClicks() {
   });
 }
 
-export { renderEventLog, bindEventLogClicks };
+function bindEventLogFilters() {
+  const typeSel = document.getElementById('eventLogTypeFilter');
+  if (!typeSel) return;
+  typeSel.value = state.eventLogFilter.type || 'all';
+  typeSel.addEventListener('change', () => {
+    state.eventLogFilter.type = typeSel.value || 'all';
+    renderEventLog();
+  });
+}
+
+export { renderEventLog, bindEventLogClicks, bindEventLogFilters };

@@ -1,4 +1,4 @@
-import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEPTH_LABELS, FADE_CELL, isAbsorptionWallRegime, MATRIX_COLS, MATRIX_ROWS, VOL_LABELS } from '../config/constants.js';
+import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEPTH_LABELS, FADE_CELL, isAbsorptionWallRegime, isValueEdgeRejectRegime, MATRIX_COLS, MATRIX_ROWS, VOL_LABELS } from '../config/constants.js';
 import { state } from '../state.js';
 import { computeConfidence, topCells } from '../analytics/regime.js';
 import { getCachedOccupancy, requestOccupancy } from '../data/occupancyApi.js';
@@ -56,7 +56,7 @@ function buildMatrix() {
   }
 }
 
-function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical) {
+function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical) {
   const cells = document.querySelectorAll('.matrix-cell');
   const selectedSet = (state.selection.kind === 'cells')
     ? new Set(state.selection.cells.map(p => `${p.r},${p.c}`))
@@ -89,7 +89,7 @@ function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical)
       const fill = cell.querySelector('.score-fill');
       if (fill) fill.style.opacity = '0';
       _applyHeatmapCellOpacity(cell);
-      cell.classList.remove('watched', 'watched-fade', 'watched-absorption-wall', 'current',
+      cell.classList.remove('watched', 'watched-fade', 'watched-absorption-wall', 'watched-value-edge', 'current',
                             'has-trail', 'selected');
     });
     document.getElementById('confFill').style.width = '0%';
@@ -111,7 +111,7 @@ function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical)
   // breakoutCanonical / fadeCanonical are still consumed by callers
   // (canonical evaluators, watch panels) — they're just not rendered
   // here.
-  void breakoutCanonical; void fadeCanonical; void absorptionWallCanonical;
+  void breakoutCanonical; void fadeCanonical; void absorptionWallCanonical; void valueEdgeRejectCanonical;
 
   cells.forEach(cell => {
     const r = +cell.dataset.r;
@@ -126,10 +126,12 @@ function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical)
     const isFadeCell     = (r === FADE_CELL.r     && c === FADE_CELL.c);
     // Deep + Stacked columns (regime), Active+ vol — see isAbsorptionWallRegime.
     const isAbsorptionWallCell = isAbsorptionWallRegime(4 - r, c);
+    const isValueEdgeCell = isValueEdgeRejectRegime(4 - r, c);
     const isSelected     = selectedSet ? selectedSet.has(`${r},${c}`) : false;
     cell.classList.toggle('watched',       isBreakoutCell);
     cell.classList.toggle('watched-fade',  isFadeCell);
     cell.classList.toggle('watched-absorption-wall', isAbsorptionWallCell);
+    cell.classList.toggle('watched-value-edge', isValueEdgeCell);
     cell.classList.toggle('current',       r === top[0].r && c === top[0].c);
     cell.classList.toggle('has-trail',     state.trail.some(t => t.r === r && t.c === c));
     cell.classList.toggle('selected',      isSelected);

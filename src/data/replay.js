@@ -1,6 +1,6 @@
-import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEFAULT_TIMEFRAME, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUNINGS, TIMEFRAMES, TRAIL_LEN } from '../config/constants.js';
+import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEFAULT_TIMEFRAME, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUNINGS, TIMEFRAMES, TRAIL_LEN, VALUE_EDGE_REJECT_LOCK_CELL } from '../config/constants.js';
 import { state } from '../state.js';
-import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldownBars } from '../analytics/events.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { clearOccupancyCache } from './occupancyApi.js';
@@ -9,8 +9,9 @@ import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { _getViewedBars, drawPriceChart } from '../render/priceChart.js';
-import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
 import { handleWatchFire } from '../sim/step.js';
+import { renderEventInventory } from '../render/eventInventory.js';
 import { toggleStream } from '../ui/controls.js';
 import { _syncSessionDropdown } from '../ui/pan.js';
 import { clamp } from '../util/math.js';
@@ -65,6 +66,9 @@ function _resetReplayAccumulators() {
   state.absorptionWallWatch.lastCanonical = null;
   state.absorptionWallWatch.firedThisCycle = false;
   state.absorptionWallWatch.flipTicks = { cell: null, stall: null, volume: null, level: null, alignment: null };
+  state.valueEdgeRejectWatch.lastCanonical = null;
+  state.valueEdgeRejectWatch.firedThisCycle = false;
+  state.valueEdgeRejectWatch.flipTicks = { regime: null, failedAtEdge: null, rejectionWick: null, volume: null, alignment: null };
   state.sim.formingProgress = 0;
   state.sim.tick = 0;
   state.sim.volState = 2;
@@ -87,6 +91,9 @@ function _resetForSessionBoundary() {
   state.absorptionWallWatch.lastCanonical = null;
   state.absorptionWallWatch.firedThisCycle = false;
   state.absorptionWallWatch.flipTicks = { cell: null, stall: null, volume: null, level: null, alignment: null };
+  state.valueEdgeRejectWatch.lastCanonical = null;
+  state.valueEdgeRejectWatch.firedThisCycle = false;
+  state.valueEdgeRejectWatch.flipTicks = { regime: null, failedAtEdge: null, rejectionWick: null, volume: null, alignment: null };
 }
 
 function _commitRealBar(idx) {
@@ -161,10 +168,12 @@ function _commitRealBar(idx) {
   const breakoutCanonical = evaluateBreakoutCanonical();
   const fadeCanonical = evaluateFadeCanonical();
   const absorptionWallCanonical = evaluateAbsorptionWallCanonical();
+  const valueEdgeRejectCanonical = evaluateValueEdgeReject();
   handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, sessionStartIdx);
   handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, sessionStartIdx);
   handleWatchFire('absorptionWall', absorptionWallCanonical, state.absorptionWallWatch, ABSORPTION_WALL_CELL, sessionStartIdx);
-  return { breakoutCanonical, fadeCanonical, absorptionWallCanonical };
+  handleWatchFire('valueEdgeReject', valueEdgeRejectCanonical, state.valueEdgeRejectWatch, VALUE_EDGE_REJECT_LOCK_CELL, sessionStartIdx);
+  return { breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical };
 }
 
 function seek(targetIdx) {
@@ -188,12 +197,14 @@ function seek(targetIdx) {
   const breakoutCanonical = evaluateBreakoutCanonical();
   const fadeCanonical = evaluateFadeCanonical();
   const absorptionWallCanonical = evaluateAbsorptionWallCanonical();
+  const valueEdgeRejectCanonical = evaluateValueEdgeReject();
   drawPriceChart();
   drawFlowChart();
-  renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical);
+  renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical);
   renderBreakoutWatch(breakoutCanonical);
   renderFadeWatch(fadeCanonical);
   renderAbsorptionWallWatch(absorptionWallCanonical);
+  renderValueEdgeRejectWatch(valueEdgeRejectCanonical);
   renderEventLog();
   _renderReplayChrome();
 }
@@ -558,6 +569,7 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
 
   seek(0);
   precomputeAllFires();
+  renderEventInventory();
 }
 
 // Phase 5: switch the active timeframe in API mode.

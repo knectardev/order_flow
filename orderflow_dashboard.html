@@ -164,9 +164,25 @@
         <span class="g-name">ABSORPTION WALL</span>
         <span class="g-desc">Canonical [Climactic · Stacked] with stalled price, vol spike, near VAH/VAL/VWAP — aggressive flow absorbed by passive liquidity.</span>
       </li>
+      <li data-modal="valueEdgeReject">
+        <span class="g-glyph" style="color: var(--value-edge);">🎯</span>
+        <span class="g-name">VALUE EDGE REJECTION</span>
+        <span class="g-desc">Failed breakout at VAH/VAL: bar probes the edge, closes back inside the value area, rejection wick, normal vol — mean reversion toward POC.</span>
+      </li>
     </ul>
     <div class="design-note">
       <strong>Markers are sparse and event-typed</strong>, not per-bar verdicts. A bar with no marker is the default. This keeps the eye on what's structurally meaningful rather than restating candle direction.
+    </div>
+  </div>
+
+  <!-- Full-dataset event / fire counts (API replay only) -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">Signal inventory</div>
+      <div class="section-meta">full load · by type</div>
+    </div>
+    <div class="event-inventory" id="eventInventory">
+      <p class="inv-empty">Open with <code>?source=api</code> to load sessions; counts cover all loaded bars at the active timeframe.</p>
     </div>
   </div>
 
@@ -175,6 +191,25 @@
     <div class="section-head">
       <div class="section-title">Event Log</div>
       <div class="section-meta" id="eventCount">—</div>
+    </div>
+    <div class="event-log-filters">
+      <label class="event-log-filter">
+        <span>Type</span>
+        <select id="eventLogTypeFilter">
+          <option value="all">All signals + events</option>
+          <option value="fire_breakout">Breakout ★</option>
+          <option value="fire_fade">Fade ◆</option>
+          <option value="fire_absorptionWall">Absorption Wall 🛡</option>
+          <option value="fire_valueEdgeReject">Value Edge 🎯</option>
+          <option value="sweep_up">Sweep · up</option>
+          <option value="sweep_down">Sweep · down</option>
+          <option value="absorption">Absorption</option>
+          <option value="divergence_up">Divergence · up</option>
+          <option value="divergence_down">Divergence · down</option>
+          <option value="stoprun_up">Stop run · up</option>
+          <option value="stoprun_down">Stop run · down</option>
+        </select>
+      </label>
     </div>
     <div class="event-log" id="eventLog">
       <div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>

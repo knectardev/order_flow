@@ -61,7 +61,7 @@ Design intent remains unchanged:
 All mutable runtime state is centralized in `src/state.js`:
 
 - **Stream data:** `bars`, `formingBar`, `events`, `canonicalFires`, `trail`, `matrixScores`.
-- **Watch state:** `breakoutWatch`, `fadeWatch`, `absorptionWallWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
+- **Watch state:** `breakoutWatch`, `fadeWatch`, `absorptionWallWatch`, `valueEdgeRejectWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
 - **Replay state:** `replay.mode`, session metadata, full loaded bars/events/fires, cursor, data source flags.
 - **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
 - **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). Chart halos for ★/◆ merge `allFires` and `canonicalFires` and match `bar` times by epoch ms so a Date/string mismatch does not drop markers. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
@@ -94,11 +94,12 @@ This behavior is required to prevent false certainty and false trigger events wh
 
 ## 5) Canonical Watches
 
-Three canonical watches run continuously with edge-trigger fire behavior:
+Four canonical watches run continuously with edge-trigger fire behavior:
 
 - `★ Breakout` at `[Impulsive · Light]` (`watchId: 'breakout'`).
 - `◆ Fade` at `[Active · Normal]` (`watchId: 'fade'`).
 - `🛡 Absorption Wall` (`watchId: 'absorptionWall'`) — primary **label** lens `[Climactic · Stacked]`; `isAbsorptionWallRegime` allows **`depthState >= 3` (Deep or Stacked)** and **`volState >= 2` (Active through Climactic)** — the **right-hand two** depth columns × three vol rows = **6/25** matrix cells, so the watch is not locked to a single Stacked column. Stall = contested **range** plus (tight **close vs prior** or small **open→close** body). Level includes **POC**; default band is **15** ticks. `getTunings()` **merges** `SYNTH_TUNINGS` with per-session 1m JSON. **Primitive** `type: 'absorption'` in `events.js` remains a separate concept.
+- `🎯 Value Edge Rejection` (`watchId: 'valueEdgeReject'`) — regime **`isValueEdgeRejectRegime`:** **`volState` 2 or 3** and **`depthState` 2 or 3** (the **2×2 middle** of the 5×5: Active/Steady × Normal/Deep). **Failed edge:** for **VAH**, `high` probes **at or through** `vahPrice` (with small epsilon) and `close` is **strictly inside** `(val, vah)`; for **VAL**, `low` probes **at or through** `val` and the same `close` band holds. If both sides qualify on one bar, the **larger** of the two edge-side wicks (upper at VAH vs. lower at VAL) picks the edge. **Rejection wick:** at VAH, `(high − close) > (close − open)`; at VAL, `(close − low) > (open − close)` (same wick shape as the original spec). **Volume** must lie in **\[0.8, 1.2\]×** the mean volume of **up to 10** prior bars (≥2 settled bars, same short-session rule as other watches). **Direction** is always **toward POC** (`'down'` after VAH probe, `'up'` after VAL). `buildAlignment(lastBar, direction, 'fade')` and **gating** `alignment.vote_1h >= 0` (same as Fade). Tuning keys: `valueRejectVolMinMult` / `valueRejectVolMaxMult` (defaults **0.8** / **1.2**). Fires may carry `edge: 'vah' | 'val'` and `anchorPrice` for chart glyph placement at the value line.
 
 ### 5.1 Fade Criteria Update
 
@@ -127,10 +128,11 @@ Each row pushed to `state.canonicalFires` (and the full pre-scan `state.replay.a
 
 - `checks` — shallow copy of the watch’s `canonical.checks` at commit time
 - `passing` and `total` — same as the evaluator’s `passing` / `total` at that bar
+- (Value Edge) optional `edge` and `anchorPrice` for halo/glyph Y placement on VAH/VAL
 
-**Watch modal (★ / ◆ / 🛡) behavior**
+**Watch modal (★ / ◆ / 🛡 / 🎯) behavior**
 
-- **Glossary (no fire context):** the modal uses live `evaluateBreakoutCanonical()` / `evaluateFadeCanonical()` / `evaluateAbsorptionWallCanonical()` for the current bar.
+- **Glossary (no fire context):** the modal uses live `evaluateBreakoutCanonical()` / `evaluateFadeCanonical()` / `evaluateAbsorptionWallCanonical()` / `evaluateValueEdgeReject()` for the current bar.
 - **Shift+click a chart fire halo** (or **Details** on the post-fire banner after a pause): if the log row has `checks`, the modal shows that **frozen** gate list and a short “snapshot” note; the flip-tick / `lastCanonical` path is skipped for that one paint so live tracking is not clobbered. Rows recorded before this contract (no `checks`) show the same note and fall back to live evaluation.
 - **Plain click on a chart fire** still only brushes the bar window; the chart tooltip hint documents Shift+click vs. click.
 
@@ -151,16 +153,16 @@ Each canonical evaluation that produces a fire also computes an `alignment` bloc
 
 ### 5.4 Alignment as a Gating Check
 
-`alignment` is also a **first-class criterion** in `evaluateBreakoutCanonical`, `evaluateFadeCanonical`, and `evaluateAbsorptionWallCanonical`:
+`alignment` is also a **first-class criterion** in `evaluateBreakoutCanonical`, `evaluateFadeCanonical`, `evaluateAbsorptionWallCanonical`, and `evaluateValueEdgeReject`:
 
-- `checks.alignment` — 1h vote on `dir1m`: for **breakout** and **fade**, `(alignment.vote_1h >= 0)` (no opposing 1h trend to the play). For **absorption wall** only, **`alignment.vote_1h >= -1`** (vetoes strong 1h disagreement only) while `dir1m` remains the **bar impulse**, not the MR `direction` on the fire record.
+- `checks.alignment` — 1h vote on `dir1m`: for **breakout**, **fade**, and **value edge** (MR toward POC), `(alignment.vote_1h >= 0)` (no opposing 1h trend to the play). For **absorption wall** only, **`alignment.vote_1h >= -1`** (vetoes strong 1h disagreement only) while `dir1m` remains the **bar impulse**, not the MR `direction` on the fire record.
 - The check evaluates `true` when biases are NULL (`vote_1h` defaults to `0` via `vote(null, dir)`) and when `biasFilterMode === 'off'`, preserving synthetic-mode and warmup behavior.
-- `fired = passing === total` continues to be the gate, with `total = 5` for breakout and absorption wall and `total = 6` for fade.
+- `fired = passing === total` continues to be the gate, with `total = 5` for breakout, absorption wall, and value edge and `total = 6` for fade.
 - Practical effect: in `soft` mode, an opposing 1h bias produces a `LOW_CONVICTION` tag **and** fails the `alignment` check, so the fire no longer triggers — the tag is purely diagnostic. The watch panel still surfaces partial `passing/total` and tag tints so the user can see "would-be" fires that the alignment gate filtered out.
 
 ### 5.5 Fade-Specific Wyckoff Overrides
 
-For `evaluateFadeCanonical`, `buildAlignment(lastBar, dir1m, 'fade')` applies a Wyckoff overlay on top of the base anchor-priority tag:
+For `evaluateFadeCanonical` and `evaluateValueEdgeReject`, `buildAlignment(lastBar, dir1m, 'fade')` applies a Wyckoff overlay on top of the base anchor-priority tag (same `watchKind` for MR plays):
 
 | `dir1m` | `biasH1` | Effect |
 | --- | --- | --- |
@@ -177,7 +179,7 @@ The breakout evaluator uses the default `watchKind = 'breakout'`; the absorption
 
 ## 6) Matrix Panel Enhancements
 
-Watched cells: breakout (amber stripe), fade (blue), absorption wall (indigo `--indigo-fire` stripe) on the **six** cells with **Deep or Stacked** book and **Active+** vol (`isAbsorptionWallRegime`). Right column also includes matrix controls beyond posterior view:
+Watched cells: breakout (amber stripe), fade (blue), absorption wall (indigo `--indigo-fire` stripe) on the **six** cells with **Deep or Stacked** book and **Active+** vol (`isAbsorptionWallRegime`), value edge (teal `--value-edge` stripe) on the **four** middle cells with **`volState` 2–3** and **`depthState` 2–3** (`isValueEdgeRejectRegime`). Right column also includes matrix controls beyond posterior view:
 
 - **Display mode toggle:** `Posterior` / `Heatmap`.
 - **Occupancy range selector:**
@@ -212,7 +214,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
   - `1h`: one self-strip showing the active timeframe's own bias.
 
   Ribbon hit regions emit `kind === 'bias'` hover hits consumed by the chart tooltip.
-- **Repeat cooldown (chart signals):** After `detectEvents` produces candidates for a settled bar, `filterNewEventsCooldown` in `src/analytics/events.js` drops primitives that match the same signature `(type, dir)` as a recently kept event when the bar index gap is smaller than `eventCooldownBars` (default **4** from `SYNTH_TUNINGS` / per-session replay tunings). Cooldown indices are resolved on `state.replay.allBars` in API replay (global bar index, aligned with `sessionStartIdx`), and on the rolling `state.bars` window in synthetic mode. Bar times are matched by epoch ms so `Date` vs serialized time never bypasses dedup. When `sessionStartIdx` is set, pool entries before that index are skipped as anchors (continue), not compared with `===` to ring-buffer indices. `precomputeAllEvents()` applies the same rule using `allBars[0..i]`. Canonical halos (★ / ◆): `handleWatchFire` uses the same index source + session rule in `isCanonicalFireRepeatTooSoon`. Suppressed near-duplicates are omitted from `state.canonicalFires` / `replay.allFires` (no banner row for that edge).
+- **Repeat cooldown (chart signals):** After `detectEvents` produces candidates for a settled bar, `filterNewEventsCooldown` in `src/analytics/events.js` drops primitives that match the same signature `(type, dir)` as a recently kept event when the bar index gap is smaller than `eventCooldownBars` (default **4** from `SYNTH_TUNINGS` / per-session replay tunings). Cooldown indices are resolved on `state.replay.allBars` in API replay (global bar index, aligned with `sessionStartIdx`), and on the rolling `state.bars` window in synthetic mode. Bar times are matched by epoch ms so `Date` vs serialized time never bypasses dedup. When `sessionStartIdx` is set, pool entries before that index are skipped as anchors (continue), not compared with `===` to ring-buffer indices. `precomputeAllEvents()` applies the same rule using `allBars[0..i]`. Canonical halos (★ / ◆ / 🛡 / 🎯): `handleWatchFire` uses the same index source + session rule in `isCanonicalFireRepeatTooSoon`. Suppressed near-duplicates are omitted from `state.canonicalFires` / `replay.allFires` (no banner row for that edge).
 
 ### 7.2 Interaction
 
@@ -232,6 +234,7 @@ Event log (`src/render/eventLog.js`) must:
 - Keep warmup SYSTEM row sticky while warmup is active.
 - Support clickable fire rows that trigger fire-window selection.
 - Show clear empty states for both unfiltered and filtered contexts.
+- In the Event Log header meta (`#eventCount`), disclose the total number of rows currently shown after filters/selections (no hidden latest-only cap).
 - Render an **Align column** (Phase 6) between the fire label and price, displaying the anchor-priority glyph (`✓✓` / `·` / `⚠` / `⊘`) and signed alignment score for fires; events render an empty placeholder cell so the grid stays consistent.
 - Apply a low-alpha row tint driven by the fire's `tag` and `|score|`:
   - `HIGH_CONVICTION` → green
@@ -239,6 +242,17 @@ Event log (`src/render/eventLog.js`) must:
   - `SUPPRESSED` → red
   - `STANDARD` → near-transparent green/red leaning in the direction of `score` sign.
 - Filter `SUPPRESSED` fires from the visible rows unless `state.showSuppressed === true`.
+- Render the full loaded timeline for the active timeframe in API replay (`state.replay.allEvents` + `state.replay.allFires`) and keep synthetic mode on live rolling arrays (`state.events` + `state.canonicalFires`).
+- Provide one top-of-log **Type** filter that combines canonical signals and primitive events in a single dropdown (`All`, `fire_<watchId>`, and primitive event keys), applied before rendering rows and reflected by the header count.
+
+### 8.1 Signal inventory (full load)
+
+In API replay, after bars are loaded and `precomputeAllEvents()` / `precomputeAllFires()` finish (`src/data/replay.js`), the **Signal inventory** panel (`src/render/eventInventory.js`, `#eventInventory` in `orderflow_dashboard.html`) must list:
+
+- **Flow primitives:** counts for each distinct primitive type produced by `precomputeAllEvents` (sweep up/down, absorption, divergence up/down, stop run up/down), plus any additional keys if the detector emits new variants — horizontal bars scaled to the max count in either group.
+- **Canonical fires:** counts per `watchId` (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`), including zeros when a watch never fired.
+
+The summary line must state the active timeframe, total loaded bar count, total primitive count, and total fire count. Counts always reflect **all loaded sessions** at the **active timeframe** (they refresh when the timeframe changes and data is re-fetched). In synthetic mode (no full-timeline `allEvents` / `allFires`), the panel shows a short note that API mode is required for this inventory.
 
 ---
 
@@ -298,7 +312,7 @@ Fallback behavior:
 14. Bias ribbon must remain visible above the candle pane on every timeframe and fall back gracefully (background-only strip) when bias columns are NULL.
 15. The `?biasFilter=` and `?showSuppressed=` URL params are public surface for replay deep-linking — bootstrap behavior in `src/data/replay.js` must remain stable.
 16. Detection thresholds in `events.js` (`sweepVolMult`, `divergenceFlowMult`) are bias-scaled by the bar's denormalized 1h parent (`biasH1`) via `_biasScale(biasH1, dir)` — the ×0.8 / ×1.0 / ×1.2 family. Null `biasH1` (synthetic / warmup / non-API) must fall back to ×1.0 so synthetic-mode behavior is preserved bit-for-bit. `absorbVolMult` and `absorbRangeMult` are intentionally not scaled (small-range absorption is a structural signal, not a momentum one).
-17. `alignment` is a required first-class criterion in all three canonical evaluators (see §5.4). Bumping `total` for any watch without simultaneously updating the matching `BREAKOUT_LABELS` / `FADE_LABELS` / `ABSORPTION_WALL_LABELS`, `criterionKeys` arrays in `src/render/watch.js`, the `flipTicks` initializer in `src/state.js`, every `flipTicks = { ... }` reset in `src/data/replay.js` and `src/ui/controls.js`, and the modal `<li class="criterion">` rows in `src/ui/modal.js` is a regression — these surfaces are coupled by `data-key`. Absorption wall uses `total = 5` and keys `cell`, `stall`, `volume`, `level`, `alignment`.
+17. `alignment` is a required first-class criterion in all four canonical evaluators (see §5.4). Bumping `total` for any watch without simultaneously updating the matching `BREAKOUT_LABELS` / `FADE_LABELS` / `ABSORPTION_WALL_LABELS` / `VALUE_EDGE_REJECT_LABELS`, `criterionKeys` arrays in `src/render/watch.js`, the `flipTicks` initializer in `src/state.js`, every `flipTicks = { ... }` reset in `src/data/replay.js` and `src/ui/controls.js`, and the modal `<li class="criterion">` rows in `src/ui/modal.js` is a regression — these surfaces are coupled by `data-key`. Absorption wall uses `total = 5` and keys `cell`, `stall`, `volume`, `level`, `alignment`. Value Edge uses `total = 5` and keys `regime`, `failedAtEdge`, `rejectionWick`, `volume`, `alignment`.
 18. Fade-specific Wyckoff overrides in `buildAlignment` must never modify `score`, `vote_1h`, or `vote_15m`; only `tag` and (optionally) `reason`. Score-tinted UI assumes the raw vote sum.
 19. The 1m price chart's Y-axis must not compress candles into a thin band when the profile's price extent diverges from the visible candles (e.g. a stale `_lastApiProfile` carry-over from a prior session) **and** must not visibly oscillate between two scales when the profile's POC/VAH/VAL hovers at the inclusion threshold during playback. Three layered guards in `src/render/priceChart.js` enforce this:
     1. **Carry-over compatibility** (`_isApiProfileCompatibleWith()`) rejects the API-profile carry-over when (a) its price range is disjoint from the candle range (cross-session staleness) or (b) it fails to cover the candle range within `max(candleRange × 0.5, 2 ticks)` on either side. The 50%-of-range tolerance is intentionally loose: the live edge shifts the rolling 60-bar window by a tick or two each settle, which historically blew through a tighter (5%) tolerance on every frame and caused the renderer to flap between the API profile and the OHLC proxy mid-stream. Both methods compute POC differently, so flapping shows up as a multi-point POC jump. Cross-session detection is preserved by the disjoint check (a), which doesn't depend on the tolerance.
@@ -323,6 +337,7 @@ Fallback behavior:
 - Bias ribbon rendering: `src/render/biasRibbon.js`
 - Canonical alignment / anchor-priority tagging: `src/analytics/canonical.js`, `src/sim/step.js`, `src/render/watch.js`
 - Event log and interactions: `src/render/eventLog.js`, `src/ui/selection.js`
+- Full-load signal inventory (histogram): `src/render/eventInventory.js`
 - Tooltip routing (events, fires, bias hovers): `src/ui/tooltip.js`
 - Backend API: `api/main.py`
 - Pipeline/ranking logic: `pipeline/src/orderflow_pipeline/*`

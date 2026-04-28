@@ -1,6 +1,6 @@
 import { MAX_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
-import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { _syncCurrentSession, precomputeAllFires } from '../data/replay.js';
 import { renderMatrix } from '../render/matrix.js';
@@ -68,7 +68,8 @@ function _refreshMatrixForView() {
     const b = evaluateBreakoutCanonical();
     const f = evaluateFadeCanonical();
     const a = evaluateAbsorptionWallCanonical();
-    renderMatrix(b, f, a);
+    const v = evaluateValueEdgeReject();
+    renderMatrix(b, f, a, v);
     return;
   }
 
@@ -122,7 +123,8 @@ function _refreshMatrixForView() {
   const b = evaluateBreakoutCanonical();
   const f = evaluateFadeCanonical();
   const a = evaluateAbsorptionWallCanonical();
-  renderMatrix(b, f, a);
+  const v = evaluateValueEdgeReject();
+  renderMatrix(b, f, a, v);
 
   // Restore live render state for the next live tick.
   state.trail.length = 0;

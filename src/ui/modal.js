@@ -1,7 +1,7 @@
 import { state } from '../state.js';
-import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
-import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
-import { forceAbsorptionWallScenario, forceBreakoutScenario, forceFadeScenario } from './controls.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
+import { forceAbsorptionWallScenario, forceBreakoutScenario, forceFadeScenario, forceValueEdgeRejectScenario } from './controls.js';
 
 const MODAL_CONFIG = {
   breakout: {
@@ -21,6 +21,12 @@ const MODAL_CONFIG = {
     glyph: '🛡',
     name: 'Absorption Wall · Climactic · Stacked',
     build: buildAbsorptionWallModalBody,
+  },
+  valueEdgeReject: {
+    variant: 'value-edge',
+    glyph: '🎯',
+    name: 'Value Edge Rejection · Active–Steady · Normal–Deep',
+    build: buildValueEdgeRejectModalBody,
   },
   sweep: {
     variant: 'sweep',
@@ -88,7 +94,7 @@ function openModal(modalId, openOpts) {
   document.getElementById('modalGlyph').textContent = cfg.glyph;
   document.getElementById('modalName').textContent = cfg.name;
   const headMeta = document.getElementById('modalMeta');
-  if (modalId === 'breakout' || modalId === 'fade' || modalId === 'absorptionWall') {
+  if (modalId === 'breakout' || modalId === 'fade' || modalId === 'absorptionWall' || modalId === 'valueEdgeReject') {
     const total = modalId === 'fade' ? 6 : 5;
     headMeta.innerHTML = `<span class="modal-meta-num" id="modalMetaNum">0</span> / ${total}`;
   } else {
@@ -99,7 +105,7 @@ function openModal(modalId, openOpts) {
   body.innerHTML = cfg.build();
 
   const fire = openOpts && openOpts.fire ? openOpts.fire : null;
-  if (fire && (modalId === 'breakout' || modalId === 'fade' || modalId === 'absorptionWall')) {
+  if (fire && (modalId === 'breakout' || modalId === 'fade' || modalId === 'absorptionWall' || modalId === 'valueEdgeReject')) {
     const hint = document.createElement('div');
     hint.className = 'watch-snapshot-hint';
     if (fire.checks) {
@@ -118,6 +124,7 @@ function openModal(modalId, openOpts) {
       if (btn.dataset.force === 'breakout') forceBreakoutScenario();
       else if (btn.dataset.force === 'fade') forceFadeScenario();
       else if (btn.dataset.force === 'absorptionWall') forceAbsorptionWallScenario();
+      else if (btn.dataset.force === 'valueEdgeReject') forceValueEdgeRejectScenario();
     });
   });
 
@@ -175,6 +182,25 @@ function openModal(modalId, openOpts) {
       c = evaluateAbsorptionWallCanonical();
     }
     renderAbsorptionWallWatch(c, { fromFireSnapshot });
+  }
+  if (modalId === 'valueEdgeReject') {
+    let c;
+    if (fire && fire.watchId === 'valueEdgeReject' && fire.checks) {
+      c = {
+        checks: { ...fire.checks },
+        passing: fire.passing,
+        total: fire.total,
+        fired: fire.passing === fire.total,
+        direction: fire.direction,
+        edge: fire.edge ?? null,
+        anchorPrice: fire.anchorPrice ?? null,
+        alignment: fire.alignment,
+        tag: fire.tag,
+      };
+    } else {
+      c = evaluateValueEdgeReject();
+    }
+    renderValueEdgeRejectWatch(c, { fromFireSnapshot });
   }
 }
 
@@ -244,6 +270,32 @@ function buildFadeModalBody() {
     </div>
     <div class="watch-twin">
       <span class="twin-label">Failure twin:</span>identical stretch in <strong style="color:var(--text-2);">[Active · Thin]</strong> predicts continuation, not reversion. Thin book lets stretch run; normal/deep book pulls it back. Depth axis again carries the prediction.
+    </div>
+  `;
+}
+
+function buildValueEdgeRejectModalBody() {
+  return `
+    <div class="watch-summary">
+      <strong>Balance-based mean reversion:</strong> a failed push at the value-area edge (high/low probe VAH/VAL, close back inside the VA) with a rejection wick and normal (non-spike) volume. The intended direction is back toward the session POC — fade-style HTF alignment.
+    </div>
+    <ul class="criteria-list" id="valueEdgeRejectCriteriaList">
+      <li class="criterion" data-key="regime"><span class="check">○</span><span class="text">Volatility Active or Steady, book Normal or Deep (middle 2×2)</span></li>
+      <li class="criterion" data-key="failedAtEdge"><span class="check">○</span><span class="text">Bar probed VAH/VAL (high/low) and closed strictly inside the value area</span></li>
+      <li class="criterion" data-key="rejectionWick"><span class="check">○</span><span class="text">Rejection wick on the probed side (top at VAH, bottom at VAL)</span></li>
+      <li class="criterion" data-key="volume"><span class="check">○</span><span class="text">Volume between 0.8× and 1.2× 10-bar average (standard participation)</span></li>
+      <li class="criterion" data-key="alignment"><span class="check">○</span><span class="text">1h bias not opposing trade direction (toward POC)</span></li>
+    </ul>
+    <div class="watch-diagnostic" id="valueEdgeRejectDiagnostic">
+      <span class="diag-label">last to break:</span>
+      <span class="diag-value" id="valueEdgeRejectDiagValue">—</span>
+    </div>
+    <div class="watch-controls">
+      <label class="auto-pause-label">
+        <input type="checkbox" id="valueEdgeRejectAutoPauseToggle" ${state.autoPausePrefs.valueEdgeReject ? 'checked' : ''}>
+        <span>Auto-pause when this entry fires</span>
+      </label>
+      <button class="watch-force value-edge-force" data-force="valueEdgeReject">${state.replay.mode === 'real' ? 'Jump to next 🎯' : 'Force 🎯'}</button>
     </div>
   `;
 }
@@ -318,4 +370,4 @@ function buildEventModalBody(eventType) {
   `;
 }
 
-export { MODAL_CONFIG, EVENT_INFO, openModal, closeModal, onOverlayClick, buildAbsorptionWallModalBody, buildBreakoutModalBody, buildFadeModalBody, buildEventModalBody };
+export { MODAL_CONFIG, EVENT_INFO, openModal, closeModal, onOverlayClick, buildAbsorptionWallModalBody, buildBreakoutModalBody, buildFadeModalBody, buildValueEdgeRejectModalBody, buildEventModalBody };

@@ -1,4 +1,4 @@
-import { BREAKOUT_CELL, ES_MIN_TICK, FADE_CELL, isAbsorptionWallRegime, SYNTH_TUNINGS } from '../config/constants.js';
+import { BREAKOUT_CELL, ES_MIN_TICK, FADE_CELL, isAbsorptionWallRegime, isValueEdgeRejectRegime, SYNTH_TUNINGS } from '../config/constants.js';
 import { getTunings, state } from '../state.js';
 import { computeProfile } from './profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from './vwap.js';
@@ -99,7 +99,8 @@ function _applyFadeOverrides(base, biasH1, dir1m) {
 // treat null as "no alignment context".
 //
 // `watchKind` ∈ { 'breakout', 'fade', 'absorption' } — fade applies Wyckoff
-// tag overrides. Breakout and absorption use the same base tag rule; absorption
+// tag overrides (same for Value Edge Rejection mean-reversion). Breakout and
+// absorption use the same base tag rule; absorption
 // passes the bar's *impulse* (close vs open) as dir1m for votes, not mean-reversion.
 // Defaults to 'breakout' so the existing single-arg call sites work unchanged.
 function buildAlignment(lastBar, dir1m, watchKind = 'breakout') {
@@ -392,4 +393,101 @@ function evaluateAbsorptionWallCanonical() {
   return { checks, passing, total: 5, fired, direction, alignment, tag };
 }
 
-export { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, vote, buildAlignment, BIAS_VOTE };
+const VA_EDGE_EPS = ES_MIN_TICK * 0.5;
+
+/**
+ * Value Edge Rejection: failed breakout at VAH/VAL (high/low probe the edge, close
+ * back strictly inside the value area), normal-volume bar, mean-reversion direction
+ * toward POC. Uses last settled bar. HTF alignment uses the same "fade" path
+ * (Wyckoff) as other MR canonicals.
+ */
+function evaluateValueEdgeReject() {
+  const checks = { regime: false, failedAtEdge: false, rejectionWick: false, volume: false, alignment: false };
+  let direction = null;
+  let edge = null; // 'vah' | 'val'
+
+  if (state.regimeWarmup) {
+    return { checks, passing: 0, total: 5, fired: false, direction: null, edge: null, anchorPrice: null,
+             alignment: null, tag: null };
+  }
+
+  const t = getTunings();
+  const vMinM = t.valueRejectVolMinMult ?? SYNTH_TUNINGS.valueRejectVolMinMult ?? 0.8;
+  const vMaxM = t.valueRejectVolMaxMult ?? SYNTH_TUNINGS.valueRejectVolMaxMult ?? 1.2;
+
+  checks.regime = isValueEdgeRejectRegime(state.sim.volState, state.sim.depthState);
+
+  const n = state.bars.length;
+  const lastBar = n ? state.bars[n - 1] : null;
+
+  let profile = null;
+  if (n >= 3) profile = computeProfile(state.bars);
+
+  if (lastBar && profile && profile.vahPrice != null && profile.valPrice != null) {
+    const vah = profile.vahPrice;
+    const val = profile.valPrice;
+    if (val < vah) {
+      // Failed VAH: probed at or through VAH; close strictly inside [VAL, VAH] body (not on edges).
+      const vahTouched = lastBar.high + VA_EDGE_EPS >= vah;
+      const valTouched = lastBar.low - VA_EDGE_EPS <= val;
+      const closeInside = lastBar.close > val && lastBar.close < vah;
+      const candVah = vahTouched && closeInside;
+      const candVal = valTouched && closeInside;
+      if (candVah && candVal) {
+        const upperW = lastBar.high - Math.max(lastBar.open, lastBar.close);
+        const lowerW = Math.min(lastBar.open, lastBar.close) - lastBar.low;
+        if (upperW >= lowerW) { edge = 'vah'; } else { edge = 'val'; }
+      } else if (candVah) {
+        edge = 'vah';
+      } else if (candVal) {
+        edge = 'val';
+      }
+      if (edge) {
+        checks.failedAtEdge = true;
+        if (edge === 'vah') {
+          direction = 'down';
+        } else {
+          direction = 'up';
+        }
+        const b = lastBar;
+        if (edge === 'vah') {
+          // Notes: top wick vs body — (H−C) > (C−O) captures rejection at the high.
+          checks.rejectionWick = (b.high - b.close) > (b.close - b.open);
+        } else {
+          // Notes: (C−L) > (O−C) for rejection at the low.
+          checks.rejectionWick = (b.close - b.low) > (b.open - b.close);
+        }
+      }
+    }
+  }
+
+  if (lastBar && n >= 2) {
+    const start = Math.max(0, n - 1 - 10);
+    const volPrior = state.bars.slice(start, -1);
+    if (volPrior.length > 0) {
+      const avgVol = volPrior.reduce((s, b) => s + b.volume, 0) / volPrior.length;
+      if (avgVol > 0) {
+        const ratio = lastBar.volume / avgVol;
+        checks.volume = ratio >= vMinM && ratio <= vMaxM;
+      }
+    }
+  }
+
+  const alignment = lastBar && direction
+    ? buildAlignment(lastBar, direction, 'fade')
+    : null;
+  const tag = alignment ? alignment.tag : null;
+  checks.alignment = !!alignment && alignment.vote_1h >= 0;
+
+  const passing = Object.values(checks).filter(Boolean).length;
+  const fired = passing === 5;
+  const anchorPrice = edge === 'vah' && profile
+    ? profile.vahPrice
+    : edge === 'val' && profile
+      ? profile.valPrice
+      : null;
+
+  return { checks, passing, total: 5, fired, direction, edge, anchorPrice, alignment, tag };
+}
+
+export { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject, vote, buildAlignment, BIAS_VOTE };

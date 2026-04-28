@@ -47,12 +47,31 @@ export const ABSORPTION_WALL_CELL = {
 export function isAbsorptionWallRegime(volState, depthState) {
   return depthState >= 3 && volState >= 2;
 }
+
+/** Value Edge Rejection: Active–Steady vol (2..3) × Normal–Deep book (2..3) — 2×2 "middle" block. */
+export function isValueEdgeRejectRegime(volState, depthState) {
+  return volState >= 2 && volState <= 3 && depthState >= 2 && depthState <= 3;
+}
+
+// Representative cell for scenario-lock / force-demo (Active · Normal, inside the 2×2).
+export const VALUE_EDGE_REJECT_LOCK_CELL = {
+  r: 2, c: 2, volState: 2, depthState: 2, name: 'Active · Normal',
+};
+
 // Backward-compatible alias for any straggling references.
 export const WATCHED_CELL = BREAKOUT_CELL;
 
 export const BREAKOUT_LABELS = { cell: 'cell', sweep: 'sweep', flow: 'flow', clean: 'clean', alignment: 'HTF align' };
 export const FADE_LABELS     = { balanced: 'balance', cell: 'cell', stretchPOC: 'POC stretch', stretchVWAP: 'VWAP stretch', noMomentum: 'momentum', alignment: 'HTF align' };
 export const ABSORPTION_WALL_LABELS = { cell: 'cell', stall: 'stall', volume: 'volume', level: 'VWAP/VA', alignment: 'HTF align' };
+
+export const VALUE_EDGE_REJECT_LABELS = {
+  regime: 'regime',
+  failedAtEdge: 'failed at VA',
+  rejectionWick: 'rejection wick',
+  volume: 'volume',
+  alignment: 'HTF align',
+};
 
 /** ES / MES minimum price increment (for tick-based stall/level gates). */
 export const ES_MIN_TICK = 0.25;
@@ -100,6 +119,11 @@ const _BASE_TUNINGS_1M = {
   absorptionWallStallMinRangeMult: 0.25,
   /** Bar close must be within this many ticks of VWAP, VAH, VAL, or POC (wider = vacuum). */
   absorptionWallLevelTicks: 15,
+  /**
+   * Value Edge Rejection: last bar volume within [min, max] × 10-bar average (normal participation).
+   */
+  valueRejectVolMinMult: 0.8,
+  valueRejectVolMaxMult: 1.2,
 };
 
 export const SYNTH_TUNINGS_BY_TF = {

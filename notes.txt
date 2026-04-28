@@ -1,32 +1,90 @@
-Act as a Senior Market Microstructure Engineer. We are adding a fourth canonical watch: the "Value Edge Rejection" (🎯). This watch targets high-frequency mean reversion setups when price overextends past the Value Area but lacks the momentum to break out.
+working on the order flow / regime matrix app - and realizing that the setup is awkward in the way that it breaks up the data set into individual sessions - this creates ambiguities at least in the UI for what is being measured, since the range can be changed with the slider, and other issues. 
 
-### 1. Goal
-Implement the 'Value Edge Rejection' watch logic. This captures the "Rubber Band" snap-back effect from the VAH/VAL toward the POC.
+So I'd like to convert the interface into a more traditional price chart model (maintaining all the functionality). 
 
-### 2. Configuration (Add to constants.js)
-Define `VALUE_REJECT_CELL`:
-- **volState:** 2 or 3 (Active or Steady). We want "normal" participation, not a climactic crash.
-- **depthState:** 2 or 3 (Normal or Deep). We want a healthy book that can facilitate a return to mean.
-- **Tuning Defaults:**
-    - `valueRejectLevelTicks`: 4 (Must be very close to the edge).
-    - `valueRejectDeltaDivergence`: true (Requires price to be at a high/low while Delta is neutral or reversing).
+That is, remove the session drop-down filter, add a labeled bottom axis that SHOWS THE DATE(!), add slider to the bottom of the chart allowing user to pan between dates, and importantly, ensure that any stats or event logging is done for the entire data set. 
 
-### 3. Logic Implementation (canonical.js)
-Create `evaluateValueEdgeReject()`. It must pass 5 gates:
-1. **Regime Gate:** `volState` is 2-3 AND `depthState` is 2-3.
-2. **Proximity Gate:** Last settled bar's Close is within 4 ticks of VAH (Value Area High) or VAL (Value Area Low).
-3. **Rejection Gate:** - If at VAH: The bar must have a "wick" on top (High - Close > Close - Open).
-    - If at VAL: The bar must have a "wick" on bottom (Close - Low > Open - Close).
-4. **Volume Gate:** Volume is within 0.8x to 1.2x of the 10-bar average (we want "standard" volume, not a spike).
-5. **Alignment:** Use `buildAlignment(..., 'fade')` logic. We are fading the edge, so we want the HTF context to suggest the market is in a "ranging" or "balanced" state.
+Also, as a means to improve the performance, which is very slow, the event types in the catalog should not all be loaded at once, but rather, none should be loaded by default - and checkboxes should be added to the left of the terms in the glossary to enable or disable and then update chart based on those selections. 
 
-### 4. UI & Visuals
-- **Glyph:** Use the Target emoji (🎯) or an Arrow Curve (↩️).
-- **Placement:** Place at the VAH/VAL boundary where the rejection occurred.
-- **Matrix Mapping:** Highlight the (2,2) and (3,3) "Middle" cells as the watched territory for this strategy.
-- **Banner Color:** Use a "Forest Green" or "Success Teal" to indicate a high-probability structural setup.
+---
 
-### 5. Integration
-- Update `checkWatches()` to include `VALUE_EDGE_REJECT`.
-- Ensure the 'Details' modal explains that this is a "Balance-based Mean Reversion" targeting a return to the Point of Control (POC).
-- Ensure the `direction` returned is always toward the POC (Down if at VAH, Up if at VAL).
+## Recommended Approach
+
+This is fundamentally a **viewport model swap** — from session-centric (data cursor = session index) to chart-centric (data cursor = bar time across a continuous series). The good news is the state model already has much of what you need: `chartViewEnd`, `replay.allBars`, and the existing viewport windowing logic are all reusable. The session concept doesn't disappear — it just becomes invisible to the user (VWAP still resets at RTH opens, warmup still fires per session start).
+
+I'd structure this as four focused tasks in Cursor:
+
+---
+
+### Task 1 — Backend: Date-range endpoints + event type filter
+
+**Files:** `api/main.py`
+
+Replace the session-scoped query pattern with optional `start` / `end` ISO datetime params on `/bars`, `/events`, `/fires`, `/profile`, `/occupancy`. The session dropdown was essentially a coarse date range picker — this just makes it continuous and exact.
+
+- Add `GET /date-range` → `{ min: "2026-01-26T...", max: "2026-04-24T..." }` so the frontend knows the full span on load.
+- Add `?types=sweep,divergence,absorption` filter param to `/events` (comma-separated; omitting the param returns all, but the frontend will never omit it once you add checkboxes — more on that in Task 4).
+- The `/sessions` endpoint can stay for internal use (warmup boundaries, VWAP anchoring) but should no longer drive the UI.
+
+---
+
+### Task 2 — State + data loading: Kill the session selector, load full bar series
+
+**Files:** `src/state.js`, `src/data/replay.js`
+
+- Remove `replay.session` / `replay.sessionList` state. Replace with `replay.dateRange: { min, max }`.
+- Add `state.activeEventTypes: Set<string>` — **empty by default** (this is the performance win).
+- On bootstrap, fetch `/date-range` → set bounds, then fetch all bars across the full range (24,390 1m bars is ~2–3MB of JSON — manageable as a single load; if it gets unwieldy you can lazy-paginate later by visible window).
+- **Do not fetch events on load.** Events only load when `activeEventTypes` is non-empty (Task 4).
+- Keep the existing `sessionStartIdx` mechanism — just compute it internally from the bar series (find index where `bar_time` crosses each RTH open) rather than from a selected session. This preserves cooldown logic, warmup gating, and VWAP reset without any architectural changes.
+
+---
+
+### Task 3 — Chart rendering: Continuous X axis + bottom timeline scrubber
+
+**Files:** `src/render/priceChart.js`, `src/ui/controls.js`, `orderflow_dashboard.html`
+
+**X axis:**
+- Add a date/time axis strip below the candle pane (above any future bottom controls). At 1m: label session opens (`9:30 ET`) with date (`Jan 26`), and mark intraday hours lightly. At 15m/1h: denser date labels. The existing RTH session open dividers (§7.1) become the axis tick sources — you already draw vertical dividers, just add date text at their base.
+- Tick density should be viewport-aware: render at most ~8–10 major labels in the visible window regardless of zoom.
+
+**Bottom timeline scrubber:**
+- Remove the top scrub slider from `controls.js`.
+- Add a full-width range slider at the bottom of the dashboard. Its `[min, max]` map to `dateRange.min` and `dateRange.max`. Its value drives `chartViewEnd` — same state, different input widget. The existing `↺ Live` button and `PANNED` hint remain unchanged.
+- The slider thumb position = `(chartViewEnd - dateRange.min) / (dateRange.max - dateRange.min)` — a simple linear mapping since bar spacing is uniform within RTH sessions (gaps between sessions just appear as the divider lines).
+
+**Matrix range sync:** The occupancy range options in §6 (`Current session`, `Last N sessions`, etc.) should map to date arithmetic against the continuous timeline rather than session indices. `All loaded` = `[dateRange.min, dateRange.max]`.
+
+---
+
+### Task 4 — Event catalog: Checkboxes, lazy load, chart update
+
+**Files:** `src/render/eventInventory.js`, `src/analytics/events.js`, `src/data/replay.js`
+
+- Render the glossary/catalog with a checkbox to the left of each event type label, all **unchecked by default**.
+- On check: add type to `state.activeEventTypes` → call `loadEventsForActiveTypes()` → re-render event markers on chart + event log.
+- On uncheck: remove from set → filter out that type from `state.events` → re-render.
+- `loadEventsForActiveTypes()` calls `/events?types=...&start=...&end=...` with the current active set. You can either fetch incrementally (only the newly checked type) or refetch the full active set — incremental is slightly more efficient but either works.
+- `precomputeAllEvents()` should respect `activeEventTypes` as its type filter rather than loading everything.
+
+This also resolves the "what is being measured" ambiguity in the stats panel — event counts and the event log now reflect whatever types are active, and the label can read `"N events (sweep, divergence)"` or similar.
+
+---
+
+### What Stays Unchanged
+
+- All canonical watch logic (★ / ◆ / 🛡 / 🎯), bias ribbon, HTF alignment, warmup gating — none of this is session-aware in the way that needs to change.
+- `chartViewEnd` semantics and the viewport windowing.
+- VWAP anchoring (resets at session starts that you detect from the bar series itself).
+- The 1m/15m/1h timeframe toggle — continues to work exactly as before, just operating on the full continuous series.
+
+---
+
+### Suggested Cursor Task Order
+
+1. Backend date-range API changes (isolated, testable independently)
+2. State/loading changes (can mock the new endpoints with hardcoded ranges first)
+3. X axis + bottom scrubber (purely visual, no logic dependencies)
+4. Event catalog checkboxes (last, since it depends on the new `activeEventTypes` state from Task 2)
+
+The trickiest part is Task 3 — specifically making the X axis tick labels not collide at different zoom levels. Worth establishing the tick density formula before writing the canvas code.

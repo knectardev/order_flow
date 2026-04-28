@@ -1,4 +1,4 @@
-import { ABSORPTION_WALL_LABELS, BREAKOUT_LABELS, FADE_LABELS } from '../config/constants.js';
+import { ABSORPTION_WALL_LABELS, BREAKOUT_LABELS, FADE_LABELS, VALUE_EDGE_REJECT_LABELS } from '../config/constants.js';
 import { state } from '../state.js';
 
 function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical, renderOpts = null) {
@@ -95,4 +95,9 @@ function renderAbsorptionWallWatch(canonical, renderOpts) {
                     ABSORPTION_WALL_LABELS, state.absorptionWallWatch, canonical, renderOpts);
 }
 
-export { renderWatchPanel, renderBreakoutWatch, renderFadeWatch, renderAbsorptionWallWatch };
+function renderValueEdgeRejectWatch(canonical, renderOpts) {
+  renderWatchPanel('valueEdgeReject', ['regime', 'failedAtEdge', 'rejectionWick', 'volume', 'alignment'],
+                    VALUE_EDGE_REJECT_LABELS, state.valueEdgeRejectWatch, canonical, renderOpts);
+}
+
+export { renderWatchPanel, renderBreakoutWatch, renderFadeWatch, renderAbsorptionWallWatch, renderValueEdgeRejectWatch };
