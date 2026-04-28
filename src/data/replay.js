@@ -24,6 +24,20 @@ const BIN_MS_BY_TF = {
   '15m': 15 * 60 * 1000,
   '1h':  60 * 60 * 1000,
 };
+const URL_PARAM_SELECTION_KIND = 'selection';
+const URL_PARAM_SELECTION_FIRE_TIME = 'selectionFireTime';
+const URL_PARAM_SELECTION_FIRE_WATCH = 'selectionFireWatch';
+const URL_PARAM_SELECTION_CELLS = 'selectionCells';
+
+function _clearSelectionParamsInUrl() {
+  const url = new URL(window.location.href);
+  const p = url.searchParams;
+  p.delete(URL_PARAM_SELECTION_KIND);
+  p.delete(URL_PARAM_SELECTION_FIRE_TIME);
+  p.delete(URL_PARAM_SELECTION_FIRE_WATCH);
+  p.delete(URL_PARAM_SELECTION_CELLS);
+  window.history.replaceState(null, '', url);
+}
 
 function sessionForBar(barIdx) {
   const arr = state.replay.sessions;
@@ -862,6 +876,7 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
   }
   precomputeAllFires();
   await loadEventsForActiveTypes();
+  window.dispatchEvent(new CustomEvent('orderflow:replay-ready'));
 }
 
 // Phase 5: switch the active timeframe in API mode.
@@ -905,6 +920,7 @@ async function setActiveTimeframe(tf) {
   // Drop in-flight selection + caches. Cells reference per-tf ranks
   // and would highlight the wrong bars after the switch.
   state.selection = { kind: null, cells: [], barTimes: null, fireBarTime: null, fireWindowEndMs: null };
+  _clearSelectionParamsInUrl();
   clearProfileCache();
   clearOccupancyCache();
 

@@ -4,6 +4,7 @@ import { computeMatrixScores } from './analytics/regime.js';
 import { bootstrapReplay, setActiveTimeframe } from './data/replay.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
+import { restoreDisplayStateFromUrl } from './render/eventInventory.js';
 import { drawPriceChart } from './render/priceChart.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from './render/watch.js';
 import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
@@ -11,7 +12,7 @@ import { dismissFire, openFireDetails } from './ui/fireBanner.js';
 import { bindMatrixRangeUI, repaintMatrix } from './ui/matrixRange.js';
 import { bindModalDrag, closeModal, onOverlayClick, openModal } from './ui/modal.js';
 import { returnToLiveEdge, _setViewEnd } from './ui/pan.js';
-import { bindSelectionUI } from './ui/selection.js';
+import { bindSelectionUI, restoreSelectionFromUrl } from './ui/selection.js';
 import { bindEventLogClicks } from './render/eventLog.js';
 
 // ───────────────────────────────────────────────────────────
@@ -105,3 +106,7 @@ bindEventLogClicks();
 // event from within renderMatrix() after kicking off a fetch, and the
 // occupancy module resolves the cached read on the next render pass.
 window.addEventListener('orderflow:matrix-repaint', () => repaintMatrix());
+window.addEventListener('orderflow:replay-ready', async () => {
+  await restoreDisplayStateFromUrl();
+  restoreSelectionFromUrl();
+});

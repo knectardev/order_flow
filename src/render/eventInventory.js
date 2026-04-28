@@ -3,6 +3,9 @@ import { state } from '../state.js';
 import { drawPriceChart } from './priceChart.js';
 import { renderEventLog } from './eventLog.js';
 
+const URL_PARAM_DISPLAY_EVENTS = 'displayEvents';
+const URL_PARAM_DISPLAY_FIRES = 'displayFires';
+
 const FIRE_META = [
   { id: 'breakout', label: 'Breakout ★', glyph: '★', short: 'Impulsive breakout: matrix cell + momentum + cleanliness gates align.' },
   { id: 'fade', label: 'Fade ◆', glyph: '◆', short: 'Mean-reversion after stretch: balance, stretch vs POC/VWAP, no momentum.' },
@@ -82,6 +85,34 @@ function renderMergedFireRow(label, short, glyph, modalKey, watchId, count, max)
   </div>`;
 }
 
+function _syncDisplayStateToUrl() {
+  const url = new URL(window.location.href);
+  const p = url.searchParams;
+  p.delete(URL_PARAM_DISPLAY_EVENTS);
+  p.delete(URL_PARAM_DISPLAY_FIRES);
+
+  const eventKeys = [...(state.activeEventTypes || new Set())]
+    .map(String)
+    .filter(Boolean)
+    .sort();
+  const fireKeys = [...(state.activeCanonicalFireTypes || new Set())]
+    .map(String)
+    .filter(Boolean)
+    .sort();
+
+  if (eventKeys.length) p.set(URL_PARAM_DISPLAY_EVENTS, eventKeys.join(','));
+  if (fireKeys.length) p.set(URL_PARAM_DISPLAY_FIRES, fireKeys.join(','));
+  window.history.replaceState(null, '', url);
+}
+
+function _parseCsvParam(raw) {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
 let _invDelegateBound = false;
 function _ensureInventoryDelegate() {
   if (_invDelegateBound) return;
@@ -96,6 +127,7 @@ function _ensureInventoryDelegate() {
       const w = decodeURIComponent(raw);
       if (t.checked) state.activeCanonicalFireTypes.add(w);
       else state.activeCanonicalFireTypes.delete(w);
+      _syncDisplayStateToUrl();
       drawPriceChart();
       renderEventLog();
       renderEventInventory();
@@ -106,8 +138,22 @@ function _ensureInventoryDelegate() {
     const key = decodeURIComponent(raw);
     if (t.checked) state.activeEventTypes.add(key);
     else state.activeEventTypes.delete(key);
+    _syncDisplayStateToUrl();
     await loadEventsForActiveTypes();
   });
+}
+
+async function restoreDisplayStateFromUrl() {
+  const p = new URL(window.location.href).searchParams;
+  const eventKeys = _parseCsvParam(p.get(URL_PARAM_DISPLAY_EVENTS));
+  const fireKeys = _parseCsvParam(p.get(URL_PARAM_DISPLAY_FIRES));
+  if (!eventKeys.length && !fireKeys.length) return false;
+
+  state.activeEventTypes = new Set(eventKeys);
+  state.activeCanonicalFireTypes = new Set(fireKeys);
+  _syncDisplayStateToUrl();
+  await loadEventsForActiveTypes();
+  return true;
 }
 
 /**
@@ -212,3 +258,5 @@ export function renderEventInventory() {
     </div>
   `;
 }
+
+export { restoreDisplayStateFromUrl };

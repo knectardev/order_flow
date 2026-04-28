@@ -39,6 +39,10 @@ import { repaintMatrix } from './matrixRange.js';
 // bars including the fire bar itself. Plan says "fire bar + next 30
 // bars" → 31 entries, fire at index 0.
 const FIRE_WINDOW_BARS = 31;
+const URL_PARAM_SELECTION_KIND = 'selection';
+const URL_PARAM_SELECTION_FIRE_TIME = 'selectionFireTime';
+const URL_PARAM_SELECTION_FIRE_WATCH = 'selectionFireWatch';
+const URL_PARAM_SELECTION_CELLS = 'selectionCells';
 
 // ───────────────────────────────────────────────────────────
 // Public reducer entry points
@@ -76,6 +80,7 @@ function selectCell(r, c, opts = {}) {
     fireBarTime: null,
     fireWindowEndMs: null,
   };
+  _syncSelectionToUrl();
   _repaint();
 
   _fetchCellSelection(nextCells).then(barTimes => {
@@ -86,6 +91,7 @@ function selectCell(r, c, opts = {}) {
     const live = state.selection;
     if (live.kind !== 'cells' || !_sameCellSet(live.cells, nextCells)) return;
     state.selection = { ...live, barTimes };
+    _syncSelectionToUrl();
     _repaint();
   }).catch(err => {
     console.warn('[orderflow] cell selection fetch failed:', err.message);
@@ -125,6 +131,7 @@ function selectFire(fire) {
     fireBarTime: fireMs,
     fireWindowEndMs: lastMs,
   };
+  _syncSelectionToUrl(fire);
 
   // So the 31-bar highlight and ◆/★ glyph are actually on-canvas. Without
   // this, a random pan leaves every visible bar outside `barTimes` (all
@@ -150,6 +157,7 @@ function clearSelection() {
     fireBarTime: null,
     fireWindowEndMs: null,
   };
+  _syncSelectionToUrl();
   _repaint();
 }
 
@@ -213,6 +221,86 @@ function _repaint() {
   repaintMatrix();
 }
 
+function _syncSelectionToUrl(fire = null) {
+  const url = new URL(window.location.href);
+  const p = url.searchParams;
+  // Keep URL params canonical so refresh/share restores the same selection.
+  p.delete(URL_PARAM_SELECTION_KIND);
+  p.delete(URL_PARAM_SELECTION_FIRE_TIME);
+  p.delete(URL_PARAM_SELECTION_FIRE_WATCH);
+  p.delete(URL_PARAM_SELECTION_CELLS);
+
+  const sel = state.selection;
+  if (sel.kind === 'fire') {
+    p.set(URL_PARAM_SELECTION_KIND, 'fire');
+    const fireMs = fire?.barTime instanceof Date
+      ? fire.barTime.getTime()
+      : (fire?.barTime ? Date.parse(fire.barTime) : sel.fireBarTime);
+    if (Number.isFinite(fireMs)) p.set(URL_PARAM_SELECTION_FIRE_TIME, String(fireMs));
+    const watch = fire?.watchId || '';
+    if (watch) p.set(URL_PARAM_SELECTION_FIRE_WATCH, watch);
+  } else if (sel.kind === 'cells' && sel.cells.length) {
+    p.set(URL_PARAM_SELECTION_KIND, 'cells');
+    const packed = sel.cells.map(c => `${c.r}.${c.c}`).join(',');
+    p.set(URL_PARAM_SELECTION_CELLS, packed);
+  }
+  window.history.replaceState(null, '', url);
+}
+
+function restoreSelectionFromUrl() {
+  const p = new URL(window.location.href).searchParams;
+  const kind = (p.get(URL_PARAM_SELECTION_KIND) || '').toLowerCase();
+  if (kind === 'fire') {
+    const watch = p.get(URL_PARAM_SELECTION_FIRE_WATCH) || '';
+    const raw = p.get(URL_PARAM_SELECTION_FIRE_TIME);
+    if (!raw) return false;
+    const ms = Number(raw);
+    if (!Number.isFinite(ms)) return false;
+    const fires = state.replay.mode === 'real' && state.replay.allFires.length
+      ? state.replay.allFires
+      : state.canonicalFires;
+    const match = fires.find(f => {
+      const fms = f.barTime instanceof Date ? f.barTime.getTime() : Date.parse(f.barTime);
+      return fms === ms && (!watch || f.watchId === watch);
+    });
+    if (!match) return false;
+    selectFire(match);
+    return true;
+  }
+  if (kind === 'cells' && state.replay.mode === 'real' && state.replay.apiBase) {
+    const packed = p.get(URL_PARAM_SELECTION_CELLS) || '';
+    const cells = packed.split(',').map(token => {
+      const [rRaw, cRaw] = token.split('.');
+      const r = Number(rRaw);
+      const c = Number(cRaw);
+      if (!Number.isInteger(r) || !Number.isInteger(c)) return null;
+      if (r < 0 || r > 4 || c < 0 || c > 4) return null;
+      return { r, c };
+    }).filter(Boolean);
+    if (!cells.length) return false;
+    state.selection = {
+      kind: 'cells',
+      cells,
+      barTimes: null,
+      fireBarTime: null,
+      fireWindowEndMs: null,
+    };
+    _syncSelectionToUrl();
+    _repaint();
+    _fetchCellSelection(cells).then(barTimes => {
+      const live = state.selection;
+      if (live.kind !== 'cells' || !_sameCellSet(live.cells, cells)) return;
+      state.selection = { ...live, barTimes };
+      _syncSelectionToUrl();
+      _repaint();
+    }).catch(err => {
+      console.warn('[orderflow] URL cell selection fetch failed:', err.message);
+    });
+    return true;
+  }
+  return false;
+}
+
 // ───────────────────────────────────────────────────────────
 // DOM wiring (called from main.js after buildMatrix). The matrix
 // renderer adds .matrix-cell elements with dataset.r / dataset.c, so we
@@ -244,4 +332,4 @@ function bindSelectionUI() {
   });
 }
 
-export { selectCell, selectFire, clearSelection, isBarSelected, bindSelectionUI };
+export { selectCell, selectFire, clearSelection, isBarSelected, bindSelectionUI, restoreSelectionFromUrl };
