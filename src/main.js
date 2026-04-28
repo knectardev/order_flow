@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
-import { bootstrapReplay, onScrubberCommit, onScrubberInput, onSessionChange, seekStep, setActiveTimeframe } from './data/replay.js';
+import { bootstrapReplay, setActiveTimeframe } from './data/replay.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { drawPriceChart } from './render/priceChart.js';
@@ -9,10 +9,10 @@ import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, render
 import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
 import { dismissFire, openFireDetails } from './ui/fireBanner.js';
 import { bindMatrixRangeUI, repaintMatrix } from './ui/matrixRange.js';
-import { closeModal, onOverlayClick, openModal } from './ui/modal.js';
-import { returnToLiveEdge } from './ui/pan.js';
+import { bindModalDrag, closeModal, onOverlayClick, openModal } from './ui/modal.js';
+import { returnToLiveEdge, _setViewEnd } from './ui/pan.js';
 import { bindSelectionUI } from './ui/selection.js';
-import { bindEventLogClicks, bindEventLogFilters } from './render/eventLog.js';
+import { bindEventLogClicks } from './render/eventLog.js';
 
 // ───────────────────────────────────────────────────────────
 buildMatrix();
@@ -38,14 +38,12 @@ window.addEventListener('resize', () => {
 // back to synthetic mode silently when the page is opened without
 // `?source=api` (regime-DB plan §2f retired the JSON-manifest fallback).
 bootstrapReplay();
-
+bindModalDrag();
 
 // ───────────────────────────────────────────────────────────
 // DOM event wiring (replaces inline on*= handlers stripped from HTML).
 // Kept at the bottom of the file so all referenced functions are defined.
 // ───────────────────────────────────────────────────────────
-document.getElementById('sessionSelect').addEventListener('change', onSessionChange);
-
 // Phase 5 timeframe selector. Click → switch active timeframe (refetch
 // bars + cursor-snap + heatmap auto-bump). Buttons present unconditionally
 // in the HTML; their disabled state is driven by /timeframes from
@@ -56,19 +54,34 @@ document.querySelectorAll('#timeframeSelect .tf-btn').forEach(btn => {
     setActiveTimeframe(btn.dataset.tf);
   });
 });
-document.getElementById('seekPrevBtn').addEventListener('click', () => seekStep(-1));
-document.getElementById('seekNextBtn').addEventListener('click', () => seekStep(+1));
-document.getElementById('scrubber').addEventListener('input',  onScrubberInput);
-document.getElementById('scrubber').addEventListener('change', onScrubberCommit);
+function onChartPanSliderInput() {
+  const sl = document.getElementById('chartPanSlider');
+  if (!sl || state.replay.mode !== 'real') return;
+  _setViewEnd(parseInt(sl.value, 10));
+}
+(() => {
+  const panEl = document.getElementById('chartPanSlider');
+  if (!panEl) return;
+  panEl.addEventListener('input', onChartPanSliderInput);
+  panEl.addEventListener('change', onChartPanSliderInput);
+})();
 document.getElementById('streamBtn').addEventListener('click', toggleStream);
 document.getElementById('resetBtn').addEventListener('click', resetStream);
 document.getElementById('speedSlider').addEventListener('input', onSpeedChange);
 document.getElementById('fireDetailsBtn').addEventListener('click', openFireDetails);
 document.getElementById('fireDismissBtn').addEventListener('click', dismissFire);
 document.getElementById('liveEdgeBtn').addEventListener('click', returnToLiveEdge);
-document.querySelectorAll('.glossary-list li[data-modal]').forEach(li =>
-  li.addEventListener('click', () => openModal(li.dataset.modal))
-);
+{
+  const signalGlossarySection = document.getElementById('signalGlossarySection');
+  if (signalGlossarySection) {
+    signalGlossarySection.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-modal]');
+      if (!btn || !signalGlossarySection.contains(btn)) return;
+      const key = btn.getAttribute('data-modal');
+      if (key) openModal(key);
+    });
+  }
+}
 document.getElementById('modalOverlay').addEventListener('click', onOverlayClick);
 document.getElementById('modalPanel').addEventListener('click', (e) => e.stopPropagation());
 document.getElementById('modalCloseBtn').addEventListener('click', closeModal);
@@ -85,7 +98,6 @@ bindMatrixRangeUI();
 //   - Esc                 → clear selection
 bindSelectionUI();
 bindEventLogClicks();
-bindEventLogFilters();
 
 // The /occupancy fetch is async; when a fresh response lands we want to
 // repaint the matrix (so the heatmap layer fills in) without coupling

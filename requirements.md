@@ -39,8 +39,9 @@ Design intent remains unchanged:
 - API: `api/main.py` exposes read-only endpoints:
   - `/timeframes`
   - `/sessions`
+  - `/date-range` (MIN/MAX `bar_time` in `bars` for a `timeframe` — timeline bounds)
   - `/bars`
-  - `/events`
+  - `/events` (optional `types=sweep,divergence,absorption,stoprun` comma list filters `events.event_type`)
   - `/fires`
   - `/profile`
   - `/occupancy`
@@ -54,6 +55,8 @@ Design intent remains unchanged:
 - Real mode is explicitly selected via query string (`?source=api`).
 - Synthetic remains supported and is the fallback when API replay is unavailable.
 
+In **API replay**, after the windowed **`/bars`** load completes, **`seek(allBars.length)`** runs so **`replay.cursor`** sits at the **end of the loaded timeline**. The chart shows the **most recent** **`MAX_BARS`** (subject to **`chartPanSlider`** / **`chartViewEnd`**) with default timeframe **`1m`** — not bar 0 at session start unless the user pans there.
+
 ---
 
 ## 3) State Model (Single Source of Truth)
@@ -62,9 +65,11 @@ All mutable runtime state is centralized in `src/state.js`:
 
 - **Stream data:** `bars`, `formingBar`, `events`, `canonicalFires`, `trail`, `matrixScores`.
 - **Watch state:** `breakoutWatch`, `fadeWatch`, `absorptionWallWatch`, `valueEdgeRejectWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
-- **Replay state:** `replay.mode`, session metadata, full loaded bars/events/fires, cursor, data source flags.
+- **Replay state:** `replay.mode`, **`replay.dateRange`** `{ min, max, minMs, maxMs }` (from **`GET /date-range`** or stubbed from first/last loaded bar after a windowed **`/bars?from&to`** load), session metadata (**internal**: VWAP resets, warmup, cooldown boundaries — **no session dropdown**), full loaded **`replay.allBars`**, **`replay.allEvents`**, **`replay.allFires`**, cursor, data-source flags (`apiBase`, etc.), and **`replay.pendingSeekPromise` / `replay.pendingSeekAbort`** (in-flight **`seekAsync`** coordination — a new **`_loadAllSessionsFromApi`** **`await`s** the prior promise before replacing bars; synchronous **`seek()`** aborts an in-flight **`seekAsync`**).
+- **Glossary primitive selection:** **`state.activeEventTypes`** (`Set` of glossary keys such as **`sweep up`**, **`absorption`**). Default **empty** — no upfront full-timeline primitive scan/fetch for API replay; **`loadEventsForActiveTypes()`** runs **`GET /events?types=&from&to`** when keys are checked, or **`precomputeAllEvents()`** in synthetic mode when keys are checked. In **API replay**, **`drawPriceChart()`** filters **`viewedEvents`** to keys in this set **before** drawing primitive glyphs (`▲▼◉⚡⚠`) so live **`detectEvents`** output in **`state.events`** does not bypass the checklist. Synthetic mode draws all **`state.events`** from the simulator (no checklist filter on glyphs).
+- **Canonical fire halo selection (API replay):** **`state.activeCanonicalFireTypes`** (`Set` of **`watchId`** strings: **`breakout`**, **`fade`**, …). Default **empty** — canonical ★/◆/🛡/🎯 chart halos are **off until the user opts in**. **`priceChart.js`** filters merged fire draws in real mode by this set. **Synthetic mode** ignores this set and draws **`state.canonicalFires`** halos as before (no glossary panel).
 - **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
-- **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). Chart halos for ★/◆ merge `allFires` and `canonicalFires` and match `bar` times by epoch ms so a Date/string mismatch does not drop markers. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
+- **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). **When `replay.cursor` already equals `replay.allBars.length` (tape end), `precomputeAllFires()` snapshots `replay.allFires` from `canonicalFires` with no `seek()` — no redundant full replay.** When `precomputeAllFires` is triggered from `_loadAllSessionsFromApi` after the initial `seekAsync(length)` (see below), `allFires` is filled that way without an extra `seek` pass. Chart halos for ★/◆/🛡/🎯 in **API replay** merge `allFires` and `canonicalFires` (when panned) and filter by **`activeCanonicalFireTypes`**. Matching uses `watchId|bar_time_ms`. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
 - **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds). A fire selection from the event log or chart (`selectFire`) also sets `chartViewEnd` so the fire bar and the 31-bar window sit in the current viewport, runs `_syncCurrentSession` and `_refreshMatrixForView` (so the panned path isn’t “all dim, marker off-screen”), and the price chart adds a teal focus ring on the active ◆/★/🛡.
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
@@ -183,7 +188,7 @@ Watched cells: breakout (amber stripe), fade (blue), absorption wall (indigo `--
 
 - **Display mode toggle:** `Posterior` / `Heatmap`.
 - **Occupancy range selector:**
-  - Current session
+  - **Current RTH** (`range.kind === 'session'`) resolves the RTH window of the internal session containing the effective right-edge bar: index **`clamp((chartViewEnd ?? cursor) - 1, …)`** into **`replay.allBars`** (same effective edge as viewport / matrix).
   - Last hour
   - Last N sessions
   - All loaded
@@ -203,7 +208,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
   glyph: ★ above the bar high for breakout; ◆ above the high for fade; 🛡 for absorption wall at the **high** when `close >= open` and at the **low** otherwise. Fade and absorption-wall halos add a smaller (9px) directional arrow (`↑` / `↓`) to the *right* of the glyph. Breakout keeps no arrow (sweep direction is the primary read).
 - Session-anchored VWAP with reset by session boundaries (real mode).
 - Profile overlays (POC/VAH/VAL).
-- RTH session open dividers and date labeling in replay timelines.
+- RTH session open dividers with **session date** labels at **top** of the candle pane. **Canvas strip below the volume band** (the black band above HTML “Chart view”): **UTC-based clock ticks** on the x-axis in **12-hour** form (**`h:mm AM`** / **`h:mm PM`**, no `Z` suffix). If the viewport spans **multiple UTC calendar days**, ticks after each UTC midnight show **`Mon DD`** before the time (e.g. `Apr 28 9:05 AM`). Tick sampling uses denser spacing on **`1m` / `1h`** than on **`15m`**: **`15m`** yields fewer ticks, a larger minimum pixel gap between bounding boxes when panning dense multi-day spans, so labels do not overlap **Mirrored bottom-row session calendar dates** (viewport-aware thinning, at most ~10) appear only when **≥2** session-open dividers are visible **and** the timeframe is not **`15m`** (where that row would collide with wider date+time labels) **and** the viewport is **not** already multi-day (clock ticks carry day prefixes). Single-session **`1m`/`1h`** windows do not duplicate the bottom date strip unless multiple session opens satisfy the guards above.
 - Hover tooltip and hit-testing.
 - `NOW` marker at live edge.
 - `PANNED` hint when detached from live edge.
@@ -214,7 +219,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
   - `1h`: one self-strip showing the active timeframe's own bias.
 
   Ribbon hit regions emit `kind === 'bias'` hover hits consumed by the chart tooltip.
-- **Repeat cooldown (chart signals):** After `detectEvents` produces candidates for a settled bar, `filterNewEventsCooldown` in `src/analytics/events.js` drops primitives that match the same signature `(type, dir)` as a recently kept event when the bar index gap is smaller than `eventCooldownBars` (default **4** from `SYNTH_TUNINGS` / per-session replay tunings). Cooldown indices are resolved on `state.replay.allBars` in API replay (global bar index, aligned with `sessionStartIdx`), and on the rolling `state.bars` window in synthetic mode. Bar times are matched by epoch ms so `Date` vs serialized time never bypasses dedup. When `sessionStartIdx` is set, pool entries before that index are skipped as anchors (continue), not compared with `===` to ring-buffer indices. `precomputeAllEvents()` applies the same rule using `allBars[0..i]`. Canonical halos (★ / ◆ / 🛡 / 🎯): `handleWatchFire` uses the same index source + session rule in `isCanonicalFireRepeatTooSoon`. Suppressed near-duplicates are omitted from `state.canonicalFires` / `replay.allFires` (no banner row for that edge).
+- **Repeat cooldown (chart signals):** After `detectEvents` produces candidates for a settled bar, `filterNewEventsCooldown` in `src/analytics/events.js` drops primitives that match the same signature `(type, dir)` as a recently kept event when the bar index gap is smaller than `eventCooldownBars` (default **4** from `SYNTH_TUNINGS` / per-session replay tunings). Cooldown indices are resolved on `state.replay.allBars` in API replay (global bar index, aligned with `sessionStartIdx`), and on the rolling `state.bars` window in synthetic mode. Bar times are matched by epoch ms so `Date` vs serialized time never bypasses dedup. When `sessionStartIdx` is set, pool entries before that index are skipped as anchors (continue), not compared with `===` to ring-buffer indices. Synthetic **`precomputeAllEvents()`** (checklist-selected path) applies the same rule using `allBars[0..i]`. Canonical halos (★ / ◆ / 🛡 / 🎯): `handleWatchFire` uses the same index source + session rule in `isCanonicalFireRepeatTooSoon`. Suppressed near-duplicates are omitted from `state.canonicalFires` / `replay.allFires` (no banner row for that edge).
 
 ### 7.2 Interaction
 
@@ -234,7 +239,7 @@ Event log (`src/render/eventLog.js`) must:
 - Keep warmup SYSTEM row sticky while warmup is active.
 - Support clickable fire rows that trigger fire-window selection.
 - Show clear empty states for both unfiltered and filtered contexts.
-- In the Event Log header meta (`#eventCount`), disclose the total number of rows currently shown after filters/selections (no hidden latest-only cap).
+- In the Event Log header meta (`#eventCount`), disclose the total number of rows currently shown after filters/selections (no hidden latest-only cap). In API replay, counts reflect **glossary-driven filtering** (`activeEventTypes` + `activeCanonicalFireTypes`), not a separate log-only control.
 - Render an **Align column** (Phase 6) between the fire label and price, displaying the anchor-priority glyph (`✓✓` / `·` / `⚠` / `⊘`) and signed alignment score for fires; events render an empty placeholder cell so the grid stays consistent.
 - Apply a low-alpha row tint driven by the fire's `tag` and `|score|`:
   - `HIGH_CONVICTION` → green
@@ -242,31 +247,44 @@ Event log (`src/render/eventLog.js`) must:
   - `SUPPRESSED` → red
   - `STANDARD` → near-transparent green/red leaning in the direction of `score` sign.
 - Filter `SUPPRESSED` fires from the visible rows unless `state.showSuppressed === true`.
-- Render the full loaded timeline for the active timeframe in API replay (`state.replay.allEvents` + `state.replay.allFires`) and keep synthetic mode on live rolling arrays (`state.events` + `state.canonicalFires`).
-- Provide one top-of-log **Type** filter that combines canonical signals and primitive events in a single dropdown (`All`, `fire_<watchId>`, and primitive event keys), applied before rendering rows and reflected by the header count.
+- In API replay, chart markers **and** **`replay.allEvents`** for the inventory reflect **`loadEventsForActiveTypes()`** when glossary checkboxes are selected; otherwise **`replay.allEvents`** may be empty at rest. Fires still use **`replay.allFires`** after **`precomputeAllFires()`**. Synthetic mode continues to use **`state.events`** live + **`canonicalFires`** when not using the deferred primitive path.
+- **No separate Type dropdown:** the log is filtered by the same **`activeEventTypes`** / **`activeCanonicalFireTypes`** sets as **Signals & glossary** (see `src/render/eventLog.js` `_checklistPassesRow`). API replay: if both sets are empty, the log stays empty with a hint to check types in the glossary. Synthetic: when both sets are empty, the full interleaved timeline shows (glossary panel isn’t populated for inventory).
+- **Column sort:** header buttons on **Time**, **Align** (canonical alignment score; primitive rows sort after fires), and **Price** toggle asc/desc. State: **`state.eventLogSort`** `{ column, dir }` (`src/state.js`).
 
-### 8.1 Signal inventory (full load)
+### 8.1 Signals & glossary (full load, single table)
 
-In API replay, after bars are loaded and `precomputeAllEvents()` / `precomputeAllFires()` finish (`src/data/replay.js`), the **Signal inventory** panel (`src/render/eventInventory.js`, `#eventInventory` in `orderflow_dashboard.html`) must list:
+After bars load, **`precomputeAllFires()`** still builds **`replay.allFires`** for canonical jump-to/halos (`src/data/replay.js`). **`replay.allEvents`** is **not** fully precomputed at API bootstrap anymore.
 
-- **Flow primitives:** counts for each distinct primitive type produced by `precomputeAllEvents` (sweep up/down, absorption, divergence up/down, stop run up/down), plus any additional keys if the detector emits new variants — horizontal bars scaled to the max count in either group.
-- **Canonical fires:** counts per `watchId` (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`), including zeros when a watch never fired.
+**API load / timeframe reload:** the first full commit to the tape end uses **`seekAsync(allBars.length)`** (batched yields so the main thread can paint progress), not synchronous **`seek`**. A **`#chartSeekLoading`** overlay on the price chart shows **“Replaying bars… N / total”** while work runs; **`drawPriceChart()`** and the rest of the seek tail (**`renderMatrix`**, flow chart, chrome) run **once** when that async pass completes — not every batch. Synchronous **`seek()`** remains for scrubber, jump-to-fire, **`precomputeAllFires`** slow path, and timeframe snap after load. Before each **`_loadAllSessionsFromApi`**, the client **`await`s** any pending **`seekAsync`** so bar arrays are not replaced mid-replay.
 
-The summary line must state the active timeframe, total loaded bar count, total primitive count, and total fire count. Counts always reflect **all loaded sessions** at the **active timeframe** (they refresh when the timeframe changes and data is re-fetched). In synthetic mode (no full-timeline `allEvents` / `allFires`), the panel shows a short note that API mode is required for this inventory.
+The **Signals & glossary** section (`#signalGlossarySection`) contains one **`#eventInventory`** table (`src/render/eventInventory.js`) that replaces separate glossary and inventory lists:
+
+- **Canonical entries:** short definitions (from the old glossary), full-load counts, **modal** links (`data-modal` on name buttons), and a **checkbox per `watchId`** (default **unchecked**) that toggles **`state.activeCanonicalFireTypes`** and repaints chart halos + summary (no HTTP refetch).
+- **Flow primitives:** short definitions, full-load counts, modal links, and a **checkbox** per primitive key (default **unchecked**). Checked keys populate **`state.activeEventTypes`** and trigger **`loadEventsForActiveTypes()`**, which fetches **`GET /events`** with **`types=`**, **`from`/`to`** from **`replay.dateRange`**, and the active **`timeframe`**. **Synthetic** mode runs **`precomputeAllEvents()`** only when at least one key is checked (same cooldown rules; no HTTP).
+- Horizontal share bars use one **max** across both groups; counts for primitives reflect **whatever is loaded into** **`replay.allEvents`** given the checklist; fire counts remain from full **`precomputeAllFires`**.
+
+The summary line states the timeframe, loaded bar count, primitive total + active primitive keys, fire total + active halo keys (`(none)` when empty).
 
 ---
 
 ## 9) Replay Controls
 
-When sessions are loaded (real mode), show replay row with:
+When real data is loaded, show:
 
-- Session selector.
-- Timeframe selector (`1m` / `15m` / `1h`) with disabled states for unavailable DB timeframes.
-- Step backward / forward buttons.
-- Scrubber slider.
-- Time readout.
+- **`seek` vs `seekAsync`:** **`seek()`** remains synchronous for step/jump, **`precomputeAllFires`** slow path, post-load timeframe snap, etc. Initial full-timeline commit after **`/bars`** fetch uses **`seekAsync()`** (`src/data/replay.js`) only from **`_loadAllSessionsFromApi`**, with **`#chartSeekLoading`** progress overlay; another load or TF switch **`await`s** the in-flight **`seekAsync`** before replacing **`replay.allBars`**.
+- **Timeframe row:** **`#replayRow`** — **Timeframe** label + segmented control only (`1m` / `15m` / `1h`). Placed **under the price chart profile legend** (right-aligned), not in the page header. There is **no** seek scrubber, step buttons, or playback time readout — **`replay.cursor`** is advanced by **stream** / **Reset** / internal **`seek()`** (e.g. jump-to-fire, resume-stream snap), not by a header timeline control.
+- **Chart pan row:** full-width **`chartPanSlider`** below the price canvas — adjusts **`chartViewEnd`** (viewport right edge via **`_setViewEnd`**), **not** the underlying cursor index for history inspection. Bounds follow **`replay.dateRange`** / bar count (**`MAX_BARS`** window semantics unchanged).
 
-Seeking must keep matrix/charts/log in sync and maintain deterministic selection behavior.
+**Pan vs playback:** dragging the chart pan slider scrolls the visible window along the loaded bars. **Start Stream** / **Resume** drives **`replay.cursor`** forward. **`↺ Live`** clears **`chartViewEnd`** lock.
+
+**Jump to next (canonical modals):** **`jumpToNextFire(watchId)`** (`src/data/replay.js`) wires from **`modal.js`** (not only `controls.js`) so the button is not blocked by fragile ESM init order across modules. Canonical fires for each watch are **sorted by time**; lookup uses **`modalFireContext`** (“next strictly after clicked fire”), else “next fire at/after **`replay.cursor`**”, else **wrap** to the **earliest** same-watch fire in loaded data (`chain[0]`). **`_findClosestBarIndex`** tolerates **`barTime`** mismatches vs **`allBars[i].time`**. **`src/ui/modal.js`** also exposes **`resetModalPanelPosition`** and **`bindModalDrag`**: grab the **`modal-drag-handle`** (`#modalHead` strip) to move **`#modalPanel`** with **`position: fixed`**; resets when the overlay closes/opens.
+
+Mode subtitle summarizes the calendar span and states that chart pan previews history while stream advances playback.
+
+### 9.2 Layout (`orderflow_dashboard.html`)
+
+- **`col-left`:** Header, stream controls, **Price · Volume Profile** block (canvas, chart pan, legend, **`#replayRow`** timeframe strip), **Delta Distribution**, **Signals & glossary**.
+- **`col-right`:** **Regime Matrix** stack, then **Event Log** (scroll list + sync hint; glossary drives row filter) beneath it.
 
 ### 9.1 Timeframe Switching Contract
 
@@ -320,7 +338,7 @@ Fallback behavior:
     3. **Off-range fallback**: any rejected price falls through to the existing off-range arrow indicator in `_drawRefLine` (POC/VAH/VAL pinned to top/bottom edge with a price label and ↑/↓ marker).
 
     Rejected carry-overs fall through to the deterministic OHLC proxy (`computeProfile(profileBars)`) which is computed fresh from the current bars and is by construction candle-aligned. Higher timeframes (`15m`, `1h`) keep their candle-only Y-fit (`fitProfileToRange === false`).
-20. **Signal repeat cooldown** must remain wired end-to-end: `eventCooldownBars` / `fireCooldownBars` in effective tunings (`getTunings()`), `filterNewEventsCooldown` on `state.events` at synthetic + replay commit, the same helper in `precomputeAllEvents`, and `isCanonicalFireRepeatTooSoon` inside `handleWatchFire` (see §7.1).
+20. **Signal repeat cooldown** must remain wired end-to-end: `eventCooldownBars` / `fireCooldownBars` in effective tunings (`getTunings()`), `filterNewEventsCooldown` on `state.events` at synthetic + replay commit, the same helper in **`precomputeAllEvents`** (synthetic checklist path), API **`/events`** rows as loaded (server-side aggregation), and `isCanonicalFireRepeatTooSoon` inside `handleWatchFire` (see §7.1).
 
 ---
 

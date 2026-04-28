@@ -2,7 +2,7 @@ import { MAX_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
-import { _syncCurrentSession, precomputeAllFires } from '../data/replay.js';
+import { _syncCurrentSession, _renderReplayChrome, precomputeAllFires } from '../data/replay.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { _hideTooltip } from './tooltip.js';
@@ -29,10 +29,7 @@ function _setViewEnd(idx) {
   } else {
     state.chartViewEnd = clamped;
   }
-  // Re-resolve the "current" session to whichever day the right edge now
-  // sits in. Sync the dropdown so users see which day they've panned to.
   _syncCurrentSession();
-  _syncSessionDropdown();
   // First time we leave the live edge, build the full-timeline fire list if
   // it is missing; otherwise the chart would fall back to the online ring
   // buffer and historical halos on screen would not match the viewport.
@@ -41,21 +38,17 @@ function _setViewEnd(idx) {
     precomputeAllFires();
   }
   drawPriceChart();
+  if (state.replay.mode === 'real') _renderReplayChrome();
   // Keep the regime matrix synced to whatever bar the NOW line points at,
   // so the user can scroll through vol×depth states across the session.
   _refreshMatrixForView();
-}
-
-function _syncSessionDropdown() {
-  if (state.replay.mode !== 'real' || !state.replay.current) return;
-  const sel = document.getElementById('sessionSelect');
-  if (sel && sel.value !== state.replay.current.file) sel.value = state.replay.current.file;
 }
 
 function returnToLiveEdge() {
   state.chartViewEnd = null;
   drawPriceChart();
   _refreshMatrixForView();   // resyncs matrix to live state on un-pan
+  if (state.replay.mode === 'real') _renderReplayChrome();
 }
 
 function _refreshMatrixForView() {
@@ -209,4 +202,4 @@ window.addEventListener('mouseup', () => {
 
 // ───────────────────────────────────────────────────────────
 
-export { _panAvailable, _currentViewEnd, _setViewEnd, _syncSessionDropdown, returnToLiveEdge, _refreshMatrixForView, _continuePan, consumePanMoved };
+export { _panAvailable, _currentViewEnd, _setViewEnd, returnToLiveEdge, _refreshMatrixForView, _continuePan, consumePanMoved };

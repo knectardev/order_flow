@@ -1,90 +1,21 @@
-working on the order flow / regime matrix app - and realizing that the setup is awkward in the way that it breaks up the data set into individual sessions - this creates ambiguities at least in the UI for what is being measured, since the range can be changed with the slider, and other issues. 
+Gaps worth addressing
+1. Phase 2: seek shouldn't become unconditionally async — create seekAsync instead.
+The plan says "refactor the inner for loop in seek" but seek has many callers beyond _loadAllSessionsFromApi: the pan handler, jump-to-fire (which restores chartViewEnd + calls _syncCurrentSession), and the slow path inside precomputeAllFires itself. Making seek return a Promise breaks all non-awaiting callers silently. The safer path is a new seekAsync(n, onProgress?) that wraps the batched loop, and only _loadAllSessionsFromApi (and possibly the TF-switch restore seek) get migrated to await seekAsync(...).
+2. Phase 2: race condition on TF switch during in-flight async seek.
+If the user switches timeframe while an async seekAsync is yielding mid-loop, the next _loadAllSessionsFromApi starts its own seekAsync on a freshly reset allBars. You'd need a cancellation token or generation counter so the stale in-progress seek detects the invalidation and aborts early — otherwise you get state corruption from two concurrent _commitRealBar streams writing into the same singleton. The plan doesn't mention this at all.
+3. Fast path: explicitly document the chartViewEnd restore step even with no seeks.
+The plan says "restore chartViewEnd if needed (same as today after the two seeks)" but doesn't confirm whether seek() is what clobbers chartViewEnd in the first place. If seek doesn't touch chartViewEnd, the restore in the fast path is a harmless no-op. If it does (e.g. via _commitRealBar → some viewport side-effect), then the fast path bypasses that clobber and the restore is still correct — but this should be verified explicitly rather than assumed, since the requirements doc (§3) is careful about chartViewEnd semantics in panned vs live state.
+4. The "slow path still has two seek(N) calls" note is slightly misleading.
+When precomputeAllFires is triggered from the pan handler with savedCursor < N, _loadAllSessionsFromApi is not the caller — so there's no prior seek(N) in flight. The slow path is self-contained: seek(N) + copy + seek(savedCursor). Today's bug (the double seek(N)) only manifests when called from _loadAllSessionsFromApi where savedCursor === N. The plan conflates these two contexts slightly in the "slow path" description — worth clarifying so the code comment is unambiguous.
 
-So I'd like to convert the interface into a more traditional price chart model (maintaining all the functionality). 
+Suggested addition to the requirements sync (TODO #3)
+The requirements doc (§3) currently says:
 
-That is, remove the session drop-down filter, add a labeled bottom axis that SHOWS THE DATE(!), add slider to the bottom of the chart allowing user to pan between dates, and importantly, ensure that any stats or event logging is done for the entire data set. 
+"The first time the user pans off the live edge while replay.allFires is still empty, precomputeAllFires() runs (saving and restoring chartViewEnd so the viewport is not reset)."
 
-Also, as a means to improve the performance, which is very slow, the event types in the catalog should not all be loaded at once, but rather, none should be loaded by default - and checkboxes should be added to the left of the terms in the glossary to enable or disable and then update chart based on those selections. 
+After Phase 1 this should additionally note:
 
----
+When called with cursor === allBars.length, no seek is performed; allFires is snapshotted directly from canonicalFires.
+When called from _loadAllSessionsFromApi, allFires is populated inline without a separate seek pass.
 
-## Recommended Approach
-
-This is fundamentally a **viewport model swap** — from session-centric (data cursor = session index) to chart-centric (data cursor = bar time across a continuous series). The good news is the state model already has much of what you need: `chartViewEnd`, `replay.allBars`, and the existing viewport windowing logic are all reusable. The session concept doesn't disappear — it just becomes invisible to the user (VWAP still resets at RTH opens, warmup still fires per session start).
-
-I'd structure this as four focused tasks in Cursor:
-
----
-
-### Task 1 — Backend: Date-range endpoints + event type filter
-
-**Files:** `api/main.py`
-
-Replace the session-scoped query pattern with optional `start` / `end` ISO datetime params on `/bars`, `/events`, `/fires`, `/profile`, `/occupancy`. The session dropdown was essentially a coarse date range picker — this just makes it continuous and exact.
-
-- Add `GET /date-range` → `{ min: "2026-01-26T...", max: "2026-04-24T..." }` so the frontend knows the full span on load.
-- Add `?types=sweep,divergence,absorption` filter param to `/events` (comma-separated; omitting the param returns all, but the frontend will never omit it once you add checkboxes — more on that in Task 4).
-- The `/sessions` endpoint can stay for internal use (warmup boundaries, VWAP anchoring) but should no longer drive the UI.
-
----
-
-### Task 2 — State + data loading: Kill the session selector, load full bar series
-
-**Files:** `src/state.js`, `src/data/replay.js`
-
-- Remove `replay.session` / `replay.sessionList` state. Replace with `replay.dateRange: { min, max }`.
-- Add `state.activeEventTypes: Set<string>` — **empty by default** (this is the performance win).
-- On bootstrap, fetch `/date-range` → set bounds, then fetch all bars across the full range (24,390 1m bars is ~2–3MB of JSON — manageable as a single load; if it gets unwieldy you can lazy-paginate later by visible window).
-- **Do not fetch events on load.** Events only load when `activeEventTypes` is non-empty (Task 4).
-- Keep the existing `sessionStartIdx` mechanism — just compute it internally from the bar series (find index where `bar_time` crosses each RTH open) rather than from a selected session. This preserves cooldown logic, warmup gating, and VWAP reset without any architectural changes.
-
----
-
-### Task 3 — Chart rendering: Continuous X axis + bottom timeline scrubber
-
-**Files:** `src/render/priceChart.js`, `src/ui/controls.js`, `orderflow_dashboard.html`
-
-**X axis:**
-- Add a date/time axis strip below the candle pane (above any future bottom controls). At 1m: label session opens (`9:30 ET`) with date (`Jan 26`), and mark intraday hours lightly. At 15m/1h: denser date labels. The existing RTH session open dividers (§7.1) become the axis tick sources — you already draw vertical dividers, just add date text at their base.
-- Tick density should be viewport-aware: render at most ~8–10 major labels in the visible window regardless of zoom.
-
-**Bottom timeline scrubber:**
-- Remove the top scrub slider from `controls.js`.
-- Add a full-width range slider at the bottom of the dashboard. Its `[min, max]` map to `dateRange.min` and `dateRange.max`. Its value drives `chartViewEnd` — same state, different input widget. The existing `↺ Live` button and `PANNED` hint remain unchanged.
-- The slider thumb position = `(chartViewEnd - dateRange.min) / (dateRange.max - dateRange.min)` — a simple linear mapping since bar spacing is uniform within RTH sessions (gaps between sessions just appear as the divider lines).
-
-**Matrix range sync:** The occupancy range options in §6 (`Current session`, `Last N sessions`, etc.) should map to date arithmetic against the continuous timeline rather than session indices. `All loaded` = `[dateRange.min, dateRange.max]`.
-
----
-
-### Task 4 — Event catalog: Checkboxes, lazy load, chart update
-
-**Files:** `src/render/eventInventory.js`, `src/analytics/events.js`, `src/data/replay.js`
-
-- Render the glossary/catalog with a checkbox to the left of each event type label, all **unchecked by default**.
-- On check: add type to `state.activeEventTypes` → call `loadEventsForActiveTypes()` → re-render event markers on chart + event log.
-- On uncheck: remove from set → filter out that type from `state.events` → re-render.
-- `loadEventsForActiveTypes()` calls `/events?types=...&start=...&end=...` with the current active set. You can either fetch incrementally (only the newly checked type) or refetch the full active set — incremental is slightly more efficient but either works.
-- `precomputeAllEvents()` should respect `activeEventTypes` as its type filter rather than loading everything.
-
-This also resolves the "what is being measured" ambiguity in the stats panel — event counts and the event log now reflect whatever types are active, and the label can read `"N events (sweep, divergence)"` or similar.
-
----
-
-### What Stays Unchanged
-
-- All canonical watch logic (★ / ◆ / 🛡 / 🎯), bias ribbon, HTF alignment, warmup gating — none of this is session-aware in the way that needs to change.
-- `chartViewEnd` semantics and the viewport windowing.
-- VWAP anchoring (resets at session starts that you detect from the bar series itself).
-- The 1m/15m/1h timeframe toggle — continues to work exactly as before, just operating on the full continuous series.
-
----
-
-### Suggested Cursor Task Order
-
-1. Backend date-range API changes (isolated, testable independently)
-2. State/loading changes (can mock the new endpoints with hardcoded ranges first)
-3. X axis + bottom scrubber (purely visual, no logic dependencies)
-4. Event catalog checkboxes (last, since it depends on the new `activeEventTypes` state from Task 2)
-
-The trickiest part is Task 3 — specifically making the X axis tick labels not collide at different zoom levels. Worth establishing the tick density formula before writing the canvas code.
+And after Phase 2, it should describe the loading overlay and that drawPriceChart fires once at completion of the async seek, not per-batch.

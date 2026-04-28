@@ -17,9 +17,12 @@ Endpoints (regime-DB plan §1c, §1b'; Phase 5 timeframe extension):
         so the selector never disappears entirely.
 
     GET /sessions
-        Drives the dashboard's date dropdown. `bar_counts` is a per-
-        timeframe dict so a single call populates the status banner for
-        any active timeframe without re-querying.
+        Lists distinct session_dates with bar_counts (metadata for timeline
+        layout; no longer drives a session dropdown).
+
+    GET /date-range?timeframe=
+        Global MIN/MAX(bar_time) in `bars` for the timeframe (dashboard
+        pan bounds).
 
     GET /bars?from=&to=&session_date=&timeframe=&cell=v,d&cell=...
         - `timeframe` (default '1m') scopes the query to one bin width.
@@ -31,7 +34,9 @@ Endpoints (regime-DB plan §1c, §1b'; Phase 5 timeframe extension):
           tuple-IN on (v_rank, d_rank). Composite index `idx_bars_tf_rank`
           on (timeframe, v_rank, d_rank) makes this an index probe.
 
-    GET /events?from=&to=&timeframe=&bar_times=t1,t2,...
+    GET /events?from=&to=&timeframe=&types=sweep,divergence&bar_times=t1,t2,...
+        Optional `types` filters `event_type` (sweep, absorption, divergence,
+        stoprun). Omitting `types` returns every type in the window.
     GET /fires?from=&to=&timeframe=
     GET /profile?from=&to=&session_date=&timeframe=
     GET /occupancy?from=&to=&session_date=&timeframe=
@@ -84,6 +89,9 @@ _CELL_RE = re.compile(r"^[1-5],[1-5]$")
 # into a parameterized SQL query.
 SUPPORTED_TIMEFRAMES = ("1m", "15m", "1h")
 DEFAULT_TIMEFRAME = "1m"
+
+# Event types stored in DuckDB `events.event_type` (see pipeline/db.py).
+_EVENT_TYPES_ALLOWED = frozenset({"sweep", "absorption", "divergence", "stoprun"})
 
 
 app = FastAPI(
@@ -202,6 +210,33 @@ def _resolve_window(
     if lo > hi:
         raise HTTPException(status_code=400, detail="`from` must be <= `to`.")
     return lo, hi
+
+
+def _parse_event_types_param(raw: str | None) -> list[str] | None:
+    """Parse comma-separated event_type values for /events?types=.
+
+    Returns None when omitted or empty → caller keeps all types.
+    Raises HTTPException 400 on unknown tokens.
+    """
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        return None
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return None
+    bad = [p for p in parts if p not in _EVENT_TYPES_ALLOWED]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid types={raw!r}; each must be one of {sorted(_EVENT_TYPES_ALLOWED)}.",
+        )
+    # Dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 
 def _parse_cell_pairs(cells: list[str]) -> list[tuple[int, int]]:
@@ -399,6 +434,28 @@ def get_sessions() -> dict:
     return {"sessions": sessions}
 
 
+@app.get("/date-range")
+def get_date_range(timeframe: str | None = Query(default=None)) -> dict:
+    """Min/max bar_time across all rows in `bars` for this timeframe."""
+    tf = _validate_timeframe(timeframe)
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT MIN(bar_time), MAX(bar_time) FROM bars WHERE timeframe = ?",
+            [tf],
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None or row[0] is None:
+        return {"timeframe": tf, "min": None, "max": None}
+    lo, hi = row[0], row[1]
+    return {
+        "timeframe": tf,
+        "min": lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "max": hi.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
 @app.get("/bars")
 def get_bars(
     from_: str | None = Query(default=None, alias="from"),
@@ -447,6 +504,7 @@ def get_events(
     to: str | None = Query(default=None),
     timeframe: str | None = Query(default=None),
     bar_times: str | None = Query(default=None),
+    types: str | None = Query(default=None),
 ) -> dict:
     """Return events in [from, to] OR at exact bar_times (comma-separated ISO).
 
@@ -454,8 +512,19 @@ def get_events(
     selection. Either filter mode is valid — they don't combine. Phase 5
     additionally scopes by `timeframe` so a brushed window at 15m doesn't
     pick up 1m events at the same instant.
+
+    Optional ``types`` limits to ``event_type`` values: sweep, absorption,
+    divergence, stoprun (DuckDB ``events.event_type``). Omit to return every type.
     """
     tf = _validate_timeframe(timeframe)
+    type_filter = _parse_event_types_param(types)
+    placeholders_types = ""
+    type_params: list[Any] = []
+    if type_filter is not None:
+        ph = ",".join(["?"] * len(type_filter))
+        placeholders_types = f" AND e.event_type IN ({ph})"
+        type_params = list(type_filter)
+
     con = _connect()
     # Phase 6: LEFT JOIN to bars on the composite (timeframe, bar_time) key
     # to surface bias_state + parent_*_bias for every event. The JOIN is
@@ -475,8 +544,9 @@ def get_events(
             placeholders = ",".join(["?"] * len(ts_list))
             rows = _row_to_dict(con.execute(
                 base_select +
-                f"WHERE e.timeframe = ? AND e.bar_time IN ({placeholders}) ORDER BY e.bar_time",
-                [tf, *ts_list],
+                f"WHERE e.timeframe = ? AND e.bar_time IN ({placeholders})"
+                f"{placeholders_types} ORDER BY e.bar_time",
+                [tf, *ts_list, *type_params],
             ))
         else:
             lo = _parse_iso(from_)
@@ -485,8 +555,9 @@ def get_events(
                 raise HTTPException(status_code=400, detail="Provide ?from= and ?to= or ?bar_times=.")
             rows = _row_to_dict(con.execute(
                 base_select +
-                "WHERE e.timeframe = ? AND e.bar_time BETWEEN ? AND ? ORDER BY e.bar_time",
-                [tf, lo, hi],
+                "WHERE e.timeframe = ? AND e.bar_time BETWEEN ? AND ?"
+                f"{placeholders_types} ORDER BY e.bar_time",
+                [tf, lo, hi, *type_params],
             ))
     finally:
         con.close()
@@ -742,7 +813,7 @@ def root() -> dict:
         "service": "orderflow-api",
         "db_path": str(DB_PATH),
         "endpoints": [
-            "/timeframes", "/sessions", "/bars", "/events",
+            "/timeframes", "/sessions", "/date-range", "/bars", "/events",
             "/fires", "/profile", "/occupancy",
         ],
         "supported_timeframes": list(SUPPORTED_TIMEFRAMES),

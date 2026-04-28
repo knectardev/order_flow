@@ -53,15 +53,28 @@ function _fireLabel(fire) {
   return `Breakout fire ${dirArrow} impulsive light`;
 }
 
-function _eventFilterKey(ev) {
+/** Same string keys as glossary / `catalogKeyFromPrimitiveEvent` (`replay.js`). */
+function _glossaryCatalogKey(ev) {
   if (!ev) return '';
   if (ev.type === 'absorption') return 'absorption';
-  return `${ev.type}_${ev.dir || ''}`;
+  const d = ev.dir ? ` ${ev.dir}` : '';
+  return `${ev.type}${d}`;
 }
 
-function _rowFilterKey(row) {
-  if (row.kind === 'fire') return `fire_${row.payload.watchId || ''}`;
-  return _eventFilterKey(row.payload);
+/**
+ * API replay: only show rows whose kind matches a checked glossary row.
+ * Synthetic: full log unless either Set is non-empty — then apply the same rule.
+ */
+function _checklistPassesRow(row) {
+  const P = state.activeEventTypes;
+  const F = state.activeCanonicalFireTypes;
+  if (state.replay.mode !== 'real') {
+    if (!P?.size && !F?.size) return true;
+    if (row.kind === 'fire') return !!(F?.has(row.payload.watchId));
+    return !!(P?.has(_glossaryCatalogKey(row.payload)));
+  }
+  if (row.kind === 'fire') return !!(F?.has(row.payload.watchId));
+  return !!(P?.has(_glossaryCatalogKey(row.payload)));
 }
 
 // Phase 6: Align column. Maps the anchor-priority tag onto a glyph + a
@@ -102,6 +115,60 @@ function _alignCellHtml(tag, score) {
   // title= gives a hover-tooltip with the verbose tag + score.
   const title = `${tag.replace(/_/g, ' ').toLowerCase()} (score ${sNum || '0'})`;
   return `<span class="align" title="${title}">${glyph}${sNum ? ` ${sNum}` : ''}</span>`;
+}
+
+function _rowPrice(row) {
+  return row.payload.price;
+}
+
+/** Canonical alignment score for sorting; primitives have no alignment. */
+function _alignmentSortValue(row) {
+  if (row.kind !== 'fire') return null;
+  const f = row.payload;
+  if (f.alignment && typeof f.alignment.score === 'number') return f.alignment.score;
+  if (f.tag) return 0;
+  return null;
+}
+
+/** Compare unified log rows using `state.eventLogSort`; tiebreaker: newer time first. */
+function _compareLogRows(a, b) {
+  const s = state.eventLogSort;
+  const col = s.column || 'time';
+  const dirMul = s.dir === 'asc' ? 1 : -1;
+  let cmp = 0;
+
+  if (col === 'time') {
+    cmp = (a.time.getTime() - b.time.getTime()) * dirMul;
+  } else if (col === 'price') {
+    cmp = (_rowPrice(a) - _rowPrice(b)) * dirMul;
+  } else {
+    const va = _alignmentSortValue(a);
+    const vb = _alignmentSortValue(b);
+    // Rows without numeric alignment sort after scored fires (same for asc/desc)
+    if (va === null && vb === null) cmp = 0;
+    else if (va === null) cmp = 1;
+    else if (vb === null) cmp = -1;
+    else cmp = (va - vb) * dirMul;
+  }
+
+  if (cmp !== 0) return cmp;
+  return b.time.getTime() - a.time.getTime();
+}
+
+function _eventLogColHeadHtml() {
+  const s = state.eventLogSort;
+  const arrow = (col) => {
+    if (s.column !== col) return '';
+    return s.dir === 'asc' ? '\u202f▲' : '\u202f▼';
+  };
+  const active = (col) => (s.column === col ? ' is-active' : '');
+  return `<div class="event-log-colhead" role="row">
+    <button type="button" class="event-log-sort-btn${active('time')}" data-sort="time" aria-label="Sort by time">Time${arrow('time')}</button>
+    <span class="colhead-glyph-spacer" aria-hidden="true"></span>
+    <span class="colhead-event-label">Event</span>
+    <button type="button" class="event-log-sort-btn event-log-sort-btn--end${active('alignment')}" data-sort="alignment" aria-label="Sort by alignment score">Align${arrow('alignment')}</button>
+    <button type="button" class="event-log-sort-btn event-log-sort-btn--end${active('price')}" data-sort="price" aria-label="Sort by price">Price${arrow('price')}</button>
+  </div>`;
 }
 
 function renderEventLog() {
@@ -150,35 +217,42 @@ function renderEventLog() {
     if (row.payload.tag !== 'SUPPRESSED') return true;
     return !!state.showSuppressed;
   };
-  const typeFilter = (row) => {
-    const wanted = state.eventLogFilter?.type || 'all';
-    if (wanted === 'all') return true;
-    return _rowFilterKey(row) === wanted;
-  };
-
   const merged = [...evRows, ...fireRows]
     .filter(filterPredicate)
     .filter(suppressedFilter)
-    .filter(typeFilter)
-    .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+    .filter(_checklistPassesRow)
+    .sort(_compareLogRows);
   const hiddenSuppressed = fires.filter(f => f.tag === 'SUPPRESSED').length;
 
   if (merged.length === 0) {
-    const emptyMsg = sel.kind
-      ? '<div class="empty">no events or fires in the selected window</div>'
-      : '<div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>';
+    const real = state.replay.mode === 'real';
+    const noBoxes = !state.activeEventTypes?.size && !state.activeCanonicalFireTypes?.size;
+    let emptyMsg;
+    if (sel.kind) {
+      emptyMsg = '<div class="empty">no events or fires in the selected window</div>';
+    } else if (real && noBoxes) {
+      emptyMsg = '<div class="empty">Select primitive and/or canonical types in <strong>Signals & glossary</strong> — the log lists only what you check there.</div>';
+    } else if (real) {
+      emptyMsg = '<div class="empty">no rows match the current glossary selection</div>';
+    } else {
+      emptyMsg = '<div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>';
+    }
     log.innerHTML = warmupHtml + selBanner + emptyMsg;
     eventCountEl.textContent =
-      state.regimeWarmup ? 'warming up' : (sel.kind ? '0 in selection' : '—');
+      state.regimeWarmup ? 'warming up' : (sel.kind ? '0 in selection' : real && noBoxes ? 'nothing selected' : '—');
     return;
   }
 
-  // Show the full filtered timeline in reverse chronological order so
-  // the newest event remains at the top while preserving total context.
   const shown = merged.length;
-  const recent = merged.slice().reverse();
+  const ordered = merged.slice();
   if (sel.kind) {
     eventCountEl.textContent = `showing ${shown} in selection`;
+  } else if (state.replay.mode === 'real') {
+    const suppressedHint = !state.showSuppressed && hiddenSuppressed
+      ? ` · ${hiddenSuppressed} suppressed hidden`
+      : '';
+    eventCountEl.textContent =
+      `showing ${shown} rows · filtered by Signals & glossary${suppressedHint}`;
   } else {
     const base = `showing ${shown} rows`;
     const totals = `${events.length} event${events.length===1?'':'s'}` +
@@ -188,7 +262,7 @@ function renderEventLog() {
       : '';
     eventCountEl.textContent = `${base} · ${totals}${suppressedHint}`;
   }
-  log.innerHTML = warmupHtml + selBanner + recent.map(row => {
+  log.innerHTML = warmupHtml + selBanner + _eventLogColHeadHtml() + ordered.map(row => {
     const tStr = row.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     if (row.kind === 'fire') {
       const f = row.payload;
@@ -247,12 +321,32 @@ function renderEventLog() {
   }).join('');
 }
 
+function _applyEventLogSortClick(col) {
+  const cur = state.eventLogSort;
+  if (cur.column === col) {
+    cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    cur.column = col;
+    cur.dir = 'desc';
+  }
+  renderEventLog();
+}
+
 // Plan §4c-d: delegated click handler. Bound once from main.js. Fire
 // rows trigger selectFire(); the selection banner row clears.
 function bindEventLogClicks() {
   const log = document.getElementById('eventLog');
   if (!log) return;
   log.addEventListener('click', (e) => {
+    const sortBtn = e.target.closest('.event-log-sort-btn');
+    if (sortBtn) {
+      e.preventDefault();
+      const col = sortBtn.getAttribute('data-sort');
+      if (col === 'time' || col === 'alignment' || col === 'price') {
+        _applyEventLogSortClick(col);
+      }
+      return;
+    }
     const clearRow = e.target.closest('[data-clear-selection]');
     if (clearRow) {
       clearSelection();
@@ -274,14 +368,4 @@ function bindEventLogClicks() {
   });
 }
 
-function bindEventLogFilters() {
-  const typeSel = document.getElementById('eventLogTypeFilter');
-  if (!typeSel) return;
-  typeSel.value = state.eventLogFilter.type || 'all';
-  typeSel.addEventListener('change', () => {
-    state.eventLogFilter.type = typeSel.value || 'all';
-    renderEventLog();
-  });
-}
-
-export { renderEventLog, bindEventLogClicks, bindEventLogFilters };
+export { renderEventLog, bindEventLogClicks };

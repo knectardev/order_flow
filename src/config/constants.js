@@ -2,6 +2,8 @@
 // Numeric / structural constants
 // ───────────────────────────────────────────────────────────
 export const MAX_BARS     = 60;
+/** Bars committed per slice in API `seekAsync` (yield between slices for UI). */
+export const SEEK_ASYNC_BATCH_BARS = 1000;
 export const PROFILE_BINS = 36;
 export const VA_FRACTION  = 0.68;        // 1σ ≈ 68% of volume
 export const MATRIX_ROWS  = 5;

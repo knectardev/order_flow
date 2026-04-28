@@ -17,20 +17,6 @@
     </p>
   </div>
 
-  <!-- Real-data replay controls (visible only when a session is loaded) -->
-  <div class="replay-row" id="replayRow" style="display:none;">
-    <select id="sessionSelect" title="Session"></select>
-    <span class="tf-select" id="timeframeSelect" role="tablist" aria-label="Timeframe">
-      <button type="button" class="tf-btn active" data-tf="1m"  role="tab" aria-selected="true">1m</button>
-      <button type="button" class="tf-btn"        data-tf="15m" role="tab" aria-selected="false">15m</button>
-      <button type="button" class="tf-btn"        data-tf="1h"  role="tab" aria-selected="false">1h</button>
-    </span>
-    <button class="secondary" id="seekPrevBtn" title="Step back one bar">◀</button>
-    <input type="range" id="scrubber" min="0" max="0" value="0" step="1">
-    <button class="secondary" id="seekNextBtn" title="Step forward one bar">▶</button>
-    <span class="time-readout" id="timeReadout">—</span>
-  </div>
-
   <div class="controls">
     <button id="streamBtn">Start Stream</button>
     <button class="secondary" id="resetBtn">Reset</button>
@@ -95,9 +81,16 @@
       <div class="section-meta" id="barCount">0 bars</div>
     </div>
     <div class="price-wrap">
+      <div class="chart-seek-loading" id="chartSeekLoading" hidden>
+        <span class="chart-seek-msg">Replaying bars…</span>
+      </div>
       <canvas id="priceChart"></canvas>
       <button class="live-edge-btn" id="liveEdgeBtn" title="Return chart to live edge">↺ Live</button>
       <div class="chart-tooltip" id="chartTooltip" role="tooltip" aria-hidden="true"></div>
+    </div>
+    <div class="chart-pan-row" id="chartPanRow" style="display:none;">
+      <label class="chart-pan-label" for="chartPanSlider">Chart view</label>
+      <input type="range" id="chartPanSlider" class="chart-pan-slider" min="1" max="1" value="1" step="1" title="Pan the visible window along the loaded timeline" aria-label="Pan chart view along timeline">
     </div>
     <div class="profile-legend">
       <div class="item"><strong style="color: var(--accent);">1 candle</strong> = 1 min OHLC · <strong style="color: var(--accent);">1 vol bar</strong> = contracts/min</div>
@@ -105,6 +98,15 @@
       <div class="item"><span class="swatch va"></span><strong>VAH / VAL</strong> ±1σ value area (≈68% vol)</div>
       <div class="item"><span class="swatch vwap"></span><strong>VWAP</strong> anchored, dashed yellow</div>
       <div class="item"><strong style="color: var(--muted-2);">forming bar</strong> dashed = unsettled</div>
+    </div>
+    <!-- Timeframe selector: real-data only; right-aligned under legend (replay.js toggles visibility) -->
+    <div class="replay-row chart-tf-under-legend" id="replayRow" style="display:none;">
+      <span class="replay-tf-label">Timeframe</span>
+      <span class="tf-select" id="timeframeSelect" role="tablist" aria-label="Timeframe">
+        <button type="button" class="tf-btn active" data-tf="1m"  role="tab" aria-selected="true">1m</button>
+        <button type="button" class="tf-btn"        data-tf="15m" role="tab" aria-selected="false">15m</button>
+        <button type="button" class="tf-btn"        data-tf="1h"  role="tab" aria-selected="false">1h</button>
+      </span>
     </div>
   </div>
 
@@ -122,97 +124,17 @@
     </div>
   </div>
 
-  <!-- Event Glossary -->
-  <div class="section">
+  <!-- Glossary + signal counts + chart toggles (single table, API replay) -->
+  <div class="section" id="signalGlossarySection">
     <div class="section-head">
-      <div class="section-title">Event Glossary</div>
-      <div class="section-meta">what each marker means</div>
+      <div class="section-title">Signals &amp; glossary</div>
+      <div class="section-meta">definitions · full-load counts · chart markers</div>
     </div>
-    <ul class="glossary-list">
-      <li class="sweep" data-modal="sweep">
-        <span class="g-glyph">▲▼</span>
-        <span class="g-name">SWEEP</span>
-        <span class="g-desc">Bar exceeds prior N-bar high/low with volume &gt; 1.8× avg. ▲ above bar = up-sweep, ▼ below = down-sweep.</span>
-      </li>
-      <li class="absorb" data-modal="absorption">
-        <span class="g-glyph">◉</span>
-        <span class="g-name">ABSORPTION</span>
-        <span class="g-desc">High volume + small range. Flow met liquidity, liquidity won.</span>
-      </li>
-      <li class="stop" data-modal="stoprun">
-        <span class="g-glyph">⚡</span>
-        <span class="g-name">STOP RUN</span>
-        <span class="g-desc">Sweep that fully reverses next bar. Often "last buyers/sellers in."</span>
-      </li>
-      <li class="diverge" data-modal="divergence">
-        <span class="g-glyph">⚠</span>
-        <span class="g-name">DIVERGENCE</span>
-        <span class="g-desc">New price extreme not confirmed by cumulative Δ over lookback.</span>
-      </li>
-      <li data-modal="breakout">
-        <span class="g-glyph" style="color: var(--warn);">★</span>
-        <span class="g-name">BREAKOUT FIRE</span>
-        <span class="g-desc">All 4 criteria met for [Impulsive · Light] entry — predicts directional travel.</span>
-      </li>
-      <li data-modal="fade">
-        <span class="g-glyph" style="color: var(--absorb);">◆</span>
-        <span class="g-name">FADE FIRE</span>
-        <span class="g-desc">All 4 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.</span>
-      </li>
-      <li data-modal="absorptionWall">
-        <span class="g-glyph" style="color: var(--indigo-fire);">🛡</span>
-        <span class="g-name">ABSORPTION WALL</span>
-        <span class="g-desc">Canonical [Climactic · Stacked] with stalled price, vol spike, near VAH/VAL/VWAP — aggressive flow absorbed by passive liquidity.</span>
-      </li>
-      <li data-modal="valueEdgeReject">
-        <span class="g-glyph" style="color: var(--value-edge);">🎯</span>
-        <span class="g-name">VALUE EDGE REJECTION</span>
-        <span class="g-desc">Failed breakout at VAH/VAL: bar probes the edge, closes back inside the value area, rejection wick, normal vol — mean reversion toward POC.</span>
-      </li>
-    </ul>
-    <div class="design-note">
-      <strong>Markers are sparse and event-typed</strong>, not per-bar verdicts. A bar with no marker is the default. This keeps the eye on what's structurally meaningful rather than restating candle direction.
-    </div>
-  </div>
-
-  <!-- Full-dataset event / fire counts (API replay only) -->
-  <div class="section">
-    <div class="section-head">
-      <div class="section-title">Signal inventory</div>
-      <div class="section-meta">full load · by type</div>
+    <div class="design-note design-note--tight">
+      Sparse event-typed markers — a bar with no marker is normal. Check types to load data and draw chart glyphs.
     </div>
     <div class="event-inventory" id="eventInventory">
-      <p class="inv-empty">Open with <code>?source=api</code> to load sessions; counts cover all loaded bars at the active timeframe.</p>
-    </div>
-  </div>
-
-  <!-- Event Log -->
-  <div class="section">
-    <div class="section-head">
-      <div class="section-title">Event Log</div>
-      <div class="section-meta" id="eventCount">—</div>
-    </div>
-    <div class="event-log-filters">
-      <label class="event-log-filter">
-        <span>Type</span>
-        <select id="eventLogTypeFilter">
-          <option value="all">All signals + events</option>
-          <option value="fire_breakout">Breakout ★</option>
-          <option value="fire_fade">Fade ◆</option>
-          <option value="fire_absorptionWall">Absorption Wall 🛡</option>
-          <option value="fire_valueEdgeReject">Value Edge 🎯</option>
-          <option value="sweep_up">Sweep · up</option>
-          <option value="sweep_down">Sweep · down</option>
-          <option value="absorption">Absorption</option>
-          <option value="divergence_up">Divergence · up</option>
-          <option value="divergence_down">Divergence · down</option>
-          <option value="stoprun_up">Stop run · up</option>
-          <option value="stoprun_down">Stop run · down</option>
-        </select>
-      </label>
-    </div>
-    <div class="event-log" id="eventLog">
-      <div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>
+      <p class="inv-empty">Open with <code>?source=api</code> to load full-timeline data. Default view is the most recent window at 1m.</p>
     </div>
   </div>
 
@@ -235,7 +157,7 @@
          fetches that paint the heatmap layer behind the posterior cells. -->
     <div class="matrix-range" id="matrixRange">
       <div class="matrix-range-row">
-        <button class="matrix-range-btn active" data-kind="session">Current session</button>
+        <button class="matrix-range-btn active" data-kind="session">Current RTH</button>
         <button class="matrix-range-btn" data-kind="lastHour">Last hour</button>
         <span class="matrix-range-group">
           <button class="matrix-range-btn" data-kind="lastN">Last
@@ -295,13 +217,25 @@
     </div>
   </div>
 
+  <!-- Event Log (right gutter, below regime matrix) -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">Event Log</div>
+      <div class="section-meta" id="eventCount">—</div>
+    </div>
+    <p class="event-log-sync-hint">Lists only primitive and canonical types you enable in <strong>Signals &amp; glossary</strong> (left).</p>
+    <div class="event-log" id="eventLog">
+      <div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>
+    </div>
+  </div>
+
   </div><!-- /col-right -->
   </div><!-- /grid-main -->
 
   <!-- Modals (appended to body, controlled by openModal/closeModal) -->
   <div class="modal-overlay" id="modalOverlay">
     <div class="modal-panel" id="modalPanel">
-      <div class="modal-head">
+      <div class="modal-head modal-drag-handle" title="Drag to move">
         <div class="modal-title">
           <span class="modal-glyph" id="modalGlyph">·</span>
           <span class="modal-name" id="modalName">—</span>

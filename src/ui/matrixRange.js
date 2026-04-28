@@ -34,22 +34,22 @@ function resolveOccupancyWindow() {
   if (state.replay.mode !== 'real' || state.replay.sessions.length === 0) return null;
   const range = state.matrixState.range;
   const sessions = state.replay.sessions;
-  const cursor = state.replay.cursor;
+  const effEnd = state.chartViewEnd !== null ? state.chartViewEnd : state.replay.cursor;
 
   if (range.kind === 'session') {
-    const idx = Math.max(0, Math.min(state.replay.allBars.length - 1, cursor - 1));
+    const idx = Math.max(0, Math.min(state.replay.allBars.length - 1, effEnd - 1));
     const sess = _sessionContaining(idx) || sessions[sessions.length - 1];
     if (!sess) return null;
     return {
       sessionDate: sess.date,
       from: sess.sessionStart,
       to:   sess.sessionEnd,
-      label: `Current session (${sess.date})`,
+      label: `Current RTH (${sess.date})`,
     };
   }
 
   if (range.kind === 'lastHour') {
-    const cursorBar = state.replay.allBars[Math.max(0, cursor - 1)];
+    const cursorBar = state.replay.allBars[Math.max(0, effEnd - 1)];
     if (!cursorBar) return null;
     const cursorMs = cursorBar.time instanceof Date ? cursorBar.time.getTime()
                                                     : Date.parse(cursorBar.time);

@@ -1,0 +1,41 @@
+### Mean reversion strategy 
+
+Based on the link here https://colab.research.google.com/drive/1RhTffZo2_l4mBEEjyN6QekISEJtEHx6Q?usp=sharing#scrollTo=c223ce9b  
+https://www.youtube.com/watch?v=_urG139AM48 
+
+The mean reversion strategy detailed in the provided Colab notebook is built on the statistical principle that asset prices eventually return to their long-term average or "mean." This specific implementation uses a **Bollinger Band-style approach** combined with **standard deviation thresholds** to identify overextended price moves.
+
+Here is a synthesis of the logic and components used in the strategy:
+
+### 1. The Core Indicator: Z-Score (Mean Reversion)
+The strategy's primary logic is driven by the **Z-score**, which measures how many standard deviations a price is away from its moving average.
+* **Moving Average (The Mean):** A rolling window (typically 20 periods) calculates the average price.
+* **Standard Deviation:** This measures market volatility. 
+* **Z-Score Formula:** $(Price - Moving Average) / Standard Deviation$.
+* **Logic:** A high positive Z-score suggests the asset is "overbought" (too far above the mean), while a high negative Z-score suggests it is "oversold" (too far below the mean).
+
+
+
+### 2. Signal Generation (Entry Logic)
+The strategy triggers trades when the Z-score crosses specific "extreme" thresholds:
+* **Long Entry (Buy):** Triggered when the Z-score falls below a specific lower threshold (e.g., -2.0). This bets that the price is "too low" and will bounce back up toward the average.
+* **Short Entry (Sell):** Triggered when the Z-score rises above a specific upper threshold (e.g., +2.0). This bets that the price is "too high" and will drop back down toward the average.
+
+### 3. Exit Logic (The Reversion)
+The strategy defines "success" when the price returns to its mean.
+* **Profit Taking:** Positions are typically closed when the price touches the Moving Average again (Z-score returns to 0).
+* **Stop Loss:** To manage risk, the strategy likely includes a "hard stop" if the price continues to move against the mean (e.g., if a Z-score of -2.0 drops further to -3.0).
+
+### 4. Mathematical Components
+The code utilizes several Python libraries to execute this logic:
+* **Pandas:** Used for handling the time-series data and calculating the rolling `mean()` and `std()` (standard deviation).
+* **Vectorized Backtesting:** Instead of checking each day one by one, the strategy uses NumPy/Pandas to apply the logic across the entire dataset at once to calculate historical returns.
+
+### Summary of the Strategy Cycle:
+1.  **Identify Volatility:** Calculate the rolling standard deviation of the asset.
+2.  **Wait for Extremes:** Monitor the Z-score for a breach of the $\pm2$ standard deviation bands.
+3.  **Execute:** Enter a trade in the opposite direction of the trend (Counter-trend).
+4.  **Mean Revert:** Exit the trade once the price stabilizes and returns to its historical average. 
+
+
+

@@ -1,5 +1,6 @@
 import { state } from '../state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
+import { jumpToNextFire } from '../data/replay.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
 import { forceAbsorptionWallScenario, forceBreakoutScenario, forceFadeScenario, forceValueEdgeRejectScenario } from './controls.js';
 
@@ -83,10 +84,23 @@ const EVENT_INFO = {
  *        When opening from a chart fire marker, pass the fire log row so the
  *        checklist can use the criteria snapshot at fire time.
  */
+function resetModalPanelPosition() {
+  const panel = document.getElementById('modalPanel');
+  if (!panel) return;
+  panel.classList.remove('modal-panel--floated', 'modal-panel--dragging');
+  panel.style.position = '';
+  panel.style.left = '';
+  panel.style.top = '';
+  panel.style.margin = '';
+  panel.style.transform = '';
+}
+
 function openModal(modalId, openOpts) {
   const cfg = MODAL_CONFIG[modalId];
   if (!cfg) return;
+  resetModalPanelPosition();
   state.currentModal = modalId;
+  state.modalFireContext = openOpts && openOpts.fire ? openOpts.fire : null;
 
   const overlay = document.getElementById('modalOverlay');
   const panel = document.getElementById('modalPanel');
@@ -116,15 +130,25 @@ function openModal(modalId, openOpts) {
     body.insertBefore(hint, body.firstChild);
   }
 
-  // Wire force-scenario buttons that were emitted into the modal body. We use
-  // data-force=breakout|fade rather than inline onclick= so this works under
-  // ES modules (the function isn't on `window`).
+  // Wire Jump / Force buttons. Import `jumpToNextFire` from replay directly so
+  // this path does not rely on circular ESM init with controls.js (silent no-op).
   body.querySelectorAll('[data-force]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.force === 'breakout') forceBreakoutScenario();
-      else if (btn.dataset.force === 'fade') forceFadeScenario();
-      else if (btn.dataset.force === 'absorptionWall') forceAbsorptionWallScenario();
-      else if (btn.dataset.force === 'valueEdgeReject') forceValueEdgeRejectScenario();
+    btn.type = 'button';
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const force = btn.dataset.force;
+      if (state.replay.mode === 'real') {
+        if (force === 'breakout') jumpToNextFire('breakout');
+        else if (force === 'fade') jumpToNextFire('fade');
+        else if (force === 'absorptionWall') jumpToNextFire('absorptionWall');
+        else if (force === 'valueEdgeReject') jumpToNextFire('valueEdgeReject');
+      } else {
+        if (force === 'breakout') forceBreakoutScenario();
+        else if (force === 'fade') forceFadeScenario();
+        else if (force === 'absorptionWall') forceAbsorptionWallScenario();
+        else if (force === 'valueEdgeReject') forceValueEdgeRejectScenario();
+      }
     });
   });
 
@@ -207,6 +231,88 @@ function openModal(modalId, openOpts) {
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('visible');
   state.currentModal = null;
+  state.modalFireContext = null;
+  resetModalPanelPosition();
+}
+
+/**
+ * Drag the modal panel by its header (`setPointerCapture` keeps drag stable).
+ */
+let _dragBound = false;
+function bindModalDrag() {
+  if (_dragBound) return;
+  _dragBound = true;
+  const panel = document.getElementById('modalPanel');
+  const handle = document.querySelector('#modalPanel .modal-head');
+  if (!panel || !handle) return;
+
+  function clamp(n, lo, hi) {
+    return Math.max(lo, Math.min(hi, n));
+  }
+
+  function floatPanel() {
+    if (panel.classList.contains('modal-panel--floated')) return;
+    const r = panel.getBoundingClientRect();
+    panel.classList.add('modal-panel--floated');
+    panel.style.position = 'fixed';
+    panel.style.left = `${Math.round(r.left)}px`;
+    panel.style.top = `${Math.round(r.top)}px`;
+    panel.style.margin = '0';
+    panel.style.transform = 'none';
+  }
+
+  handle.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    if (ev.target.closest('.modal-close')) return;
+    floatPanel();
+    const sx = ev.clientX;
+    const sy = ev.clientY;
+    const r = panel.getBoundingClientRect();
+    let sl = r.left;
+    let st = r.top;
+    panel.classList.add('modal-panel--dragging');
+    document.body.style.userSelect = 'none';
+    ev.preventDefault();
+    try {
+      handle.setPointerCapture(ev.pointerId);
+    } catch (_) { /* noop */ }
+
+    // Incremental deltas so sl/st stay in sync with clamped position.
+    let lastX = sx;
+    let lastY = sy;
+    const onMoveIncr = (e) => {
+      e.preventDefault();
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const nl = clamp(sl + dx, 4, vw - w - 4);
+      const nt = clamp(st + dy, 4, vh - h - 4);
+      panel.style.left = `${nl}px`;
+      panel.style.top = `${nt}px`;
+      sl = nl;
+      st = nt;
+    };
+
+    const onUp = () => {
+      panel.classList.remove('modal-panel--dragging');
+      document.body.style.userSelect = '';
+      handle.removeEventListener('pointermove', onMoveIncr);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      try {
+        handle.releasePointerCapture(ev.pointerId);
+      } catch (_) { /* noop */ }
+    };
+
+    handle.addEventListener('pointermove', onMoveIncr);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  });
 }
 
 function onOverlayClick(e) {
@@ -370,4 +476,17 @@ function buildEventModalBody(eventType) {
   `;
 }
 
-export { MODAL_CONFIG, EVENT_INFO, openModal, closeModal, onOverlayClick, buildAbsorptionWallModalBody, buildBreakoutModalBody, buildFadeModalBody, buildValueEdgeRejectModalBody, buildEventModalBody };
+export {
+  MODAL_CONFIG,
+  EVENT_INFO,
+  openModal,
+  closeModal,
+  onOverlayClick,
+  bindModalDrag,
+  resetModalPanelPosition,
+  buildAbsorptionWallModalBody,
+  buildBreakoutModalBody,
+  buildFadeModalBody,
+  buildValueEdgeRejectModalBody,
+  buildEventModalBody,
+};

@@ -1,4 +1,4 @@
-import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEFAULT_TIMEFRAME, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SYNTH_TUNINGS, TIMEFRAMES, TRAIL_LEN, VALUE_EDGE_REJECT_LOCK_CELL } from '../config/constants.js';
+import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEFAULT_TIMEFRAME, FADE_CELL, MATRIX_COLS, MATRIX_ROWS, MAX_BARS, SEEK_ASYNC_BATCH_BARS, SYNTH_TUNINGS, TIMEFRAMES, TRAIL_LEN, VALUE_EDGE_REJECT_LOCK_CELL } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldownBars } from '../analytics/events.js';
@@ -13,7 +13,6 @@ import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, render
 import { handleWatchFire } from '../sim/step.js';
 import { renderEventInventory } from '../render/eventInventory.js';
 import { toggleStream } from '../ui/controls.js';
-import { _syncSessionDropdown } from '../ui/pan.js';
 import { clamp } from '../util/math.js';
 
 // Phase 5: bin width per timeframe (mirrors aggregate.BIN_NS_BY_TIMEFRAME
@@ -176,23 +175,12 @@ function _commitRealBar(idx) {
   return { breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical };
 }
 
-function seek(targetIdx) {
-  if (state.replay.mode !== 'real') return;
-  targetIdx = clamp(targetIdx, 0, state.replay.allBars.length);
-  state.seekInProgress = true;
-  _resetReplayAccumulators();
-  for (let i = 0; i < targetIdx; i++) _commitRealBar(i);
-  state.replay.cursor = targetIdx;
-  // Re-couple the chart viewport to the cursor on any explicit seek (scrubber,
-  // step buttons, jump-to-fire, Reset). Free-form pan is preserved only across
-  // streaming/forming-bar updates, which never call seek().
-  state.chartViewEnd = null;
-  // Re-derive state.replay.current/tunings + dropdown selection now that the
-  // cursor (and thus the right-edge bar) has moved.
-  _syncCurrentSession();
-  _syncSessionDropdown();
-  state.seekInProgress = false;
-  // Render once at end
+function _replayCommitRange(startIdx, endExclusive) {
+  for (let i = startIdx; i < endExclusive; i++) _commitRealBar(i);
+}
+
+/** Matrix + canvas paint after `replay.cursor` and session sync are set. */
+function _renderSeekOutputs() {
   state.matrixScores = computeMatrixScores();
   const breakoutCanonical = evaluateBreakoutCanonical();
   const fadeCanonical = evaluateFadeCanonical();
@@ -209,30 +197,127 @@ function seek(targetIdx) {
   _renderReplayChrome();
 }
 
+function seek(targetIdx) {
+  if (state.replay.mode !== 'real') return;
+  targetIdx = clamp(targetIdx, 0, state.replay.allBars.length);
+  state.replay.pendingSeekAbort?.abort();
+  state.seekInProgress = true;
+  _resetReplayAccumulators();
+  _replayCommitRange(0, targetIdx);
+  state.replay.cursor = targetIdx;
+  // Re-couple the chart viewport to the cursor on any explicit seek (scrubber,
+  // step buttons, jump-to-fire, Reset). Free-form pan is preserved only across
+  // streaming/forming-bar updates, which never call seek().
+  state.chartViewEnd = null;
+  // Re-derive state.replay.current/tunings + dropdown selection now that the
+  // cursor (and thus the right-edge bar) has moved.
+  _syncCurrentSession();
+  state.seekInProgress = false;
+  _renderSeekOutputs();
+}
+
+/**
+ * Yielding seek for long API timelines. Does not replace synchronous `seek` —
+ * jump-to-fire, scrubber, and precompute slow paths stay sync.
+ * Aborted when `signal` aborts or when synchronous `seek()` aborts `pendingSeekAbort`.
+ * Returns a Promise for use with `await` from `_loadAllSessionsFromApi` only.
+ */
+function seekAsync(targetIdx, options = {}) {
+  if (state.replay.mode !== 'real') return Promise.resolve({ ok: false, reason: 'mode' });
+  targetIdx = clamp(targetIdx, 0, state.replay.allBars.length);
+  const { onProgress, signal } = options;
+  if (signal?.aborted) {
+    return Promise.resolve({ ok: false, cancelled: true });
+  }
+  const ac = new AbortController();
+  const onParentAbort = () => ac.abort();
+  if (signal) {
+    signal.addEventListener('abort', onParentAbort, { once: true });
+  }
+
+  state.replay.pendingSeekAbort = ac;
+  const promise = (async () => {
+    try {
+      state.seekInProgress = true;
+      _resetReplayAccumulators();
+      const n = targetIdx;
+      let i = 0;
+      while (i < n) {
+        if (ac.signal.aborted) {
+          state.seekInProgress = false;
+          return { ok: false, cancelled: true };
+        }
+        const end = Math.min(i + SEEK_ASYNC_BATCH_BARS, n);
+        for (let j = i; j < end; j++) {
+          if (ac.signal.aborted) {
+            state.seekInProgress = false;
+            return { ok: false, cancelled: true };
+          }
+          _commitRealBar(j);
+        }
+        i = end;
+        if (onProgress) onProgress(i, n);
+        if (i < n) {
+          await new Promise(r => requestAnimationFrame(r));
+        }
+      }
+      if (ac.signal.aborted) {
+        state.seekInProgress = false;
+        return { ok: false, cancelled: true };
+      }
+      state.replay.cursor = targetIdx;
+      state.chartViewEnd = null;
+      _syncCurrentSession();
+      state.seekInProgress = false;
+      _renderSeekOutputs();
+      return { ok: true };
+    } finally {
+      state.replay.pendingSeekAbort = null;
+      state.replay.pendingSeekPromise = null;
+    }
+  })();
+
+  state.replay.pendingSeekPromise = promise;
+  return promise;
+}
+
+async function _awaitPendingSeekAsync() {
+  const p = state.replay.pendingSeekPromise;
+  if (!p) return;
+  try {
+    await p;
+  } catch (_) { /* stale seek rejected — ignore */ }
+}
+
+function _setChartSeekLoading(show, message) {
+  const el = document.getElementById('chartSeekLoading');
+  if (!el) return;
+  const msg = el.querySelector('.chart-seek-msg');
+  if (message != null && msg) msg.textContent = message;
+  el.hidden = !show;
+  el.setAttribute('aria-hidden', show ? 'false' : 'true');
+}
+
 function seekStep(delta) {
   if (state.replay.mode !== 'real') return;
   if (state.interval) toggleStream();   // pause stream when stepping manually
   seek(state.replay.cursor + delta);
 }
 
+function _syncChartPanSliderDOM() {
+  const pan = document.getElementById('chartPanSlider');
+  if (!pan || state.replay.mode !== 'real') return;
+  const len = state.replay.allBars.length;
+  const minEnd = len ? Math.min(MAX_BARS, len) : 0;
+  pan.min = String(len ? minEnd : 0);
+  pan.max = String(Math.max(len, 1));
+  const edge = state.chartViewEnd !== null ? state.chartViewEnd : state.replay.cursor;
+  pan.value = String(Math.min(Math.max(edge, Number(pan.min) || 0), Number(pan.max) || 1));
+}
+
 function _renderReplayChrome() {
   if (state.replay.mode !== 'real') return;
-  const sc = document.getElementById('scrubber');
-  sc.max = String(state.replay.allBars.length);
-  sc.value = String(state.replay.cursor);
-  const tr = document.getElementById('timeReadout');
-  if (state.replay.cursor === 0) {
-    tr.textContent = '— bar 0 / ' + state.replay.allBars.length;
-  } else {
-    const lastBar = state.replay.allBars[state.replay.cursor - 1];
-    const t = lastBar ? new Date(lastBar.time) : null;
-    const hh = t ? String(t.getUTCHours()).padStart(2, '0') : '--';
-    const mm = t ? String(t.getUTCMinutes()).padStart(2, '0') : '--';
-    // With multiple sessions loaded, prefix the date so the readout
-    // disambiguates same-time-of-day across days.
-    const datePart = state.replay.current ? `${state.replay.current.date} ` : '';
-    tr.textContent = `${datePart}${hh}:${mm}Z · bar ${state.replay.cursor} / ${state.replay.allBars.length}`;
-  }
+  _syncChartPanSliderDOM();
   // Bar-count + cumulative-delta readouts mirror what's actually on screen.
   // When panned the user is looking at a historical slice; reporting the
   // live-edge `state.bars` array's count and cumΔ here would contradict the
@@ -247,27 +332,122 @@ function _renderReplayChrome() {
   const cumD = viewedBars.reduce((s, b) => s + b.delta, 0);
   document.getElementById('cumDelta').textContent =
     viewedBars.length ? `cum Δ ${cumD >= 0 ? '+' : ''}${cumD}` : 'cum Δ —';
-  _syncSessionDropdown();
 }
 
-function onScrubberInput()  {
-  const v = parseInt(document.getElementById('scrubber').value, 10);
-  if (state.interval) toggleStream();
-  seek(v);
+function catalogKeyFromPrimitiveEvent(ev) {
+  if (!ev) return '';
+  if (ev.type === 'absorption') return 'absorption';
+  const d = ev.dir ? ` ${ev.dir}` : '';
+  return `${ev.type}${d}`;
 }
 
-function onScrubberCommit() { onScrubberInput(); }
+function apiTypesFromCatalogKeys(activeKeys) {
+  const s = new Set();
+  for (const k of activeKeys) {
+    if (k.startsWith('sweep')) s.add('sweep');
+    else if (k.startsWith('divergence')) s.add('divergence');
+    else if (k.startsWith('stoprun')) s.add('stoprun');
+    else if (k === 'absorption') s.add('absorption');
+  }
+  return s;
+}
+
+function catalogKeyFromApiRow(ev) {
+  if (!ev) return '';
+  const t = ev.type ?? ev.Type;
+  if (t === 'absorption') return 'absorption';
+  const d = ev.dir ?? ev.Dir;
+  const dz = (d === undefined || d === null) ? '' : ` ${d}`;
+  return `${t}${dz}`;
+}
+
+async function loadEventsForActiveTypes() {
+  state.replay.allEvents = [];
+  if (state.replay.mode === 'real' && (!state.replay.allBars?.length)) {
+    drawPriceChart();
+    renderEventLog();
+    renderEventInventory();
+    return;
+  }
+  if (state.replay.mode === 'synthetic') {
+    if (!state.activeEventTypes?.size) {
+      drawPriceChart();
+      renderEventLog();
+      renderEventInventory();
+      return;
+    }
+    precomputeAllEvents();
+    drawPriceChart();
+    renderEventLog();
+    renderEventInventory();
+    return;
+  }
+  if (!state.activeEventTypes?.size || !state.replay.apiBase) {
+    drawPriceChart();
+    renderEventLog();
+    renderEventInventory();
+    return;
+  }
+  const dr = state.replay.dateRange;
+  if (!dr?.min || !dr?.max) {
+    drawPriceChart();
+    renderEventLog();
+    renderEventInventory();
+    return;
+  }
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  const typesCsv = [...apiTypesFromCatalogKeys(state.activeEventTypes)].join(',');
+  if (!typesCsv) {
+    drawPriceChart();
+    renderEventLog();
+    renderEventInventory();
+    return;
+  }
+  const url = `${state.replay.apiBase}/events?timeframe=${encodeURIComponent(tf)}`
+    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`
+    + `&types=${encodeURIComponent(typesCsv)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const rows = Array.isArray(data.events) ? data.events : [];
+    const want = state.activeEventTypes;
+    for (const r of rows) {
+      const ck = catalogKeyFromApiRow(r);
+      if (!want.has(ck)) continue;
+      state.replay.allEvents.push({
+        type: r.type,
+        dir: r.dir,
+        price: r.price,
+        time: new Date(r.time || r.Time),
+      });
+    }
+  } catch (e) {
+    console.warn('[orderflow] loadEventsForActiveTypes failed:', e.message);
+  }
+  drawPriceChart();
+  renderEventLog();
+  renderEventInventory();
+}
 
 function precomputeAllFires() {
   if (state.replay.mode !== 'real' || !state.replay.allBars.length) {
     state.replay.allFires = [];
     return;
   }
+  const n = state.replay.allBars.length;
   const savedCursor = state.replay.cursor;
-  // `seek()` always clears `chartViewEnd` (re-couples the chart to the live
-  // stream). The caller may be panned; restore so we don't yank the viewport.
+  // `seek()` clears `chartViewEnd`. The caller may be panned; restore so we
+  // don't yank the viewport. Fast path: when already at tape end, canonical
+  // fires list is complete — copy without redundant full replays.
   const savedViewEnd = state.chartViewEnd;
-  seek(state.replay.allBars.length);
+  if (savedCursor === n) {
+    state.replay.allFires = state.canonicalFires.slice();
+    state.chartViewEnd = savedViewEnd;
+    if (savedViewEnd !== null) _syncCurrentSession();
+    return;
+  }
+  seek(n);
   state.replay.allFires = state.canonicalFires.slice();
   seek(savedCursor);
   state.chartViewEnd = savedViewEnd;
@@ -276,7 +456,9 @@ function precomputeAllFires() {
 
 function precomputeAllEvents() {
   state.replay.allEvents = [];
-  if (state.replay.mode !== 'real' || !state.replay.allBars.length) return;
+  if (state.replay.mode !== 'synthetic' || !state.replay.allBars.length) return;
+  if (!state.activeEventTypes?.size) return;
+  const want = state.activeEventTypes;
   const all = state.replay.allEvents;
   // Iterate session-by-session so the 12-bar lookback never crosses a day
   // boundary. Each session also uses its own tunings (the JSON embeds them
@@ -314,7 +496,8 @@ function precomputeAllEvents() {
         }
         const cd = t.eventCooldownBars ?? SYNTH_TUNINGS.eventCooldownBars ?? 4;
         const barsUpToI = state.replay.allBars.slice(0, i + 1);
-        const toAdd = filterNewEventsCooldown(batch, all, barsUpToI, cd, sess.startIdx);
+        let toAdd = filterNewEventsCooldown(batch, all, barsUpToI, cd, sess.startIdx);
+        toAdd = toAdd.filter(ev => want.has(catalogKeyFromPrimitiveEvent(ev)));
         for (const ev of toAdd) all.push(ev);
       }
       // Stop-run review: sweep + reverse on consecutive state.bars. Skip if the
@@ -329,9 +512,11 @@ function precomputeAllEvents() {
             if (sweepBar && sweepBar.time === last.time) {
               last._reviewed = true;
               if (last.dir === 'up' && newBar.close < sweepBar.open) {
-                all.push({ type: 'stoprun', dir: 'up', price: last.price, time: newBar.time });
+                const ev = { type: 'stoprun', dir: 'up', price: last.price, time: newBar.time };
+                if (want.has(catalogKeyFromPrimitiveEvent(ev))) all.push(ev);
               } else if (last.dir === 'down' && newBar.close > sweepBar.open) {
-                all.push({ type: 'stoprun', dir: 'down', price: last.price, time: newBar.time });
+                const ev = { type: 'stoprun', dir: 'down', price: last.price, time: newBar.time };
+                if (want.has(catalogKeyFromPrimitiveEvent(ev))) all.push(ev);
               }
             }
           }
@@ -341,19 +526,86 @@ function precomputeAllEvents() {
   }
 }
 
+function _barTimeMsForReplay(bt) {
+  if (bt == null) return NaN;
+  return bt instanceof Date ? bt.getTime() : +new Date(bt);
+}
+
+/** Bar index matching `barTime` ms (Date vs ISO serialization safe). */
+function _findBarIndexAtTime(barTime) {
+  const ms = _barTimeMsForReplay(barTime);
+  if (!Number.isFinite(ms)) return -1;
+  const bars = state.replay.allBars;
+  for (let i = 0; i < bars.length; i++) {
+    if (_barTimeMsForReplay(bars[i].time) === ms) return i;
+  }
+  return -1;
+}
+
+/** When API bar_time and fire.barTime differ by serialization, land on nearest bar. */
+function _findClosestBarIndex(barTime, maxDeltaMs = 120000) {
+  const ms = _barTimeMsForReplay(barTime);
+  if (!Number.isFinite(ms)) return -1;
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+  const bars = state.replay.allBars;
+  for (let i = 0; i < bars.length; i++) {
+    const d = Math.abs(_barTimeMsForReplay(bars[i].time) - ms);
+    if (d < bestDiff) {
+      bestDiff = d;
+      bestIdx = i;
+    }
+  }
+  return bestDiff <= maxDeltaMs ? bestIdx : -1;
+}
+
+function _findBarIndexForSeek(barTime) {
+  const ex = _findBarIndexAtTime(barTime);
+  if (ex >= 0) return ex;
+  return _findClosestBarIndex(barTime);
+}
+
 function jumpToNextFire(watchId) {
   if (state.replay.mode !== 'real') return;
-  if (!state.replay.allFires.length) return;
-  // Find the next fire after the current cursor for this watch
-  const next = state.replay.allFires.find(f => {
-    if (f.watchId !== watchId) return false;
-    const idx = state.replay.allBars.findIndex(b => b.time === f.barTime);
-    return idx >= state.replay.cursor;
-  });
-  if (!next) return;
-  const idx = state.replay.allBars.findIndex(b => b.time === next.barTime);
+  if (!state.replay.allBars.length) return;
+
+  const chain = [...state.replay.allFires]
+    .filter(f => f.watchId === watchId)
+    .sort((a, b) =>
+      _barTimeMsForReplay(a.barTime) - _barTimeMsForReplay(b.barTime));
+
+  if (!chain.length) return;
+
+  let next = null;
+  const ctx = state.modalFireContext;
+
+  if (ctx && ctx.watchId === watchId) {
+    const afterMs = _barTimeMsForReplay(ctx.barTime);
+    next = chain.find(f => _barTimeMsForReplay(f.barTime) > afterMs);
+  }
+
+  if (!next) {
+    const cur = state.replay.cursor;
+    next = chain.find(f => {
+      const ix = _findBarIndexForSeek(f.barTime);
+      return ix >= 0 && ix >= cur;
+    });
+  }
+
+  // Last fire on tape / cursor past all: wrap to chronological first ★ etc.
+  if (!next) {
+    next = chain[0];
+  }
+
+  const idx = _findBarIndexForSeek(next.barTime);
+  if (idx < 0) return;
+
   if (state.interval) toggleStream();
-  seek(idx + 1);   // land just after the firing bar so it's visible at the right edge
+  seek(idx + 1);
+
+  document.getElementById('modalOverlay')?.classList.remove('visible');
+  state.currentModal = null;
+  state.modalFireContext = null;
 }
 
 async function bootstrapReplay() {
@@ -459,68 +711,42 @@ async function bootstrapFromApi(apiBase) {
   _syncTimeframeSelectorUI();
 }
 
-async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
-  // Phase 5: fetch each session's bars at the active timeframe. The same
-  // /bars endpoint is used for every timeframe; the server filters by
-  // `WHERE timeframe = ?`. Sessions that produce zero bars at this
-  // timeframe (e.g. a degenerate 1h on a holiday-shortened day) are
-  // skipped — startIdx/endIdx only covers sessions with actual rows so
-  // the cursor's bar-by-index navigation never points at a phantom day.
-  const tf = timeframe || DEFAULT_TIMEFRAME;
-  const datas = await Promise.all(metas.map(async (meta) => {
-    const url = `${apiBase}/bars?timeframe=${encodeURIComponent(tf)}`
-      + `&session_date=${encodeURIComponent(meta.session_date)}`;
-    try {
-      const r = await fetch(url);
-      if (!r.ok) {
-        console.warn('Failed to load API session bars', meta.session_date, tf, r.status);
-        return null;
-      }
-      const j = await r.json();
-      return { meta, data: j };
-    } catch (err) {
-      console.warn('Failed to load API session bars', meta.session_date, tf, err.message);
-      return null;
-    }
-  }));
+function _normalizeBarPayload(b) {
+  return {
+    ...b,
+    time: new Date(b.time),
+    vwap: b.vwap ?? null,
+    biasState: b.biasState ?? null,
+    biasH1: b.biasH1 ?? null,
+    bias15m: b.bias15m ?? null,
+  };
+}
 
-  if (state.interval) toggleStream();
+async function _fetchIsoDateRange(apiBase, tf) {
+  try {
+    const r = await fetch(`${apiBase}/date-range?timeframe=${encodeURIComponent(tf)}`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j.min && j.max) return { min: j.min, max: j.max };
+  } catch (_) { /* noop */ }
+  return null;
+}
 
-  const allBars = [];
+function _sessionsFromBarsAndMetas(allBars, metas) {
   const sessions = [];
-  for (const entry of datas) {
-    if (!entry) continue;
-    const { meta, data } = entry;
-    if (!Array.isArray(data.bars) || data.bars.length === 0) continue;
-    const startIdx = allBars.length;
-    for (const b of data.bars) {
-      // Bars come over the wire with `time` as ISO-Z strings; promote to
-      // Date so downstream code (chart axis, fire matching, event log
-      // formatting) can call .getUTC*() / .getTime() the same way it does
-      // in JSON mode.
-      //
-      // Phase 6: the API surfaces `vwap`, `biasState` (this bar's own
-      // 7-level bias on the active timeframe), and the denormalized
-      // higher-timeframe parents (`biasH1`, `bias15m`) on every row. The
-      // spread carries them through; we explicitly normalize undefined
-      // -> null so downstream code can `=== null` without `?? null`.
-      allBars.push({
-        ...b,
-        time: new Date(b.time),
-        vwap:      b.vwap      ?? null,
-        biasState: b.biasState ?? null,
-        biasH1:    b.biasH1    ?? null,
-        bias15m:   b.bias15m   ?? null,
-      });
-    }
-    const endIdx = allBars.length;
-    if (endIdx === startIdx) continue;
+  let ptr = 0;
+  const n = allBars.length;
+  for (const meta of metas) {
+    const lo = meta.session_start ? Date.parse(meta.session_start) : -Infinity;
+    const hi = meta.session_end ? Date.parse(meta.session_end) : Infinity;
+    while (ptr < n && allBars[ptr].time.getTime() < lo) ptr++;
+    const startIdx = ptr;
+    while (ptr < n && allBars[ptr].time.getTime() <= hi) ptr++;
+    const endIdx = ptr;
+    if (endIdx <= startIdx) continue;
     const sessionStartMs = meta.session_start ? Date.parse(meta.session_start) : null;
-    const sessionEndMs   = meta.session_end   ? Date.parse(meta.session_end)   : null;
+    const sessionEndMs = meta.session_end ? Date.parse(meta.session_end) : null;
     sessions.push({
-      // Synthetic 'file' key for the dropdown — onSessionChange()
-      // matches against this string. Prefix with `api:` so it can never
-      // collide with a JSON session manifest path.
       file: `api:${meta.session_date}`,
       symbol: 'ES',
       contract: '',
@@ -533,17 +759,65 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
       startIdx,
       endIdx,
       barCount: endIdx - startIdx,
-      // Phase 1: per-session tunings aren't yet stored in DuckDB. Falling
-      // back to SYNTH_TUNINGS keeps detectors firing on the same
-      // thresholds JSON mode used in synthetic-tuning days; Phase 5+ can
-      // round-trip tunings through the DB if we need per-session drift.
       tunings: SYNTH_TUNINGS,
-      // Phase 5: per-timeframe bar count dict from /sessions, used by
-      // the status banner so it can render counts at any timeframe
-      // without re-querying. Optional — older API versions omit it.
       barCounts: meta.bar_counts || null,
     });
   }
+  return sessions;
+}
+
+function _replayDateRangeStubFromBars(allBars) {
+  if (!allBars?.length) return null;
+  const a = allBars[0].time;
+  const b = allBars[allBars.length - 1].time;
+  const minIso = a instanceof Date ? a.toISOString().replace(/\.\d{3}Z$/, 'Z') : null;
+  const maxIso = b instanceof Date ? b.toISOString().replace(/\.\d{3}Z$/, 'Z') : null;
+  if (!minIso || !maxIso) return null;
+  return { min: minIso, max: maxIso, minMs: Date.parse(minIso), maxMs: Date.parse(maxIso) };
+}
+
+async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
+  await _awaitPendingSeekAsync();
+
+  const tf = timeframe || DEFAULT_TIMEFRAME;
+
+  let fromIso = null;
+  let toIso = null;
+  const drFetch = await _fetchIsoDateRange(apiBase, tf);
+  if (drFetch) {
+    fromIso = drFetch.min;
+    toIso = drFetch.max;
+  } else if (metas.length) {
+    const first = metas[0];
+    const last = metas[metas.length - 1];
+    fromIso = first.session_start || `${first.session_date}T00:00:00Z`;
+    toIso = last.session_end || `${last.session_date}T23:59:59Z`;
+  }
+  if (!fromIso || !toIso) {
+    console.warn('[orderflow] No date bounds for bars load.');
+    return;
+  }
+
+  let data;
+  const windowUrl = `${apiBase}/bars?timeframe=${encodeURIComponent(tf)}`
+    + `&from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  try {
+    const r = await fetch(windowUrl);
+    if (!r.ok) {
+      console.warn('Failed to load bars window', tf, r.status);
+      return;
+    }
+    data = await r.json();
+  } catch (err) {
+    console.warn('Failed to load bars window', tf, err.message);
+    return;
+  }
+
+  if (state.interval) toggleStream();
+
+  const raw = Array.isArray(data.bars) ? data.bars : [];
+  const allBars = raw.map(_normalizeBarPayload);
+  const sessions = _sessionsFromBarsAndMetas(allBars, metas);
 
   if (allBars.length === 0 || sessions.length === 0) return;
 
@@ -558,18 +832,36 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
   state.replay.allEvents = [];
   state.chartViewEnd = null;
 
-  precomputeAllEvents();
+  const drMerged = drFetch
+    ? { min: drFetch.min, max: drFetch.max, minMs: Date.parse(drFetch.min), maxMs: Date.parse(drFetch.max) }
+    : _replayDateRangeStubFromBars(allBars);
+  state.replay.dateRange = drMerged ?? _replayDateRangeStubFromBars(allBars);
 
   document.getElementById('replayRow').style.display = '';
-  populateSessionList();
-  const sel = document.getElementById('sessionSelect');
-  if (sel) sel.value = state.replay.current.file;
+  const panRow = document.getElementById('chartPanRow');
+  if (panRow) panRow.style.display = '';
   _renderModeBadge();
   _renderModeSubtitle();
 
-  seek(0);
+  // Land at the timeline end so the default view is the most recent bars (1m or URL timeframe).
+  const totalBars = allBars.length;
+  _setChartSeekLoading(true, 'Replaying bars…');
+  let seekResult;
+  try {
+    seekResult = await seekAsync(totalBars, {
+      onProgress: (done) => {
+        _setChartSeekLoading(true, `Replaying bars… ${done} / ${totalBars}`);
+      },
+    });
+  } finally {
+    _setChartSeekLoading(false);
+  }
+  if (!seekResult?.ok) {
+    // Sync seek aborted the async pass (rare); finish at tape end so precompute/events run on full data.
+    seek(allBars.length);
+  }
   precomputeAllFires();
-  renderEventInventory();
+  await loadEventsForActiveTypes();
 }
 
 // Phase 5: switch the active timeframe in API mode.
@@ -707,7 +999,7 @@ function _adjustMatrixRangeForTfSwitch(prevTf, newTf) {
       // Saved range was never set (e.g. user reloaded into 1h). Default
       // 1m / 15m to 'session' so the matrix has a sensible starting
       // window after a leave-1h.
-      state.matrixState.range = { kind: 'session', n: null, from: null, to: null, label: 'Current session' };
+      state.matrixState.range = { kind: 'session', n: null, from: null, to: null, label: 'Current RTH' };
     }
   }
 }
@@ -737,28 +1029,6 @@ function _renderModeBadge() {
   badge.style.background = 'rgba(33, 160, 149, 0.18)';
 }
 
-function populateSessionList() {
-  const sel = document.getElementById('sessionSelect');
-  sel.innerHTML = '';
-  for (const s of state.replay.sessions) {
-    const opt = document.createElement('option');
-    opt.value = s.file;
-    opt.textContent = `${s.symbol || 'ES'} ${s.contract || ''} · ${s.date} · ${s.session.toUpperCase()} (${s.barCount} bars)`;
-    sel.appendChild(opt);
-  }
-}
-
-function onSessionChange() {
-  const file = document.getElementById('sessionSelect').value;
-  const meta = state.replay.sessions.find(s => s.file === file);
-  if (!meta) return;
-  if (state.interval) toggleStream();
-  // Snap cursor to the session's end so streaming would naturally roll
-  // forward into the next session, AND so _setViewEnd's "snap-to-live-edge
-  // when clamped == cursor" behavior keeps subsequent panning intuitive.
-  seek(meta.endIdx);
-}
-
 function _renderModeSubtitle() {
   if (state.replay.mode !== 'real' || state.replay.sessions.length === 0) return;
   const first = state.replay.sessions[0];
@@ -769,7 +1039,28 @@ function _renderModeSubtitle() {
   const sessText = state.replay.sessions.length === 1 ? 'session' : 'sessions';
   const tfLabel = state.activeTimeframe || '1m';
   document.getElementById('modeSubtitle').textContent =
-    `${first.contract || ''} · ${tfLabel} · ${state.replay.sessions.length} ${sessText} · ${span} · ${state.replay.allBars.length} bars · scrub or stream to replay`;
+    `${first.contract || ''} · ${tfLabel} · ${state.replay.sessions.length} ${sessText} · ${span} · ${state.replay.allBars.length} bars · chart pan previews history; stream advances playback`;
 }
 
-export { sessionForBar, _syncCurrentSession, _resetReplayAccumulators, _resetForSessionBoundary, _commitRealBar, seek, seekStep, _renderReplayChrome, onScrubberInput, onScrubberCommit, precomputeAllFires, precomputeAllEvents, jumpToNextFire, bootstrapReplay, bootstrapFromApi, populateSessionList, onSessionChange, _renderModeSubtitle, setActiveTimeframe, _syncTimeframeSelectorUI, _renderModeBadge };
+export {
+  sessionForBar,
+  _syncCurrentSession,
+  _resetReplayAccumulators,
+  _resetForSessionBoundary,
+  _commitRealBar,
+  seek,
+  seekAsync,
+  seekStep,
+  _renderReplayChrome,
+  precomputeAllFires,
+  precomputeAllEvents,
+  jumpToNextFire,
+  bootstrapReplay,
+  bootstrapFromApi,
+  _renderModeSubtitle,
+  setActiveTimeframe,
+  _syncTimeframeSelectorUI,
+  _renderModeBadge,
+  loadEventsForActiveTypes,
+  catalogKeyFromPrimitiveEvent,
+};

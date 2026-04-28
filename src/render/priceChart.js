@@ -25,18 +25,85 @@ function _barTimeMs(t) {
   return t instanceof Date ? t.getTime() : +new Date(t);
 }
 
+/** [y,m,d] in UTC for grouping tick labels across day boundaries */
+function _utcYmd(barTime) {
+  const d = barTime instanceof Date ? barTime : new Date(barTime);
+  return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()];
+}
+
+function _sameUtcYmd(a, b) {
+  const [ya, ma, da] = _utcYmd(a);
+  const [yb, mb, db] = _utcYmd(b);
+  return ya === yb && ma === mb && da === db;
+}
+
+/**
+ * Visible window spans more than one UTC calendar day (any adjacent pair).
+ */
+function _viewportSpansMultipleUtcDays(bars) {
+  if (!bars || bars.length < 2) return false;
+  for (let i = 1; i < bars.length; i++) {
+    if (!_sameUtcYmd(bars[i - 1].time, bars[i].time)) return true;
+  }
+  return false;
+}
+
+/** UTC time for x-axis: 12-hour clock, no timezone suffix (stored bar times are still UTC). */
+function _axisClock12Utc(barTime) {
+  const d = barTime instanceof Date ? barTime : new Date(barTime);
+  const h24 = d.getUTCHours();
+  const m = d.getUTCMinutes();
+  const mm = String(m).padStart(2, '0');
+  const isAm = h24 < 12;
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  return `${h12}:${mm} ${isAm ? 'AM' : 'PM'}`;
+}
+
+/** One bottom-axis tick label; prefixes month/day after a UTC day change (multi-day viewports). */
+function _bottomAxisTickText(bars, idx, prevTickIdx, multiDay) {
+  const b = bars[idx];
+  if (!multiDay) return _axisClock12Utc(b.time);
+  const prevBar = prevTickIdx >= 0 ? bars[prevTickIdx] : null;
+  if (!prevBar || !_sameUtcYmd(prevBar.time, b.time)) {
+    const d = b.time instanceof Date ? b.time : new Date(b.time);
+    const mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()];
+    return `${mo} ${String(d.getUTCDate()).padStart(2, '0')} ${_axisClock12Utc(b.time)}`;
+  }
+  return _axisClock12Utc(b.time);
+}
+
+/** Matches `catalogKeyFromPrimitiveEvent` in replay.js (keep in sync). */
+function _glossaryKeyFromPrimitiveEvent(ev) {
+  if (!ev) return '';
+  if (ev.type === 'absorption') return 'absorption';
+  const d = ev.dir ? ` ${ev.dir}` : '';
+  return `${ev.type}${d}`;
+}
+
+/** API replay: halos only for watch IDs checked in Signals & glossary (synthetic ignores this). */
+function _filterFiresByGlossary(fires) {
+  if (state.replay.mode !== 'real') return fires;
+  if (!state.activeCanonicalFireTypes?.size) return [];
+  return fires.filter(f => f.watchId && state.activeCanonicalFireTypes.has(f.watchId));
+}
+
 /** Merged list for draw: panned = full scan (if any) + live ring buffer; live = ring only. */
 function _chartFireListForDraw(isPanned) {
-  if (state.replay.mode !== 'real') return state.canonicalFires;
-  if (!isPanned) return state.canonicalFires;
-  const m = new Map();
-  for (const f of state.replay.allFires) {
-    m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
+  let merged;
+  if (state.replay.mode !== 'real') merged = state.canonicalFires;
+  else if (!isPanned) merged = state.canonicalFires;
+  else {
+    const m = new Map();
+    for (const f of state.replay.allFires) {
+      m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
+    }
+    for (const f of state.canonicalFires) {
+      m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
+    }
+    merged = [...m.values()];
   }
-  for (const f of state.canonicalFires) {
-    m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
-  }
-  return [...m.values()];
+  return _filterFiresByGlossary(merged);
 }
 
 // Anti-flicker carry-over for the right-side volume profile sidebar.
@@ -232,8 +299,20 @@ function drawPriceChart() {
   } else {
     viewedEvents = state.events;
   }
+  // API replay: glossary checkboxes gate primitive glyphs. Live bar-by-bar detection
+  // still fills state.events — do not draw those markers unless the type is checked.
+  if (state.replay.mode === 'real') {
+    if (!state.activeEventTypes?.size) {
+      viewedEvents = [];
+    } else {
+      const want = state.activeEventTypes;
+      viewedEvents = viewedEvents.filter(ev => want.has(_glossaryKeyFromPrimitiveEvent(ev)));
+    }
+  }
 
   if (viewedBars.length === 0) return;
+
+  const activeTf = state.activeTimeframe || DEFAULT_TIMEFRAME;
 
   const PROFILE_W = Math.min(110, w * 0.22);
   // Phase 6: reserve a thin band at the very top of the canvas for the
@@ -243,7 +322,9 @@ function drawPriceChart() {
   const RIBBON_H   = 10;     // total ribbon height (split into two ~4px strips at 1m)
   const RIBBON_TOP = 2;      // small gap from canvas top
   const RIBBON_GAP = 3;      // gap between ribbon and candle area
-  const PAD = { l: 6, r: 8, t: RIBBON_TOP + RIBBON_H + RIBBON_GAP, b: 14 };
+  // Bottom padding reserves a strip below the volume band for UTC time ticks (x-axis).
+
+  const PAD = { l: 6, r: 8, t: RIBBON_TOP + RIBBON_H + RIBBON_GAP, b: 22 };
   const chartW = w - PROFILE_W - PAD.l - PAD.r - 8;
   // Reserve bottom ~22% for the volume sub-band; price chart uses the rest.
   const VOL_BAND_FRAC = 0.22;
@@ -923,6 +1004,88 @@ function drawPriceChart() {
       pctx.textAlign = fitsRight ? 'left' : 'right';
       const labelX = fitsRight ? (xStart + 6) : (xStart - 4);
       pctx.fillText(labelText, labelX, PAD.t + 10);
+    }
+    pctx.restore();
+  }
+
+  // Bottom axis strip (canvas area above HTML “Chart view” slider): UTC-based 12h clock ticks
+  // (no “Z” suffix). 15m uses fewer candidate ticks + larger min gap so long date+time labels
+  // never overlap. Mirrored session dates on a second row are skipped on 15m and when the
+  // clock ticks already carry day changes (multi-day window).
+  const axisFloorY = volTop + volBandH;
+  const multiDayVp = _viewportSpansMultipleUtcDays(allBars);
+  const is15mAxis = activeTf === '15m';
+
+  if (totalBars >= 1) {
+    pctx.save();
+    pctx.font = '9px "IBM Plex Mono", monospace';
+    pctx.strokeStyle = 'rgba(148, 156, 172, 0.4)';
+    pctx.fillStyle = 'rgba(178, 186, 200, 0.92)';
+    pctx.lineWidth = 1;
+    pctx.textBaseline = 'bottom';
+    const nBars = totalBars;
+    const pxPerSlot = is15mAxis && multiDayVp ? 100 : is15mAxis ? 88 : 52;
+    const capTicks = is15mAxis && multiDayVp ? 4 : is15mAxis ? 5 : 12;
+    let wantTicks = clamp(Math.floor(chartW / pxPerSlot), Math.min(nBars, is15mAxis ? 3 : 4), Math.min(capTicks, nBars));
+    if (nBars <= 4) wantTicks = Math.max(1, nBars);
+    const cand = [];
+    if (nBars === 1) {
+      cand.push(0);
+    } else {
+      const stepBar = (nBars - 1) / Math.max(wantTicks - 1, 1);
+      for (let k = 0; k < wantTicks; k++) {
+        cand.push(Math.round(k * stepBar));
+      }
+    }
+    const uniq = [...new Set(cand)].sort((a, b) => a - b);
+    let minGapPx = is15mAxis ? 14 : 6;
+    if (is15mAxis && multiDayVp) minGapPx = 22;
+    const acceptedTicks = [];
+    let lastRight = -Infinity;
+    let prevLblIdx = -1;
+    for (const idx of uniq) {
+      const lbl = _bottomAxisTickText(allBars, idx, prevLblIdx, multiDayVp);
+      const wTxt = Math.ceil(pctx.measureText(lbl).width) + 4;
+      const x = PAD.l + (idx + 0.5) * slotW;
+      const left = x - wTxt / 2;
+      const right = x + wTxt / 2;
+      if (left < PAD.l - 1 || right > PAD.l + chartW + 1) continue;
+      if (acceptedTicks.length === 0 || left >= lastRight + minGapPx) {
+        acceptedTicks.push({ idx, lbl, x });
+        lastRight = right;
+        prevLblIdx = idx;
+      }
+    }
+    if (uniq.length && acceptedTicks.length === 0) {
+      const idx = uniq[Math.floor(uniq.length / 2)];
+      const lbl = _bottomAxisTickText(allBars, idx, -1, multiDayVp);
+      acceptedTicks.push({ idx, lbl, x: PAD.l + (idx + 0.5) * slotW });
+    }
+    for (const t of acceptedTicks) {
+      pctx.beginPath();
+      pctx.moveTo(t.x, axisFloorY);
+      pctx.lineTo(t.x, axisFloorY + 4);
+      pctx.stroke();
+    }
+    pctx.textAlign = 'center';
+    const timeY = h - 3;
+    for (const t of acceptedTicks) {
+      pctx.fillText(t.lbl, t.x, timeY);
+    }
+    if (sessionDividers.length >= 2 && !is15mAxis && !multiDayVp) {
+      const vd = sessionDividers;
+      const maxSd = Math.min(10, Math.max(2, Math.floor(chartW / 52)));
+      let sdStep = 1;
+      if (vd.length > maxSd) sdStep = Math.ceil(vd.length / maxSd);
+      pctx.font = '8px "IBM Plex Mono", monospace';
+      pctx.fillStyle = 'rgba(160, 168, 186, 0.88)';
+      pctx.textBaseline = 'middle';
+      const dateMidY = axisFloorY + 10;
+      for (let j = 0; j < vd.length; j += sdStep) {
+        const sd = vd[j];
+        const xSd = PAD.l + (sd.idx + 0.5) * slotW;
+        pctx.fillText(String(sd.date), xSd, dateMidY);
+      }
     }
     pctx.restore();
   }

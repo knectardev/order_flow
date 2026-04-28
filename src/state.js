@@ -114,6 +114,10 @@ export const state = {
     dataDriven: false,
     apiBase: null,
     source: 'synthetic',
+    // API /date-range (or stub from first/last bar). Drives pan slider + API event window.
+    dateRange: null,
+    pendingSeekAbort: null,
+    pendingSeekPromise: null,
   },
 
   // Chart viewport state for real-data history scrolling.
@@ -126,6 +130,24 @@ export const state = {
   // Hit-test list rebuilt every drawPriceChart() call, used by the hover tooltip.
   // Each entry: {x, y, r, kind: 'event'|'fire', payload}
   chartHits: [],
+
+  // Glossary primitives enabled for primitive flow markers (EVENT_ORDER `.key`).
+  // Empty = no deferred event scan / fetch; optional types load on checkbox.
+  activeEventTypes: new Set(),
+  // Glossary canonical fire watch IDs enabled for chart halos (`breakout`, `fade`, …).
+  // Empty by default — no ★/◆/🛡/🎯 halos until the user opts in.
+  activeCanonicalFireTypes: new Set(),
+
+  // Event log sort (clickable column headers in `src/render/eventLog.js`).
+  eventLogSort: {
+    column: 'time', // 'time' | 'alignment' | 'price'
+    dir: 'desc',    // 'asc' | 'desc' — default matches reverse-chronological list
+  },
+
+  // When a canonical modal opens with `{ fire }` (chart shift-click / banner),
+  // `jumpToNextFire()` uses this to find the chronologically **next** same-watch
+  // fire. Cleared when the modal closes.
+  modalFireContext: null,
 
   // Brushing-and-linking selection (regime-DB plan §4b / §4c-d).
   //   kind                — null | 'cells' | 'fire'
@@ -161,7 +183,7 @@ export const state = {
   //   range.n      — when kind='lastN', number of trailing sessions
   //   range.from / .to — Unix ms (custom only; the other kinds derive
   //                       these on each render from cursor + sessions)
-  //   range.label  — short pill/legend text ("Current session", "Last 5",
+  //   range.label  — short pill/legend text ("Current RTH", "Last 5",
   //                   "Custom 04-24 13:30 → 04-24 16:00", …)
   //   displayMode  — 'posterior' (default — preserves existing visual)
   //                   | 'heatmap' (cells tinted by occupancy fraction)
@@ -172,7 +194,7 @@ export const state = {
   // is a fetch cache — re-populated when `range` changes (or every step
   // for cursor-bound ranges where the API returns no-cache).
   matrixState: {
-    range: { kind: 'session', n: null, from: null, to: null, label: 'Current session' },
+    range: { kind: 'session', n: null, from: null, to: null, label: 'Current RTH' },
     displayMode: 'posterior',
     occupancy: null,
   },
@@ -244,13 +266,6 @@ export const state = {
   biasFilterMode: 'soft',
   showSuppressed: false,
 
-  // Event-log UI filter.
-  //   type: 'all' for no filter, 'fire_<watchId>' for canonical fires, or
-  //         primitive event keys ('sweep_up' | 'sweep_down' | 'absorption' |
-  //         'stoprun_up' | 'stoprun_down' | 'divergence_up' | 'divergence_down').
-  eventLogFilter: {
-    type: 'all',
-  },
 };
 
 // Effective tunings: real-session overrides default synthetic, scoped
