@@ -11,6 +11,7 @@ from uuid import uuid4
 import duckdb
 
 from . import db as db_module
+from .strategies.exit_ticks import resolve_exit_ticks
 from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
 
 _BUY_HOLD_CACHE_MAX = 24
@@ -23,6 +24,59 @@ def _safe_float(v: float | int | None, default: float = 0.0) -> float:
     return float(v)
 
 
+def barrier_prices_from_ticks(
+    entry_fill: float,
+    side: int,
+    tick_size: float,
+    stop_ticks: float | None,
+    tp_ticks: float | None,
+) -> tuple[float | None, float | None]:
+    """Absolute barrier prices from entry fill and tick distances (after entry slip)."""
+    if stop_ticks is None and tp_ticks is None:
+        return None, None
+    if side > 0:
+        stop_px = entry_fill - stop_ticks * tick_size if stop_ticks is not None else None
+        tp_px = entry_fill + tp_ticks * tick_size if tp_ticks is not None else None
+        return stop_px, tp_px
+    stop_px = entry_fill + stop_ticks * tick_size if stop_ticks is not None else None
+    tp_px = entry_fill - tp_ticks * tick_size if tp_ticks is not None else None
+    return stop_px, tp_px
+
+
+def intrabar_stop_take_hit(
+    *,
+    side: int,
+    high: float,
+    low: float,
+    stop_px: float | None,
+    tp_px: float | None,
+) -> tuple[str | None, float | None]:
+    """Return ``(exit_reason, exit_barrier_price)`` if OHLC triggers SL/TP.
+
+    Risk-first: if both barriers trade through within the same bar, assume the
+    stop triggers first (conservative vs taking profit).
+    """
+    if side > 0:
+        hit_stop = stop_px is not None and low <= stop_px
+        hit_tp = tp_px is not None and high >= tp_px
+        if hit_stop and hit_tp:
+            return "stop_loss", stop_px
+        if hit_stop:
+            return "stop_loss", stop_px
+        if hit_tp:
+            return "take_profit", tp_px
+        return None, None
+    hit_stop = stop_px is not None and high >= stop_px
+    hit_tp = tp_px is not None and low <= tp_px
+    if hit_stop and hit_tp:
+        return "stop_loss", stop_px
+    if hit_stop:
+        return "stop_loss", stop_px
+    if hit_tp:
+        return "take_profit", tp_px
+    return None, None
+
+
 @dataclass(slots=True)
 class BrokerConfig:
     initial_capital: float = 50_000.0
@@ -31,6 +85,9 @@ class BrokerConfig:
     commission_per_side: float = 2.0
     tick_size: float = 0.25
     point_value: float = 50.0
+    # Run-wide SL/TP in ticks; if either is set, applies to every new position for the run.
+    stop_loss_ticks: float | None = None
+    take_profit_ticks: float | None = None
 
 
 @dataclass(slots=True)
@@ -42,6 +99,8 @@ class Position:
     watch_id: str
     entry_commission: float
     entry_index: int
+    stop_price: float | None = None
+    take_profit_price: float | None = None
 
 
 class SimulatedBroker:
@@ -76,12 +135,25 @@ class SimulatedBroker:
             self.position.qty,
         )
 
-    def open_position(self, ts: datetime, px: float, side: int, watch_id: str, bar_idx: int) -> None:
+    def open_position(
+        self,
+        ts: datetime,
+        px: float,
+        side: int,
+        watch_id: str,
+        bar_idx: int,
+        *,
+        stop_ticks: float | None = None,
+        take_profit_ticks: float | None = None,
+    ) -> None:
         if self.position is not None:
             return
         fill = self._fill_price(px, side)
         commission = self.config.commission_per_side * self.config.qty
         self.cash -= commission
+        stop_px, tp_px = barrier_prices_from_ticks(
+            fill, side, self.config.tick_size, stop_ticks, take_profit_ticks
+        )
         self.position = Position(
             side=side,
             qty=self.config.qty,
@@ -90,8 +162,27 @@ class SimulatedBroker:
             watch_id=watch_id,
             entry_commission=commission,
             entry_index=bar_idx,
+            stop_price=stop_px,
+            take_profit_price=tp_px,
         )
         self._mark(fill)
+
+    def try_intrabar_exit(self, ts: datetime, bar_idx: int, high: float, low: float) -> bool:
+        """Close position at SL/TP barrier if OHLC breaches a level; returns True if closed."""
+        pos = self.position
+        if pos is None:
+            return False
+        reason, barrier_px = intrabar_stop_take_hit(
+            side=pos.side,
+            high=high,
+            low=low,
+            stop_px=pos.stop_price,
+            tp_px=pos.take_profit_price,
+        )
+        if reason is None or barrier_px is None:
+            return False
+        self.close_position(ts, barrier_px, reason, bar_idx)
+        return True
 
     def close_position(self, ts: datetime, px: float, reason: str, bar_idx: int) -> None:
         if self.position is None:
@@ -306,20 +397,49 @@ class BacktestEngine:
 
         for idx, bar in enumerate(bars):
             ts = bar["bar_time"]
+            high = float(bar["high"])
+            low = float(bar["low"])
+            broker.try_intrabar_exit(ts, idx, high, low)
+
             fire_batch = fires_by_time.get(ts, [])
             for fire in fire_batch:
                 side = self._signal_side(fire["watch_id"], fire.get("direction"))
                 if side is None:
                     log_skip(fire, "invalid_direction")
                     continue
+                px_fire = _safe_float(fire.get("price"), _safe_float(bar.get("close")))
+                sl_ticks, tp_ticks = resolve_exit_ticks(
+                    timeframe,
+                    fire["watch_id"],
+                    broker_stop_loss_ticks=config.stop_loss_ticks,
+                    broker_take_profit_ticks=config.take_profit_ticks,
+                )
                 if not broker.has_open_position():
-                    broker.open_position(ts, _safe_float(fire.get("price"), _safe_float(bar.get("close"))), side, fire["watch_id"], idx)
+                    broker.open_position(
+                        ts,
+                        px_fire,
+                        side,
+                        fire["watch_id"],
+                        idx,
+                        stop_ticks=sl_ticks,
+                        take_profit_ticks=tp_ticks,
+                    )
                     continue
                 if broker.position and broker.position.side != side:
-                    broker.close_position(ts, _safe_float(fire.get("price"), _safe_float(bar.get("close"))), "flip", idx)
-                    broker.open_position(ts, _safe_float(fire.get("price"), _safe_float(bar.get("close"))), side, fire["watch_id"], idx)
+                    broker.close_position(ts, px_fire, "flip", idx)
+                    broker.open_position(
+                        ts,
+                        px_fire,
+                        side,
+                        fire["watch_id"],
+                        idx,
+                        stop_ticks=sl_ticks,
+                        take_profit_ticks=tp_ticks,
+                    )
                     continue
                 log_skip(fire, "already_in_position_same_side")
+
+            broker.try_intrabar_exit(ts, idx, high, low)
             broker.mark_to_market(ts, _safe_float(bar.get("close")))
 
         last_bar = bars[-1]
@@ -402,6 +522,16 @@ class BacktestEngine:
                     "use_regime_filter": bool(use_regime_filter),
                     "skipped_fires": dict(skip_counts),
                     "buy_hold_cached": bool(benchmark_cached),
+                    "exit_ticks_broker_stop_loss": config.stop_loss_ticks,
+                    "exit_ticks_broker_take_profit": config.take_profit_ticks,
+                    "exit_ticks_resolution": (
+                        "run_wide_broker"
+                        if (
+                            config.stop_loss_ticks is not None
+                            or config.take_profit_ticks is not None
+                        )
+                        else "strategy_defaults"
+                    ),
                 }
             ),
         }

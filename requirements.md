@@ -481,7 +481,11 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 - Backtest execution is DB-fire only in production mode; if scoped `fires` are absent in-window, the run fails fast with a clear error.
 - Recovery path: `python -m orderflow_pipeline.cli recompute-fires --db-path <duckdb> --timeframe <tf>` regenerates canonical `fires` from persisted `bars` for the selected window/timeframe without requiring a raw-data rebuild.
 - Compare-mode exception: the **Regime filter OFF** branch derives signals from the same bar window using the extracted legacy strategy with regime gates disabled (`signalSource=derived_no_regime`) so ON vs OFF remains a true A/B test.
-- Execution is single-position and deterministic: one open position max, flip on opposite signal, flatten at the window end.
+- Execution is single-position and deterministic: one open position max, flatten at the window end. **Exits:** opposite-direction signal (**flip**), optional **stop-loss** / **take-profit** barriers evaluated each bar using OHLC (`stop_loss` / `take_profit` exit reasons), or **end-of-window** flatten if still open.
+- When SL/TP tick distances are unset everywhere (**broker config null** and strategy timeframe/watch defaults null), behavior reduces to flip-only plus end flatten — backward-compatible with historical flip-only runs.
+- SL/TP resolution: optional **`BrokerConfig.stop_loss_ticks` / `take_profit_ticks`** act as **run-wide overrides** when either is non-null; otherwise each new position inherits **`LegacyFallbackConfig`** timeframe defaults merged with optional **`watch_exit_ticks`** per canonical watch (`pipeline/src/orderflow_pipeline/strategies/config.py`, resolver `strategies/exit_ticks.py`).
+- Intrabar ambiguity (same bar touches both SL and TP): **stop-loss is assumed first** (risk-first). After fires fill or flip on a bar, SL/TP is evaluated again so new positions can still be stopped out within the same bar if price breaches.
+- **`scripts/value_edge_parity_check.py`** compares Sharpe + equity **exactly** to a baseline run — expected to fail once SL/TP changes outcomes vs an old flip-only baseline; use separate baseline run IDs or flip-only configs when parity checking signals alone.
 - Fire mapping:
   - `breakout`: trade with fire direction.
   - `fade`, `valueEdgeReject`, `absorptionWall`: trade opposite fire direction (mean-reversion read).
@@ -489,7 +493,7 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 ### 14.2 DuckDB Contracts
 
 - `backtest_runs` stores one summary row per run (`run_id`, params, aggregate metrics, net P&L).
-- `backtest_trades` stores closed-trade records (`entry_time`, `exit_time`, direction, prices, gross/net P&L, bars held, source watch).
+- `backtest_trades` stores closed-trade records (`entry_time`, `exit_time`, direction, prices, gross/net P&L, bars held, optional `exit_reason`, source watch).
 - `backtest_equity` stores the mark-to-market equity series by bar timestamp.
 - `backtest_benchmarks` stores per-run benchmark curves keyed by `(run_id, strategy, bar_time)`; MVP strategy is `buy_hold`.
 - Writes are transactional and keyed by `run_id`; re-writing an existing `run_id` replaces that run's rows in all backtest tables.
@@ -497,6 +501,7 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 ### 14.3 Broker / Accounting
 
 - `SimulatedBroker` applies adverse slippage per side (`slippage_ticks * tick_size`) and per-side commission.
+- SL/TP exits fill at the barrier price with exit-side slip applied via `_fill_price`. Flip exits continue to use the fire’s quoted price (fallback bar close).
 - P&L uses futures point value (`point_value`) and quantity (`qty`):
   - `gross_pnl = (exit - entry) * side * point_value * qty`
   - `net_pnl = gross_pnl - entry_commission - exit_commission`
@@ -505,8 +510,10 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 ### 14.4 API and UI Contracts
 
 - `POST /api/backtest/run` runs synchronously for a requested timeframe/window and returns run summary (`runId`, `tradeCount`, `winRate`, `sharpe`, `maxDrawdown`, `netPnl`, `endingEquity`).
+- `POST /api/backtest/run` accepts optional run-wide **`stop_loss_ticks`** / **`take_profit_ticks`** (nullable floats); omitted/null preserves strategy-default / flip-only resolution.
 - `POST /api/backtest/run` accepts optional `watch_ids` to scope execution to specific canonical watches (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`).
 - `GET /api/backtest/stats`, `/api/backtest/equity`, `/api/backtest/trades`, `/api/backtest/skipped-fires` return latest run by default, or a specific run via `runId`.
+- `GET /api/backtest/trades` trade objects include **`exitReason`** (`flip`, `stop_loss`, `take_profit`, `end_of_window`, or null for legacy rows).
 - `GET /api/backtest/equity` includes strategy equity points plus a benchmark payload (`benchmark.strategy='buy_hold'`, `benchmark.points`).
 - Dashboard `Performance` panel includes:
   - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params).
@@ -537,7 +544,7 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 ## 15. API-First SSoT Diagnostics Contract
 
 - In API/real mode, canonical fire emission is backend-owned. Frontend JS evaluators may still run for display fallback but must not emit or mutate API-mode fire streams.
-- Pipeline fire generation and backtest compare derivation both use the same Python strategy function (`derive_fires_from_bars`) with timeframe-specific config via `config_for_timeframe`.
+- Pipeline fire generation and backtest compare derivation both use the same Python strategy function (`derive_fires_from_bars`) with timeframe-specific config via `config_for_timeframe`. Implementation splits each watch strategy into its own module under `pipeline/src/orderflow_pipeline/strategies/` (`breakout.py`, `fade.py`, `absorption_wall.py`, `value_edge_reject.py`, plus shared `config.py`), composed by `legacy_fallback_logic.py`.
 - Pipeline fire writes include additive diagnostics fields on `fires`: `diagnostic_version` and `diagnostics_json` (JSON payload, current version `v1`).
 - `GET /fires` remains backward compatible by default. Diagnostics are opt-in with `includeDiagnostics=1`; default response shape is unchanged.
 - API-mode UI diagnostics consume backend diagnostics when present. Fallback to JS evaluators is allowed only when diagnostics fields are missing from the response; present-but-null is treated as backend-owned state.

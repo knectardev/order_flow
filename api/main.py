@@ -367,6 +367,9 @@ class BacktestRunRequest(BaseModel):
     commission_per_side: float = 2.0
     tick_size: float = 0.25
     point_value: float = 50.0
+    # Run-wide exit override in ticks (None => use strategy timeframe/watch defaults, or flip-only if those are None).
+    stop_loss_ticks: float | None = None
+    take_profit_ticks: float | None = None
     watch_ids: list[str] | None = None
     use_regime_filter: bool = True
 
@@ -883,6 +886,8 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
                 commission_per_side=payload.commission_per_side,
                 tick_size=payload.tick_size,
                 point_value=payload.point_value,
+                stop_loss_ticks=payload.stop_loss_ticks,
+                take_profit_ticks=payload.take_profit_ticks,
             ),
             watch_ids=set(watch_ids) if watch_ids else None,
             use_regime_filter=bool(payload.use_regime_filter),
@@ -1009,7 +1014,8 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
         rows = con.execute(
             """
             SELECT trade_id, watch_id, entry_time, exit_time, direction, qty,
-                   entry_price, exit_price, gross_pnl, commission, net_pnl, bars_held
+                   entry_price, exit_price, gross_pnl, commission, net_pnl, bars_held,
+                   exit_reason
             FROM backtest_trades
             WHERE run_id = ?
             ORDER BY trade_id
@@ -1036,6 +1042,7 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
                 "commission": r[9],
                 "netPnl": r[10],
                 "barsHeld": r[11],
+                "exitReason": r[12],
             }
             for r in rows
         ],

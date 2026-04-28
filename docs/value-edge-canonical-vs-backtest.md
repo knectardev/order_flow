@@ -197,3 +197,7 @@ For Value Edge, the large difference is currently expected and explainable:
 - Backtest trade lifecycle further transforms signal counts into fewer executed trades.
 
 To fully close the gap, both chart and backtest must consume the same persisted fire stream or the same shared signal engine.
+
+## Execution engine (stop / take-profit)
+
+The backtest broker can evaluate **stop-loss** and **take-profit** barriers on each bar (OHLC) in addition to signal flips. That path is independent of whether chart and fallback signal sources agree: it changes which equity path and Sharpe you should expect when comparing runs. Flip-only histories (no SL/TP ticks configured) remain the backward-compatible baseline for strict parity checks.

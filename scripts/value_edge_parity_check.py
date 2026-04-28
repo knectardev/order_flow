@@ -2,6 +2,10 @@
 
 Compares a baseline run (legacy high-Sharpe reference) against a candidate
 unified run using exact equality for Sharpe and equity points.
+
+Note: Runs that enable broker-level SL/TP (`stop_loss_ticks` / `take_profit_ticks`)
+will diverge from legacy flip-only baselines — use flip-only configs when parity
+checking signal plumbing; capture a new baseline when validating risk-adjusted runs.
 """
 from __future__ import annotations
 

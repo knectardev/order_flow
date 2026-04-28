@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -16,10 +17,21 @@ from orderflow_pipeline.db import init_schema
 
 
 def main() -> int:
-    con = duckdb.connect("data/orderflow.duckdb")
+    ap = argparse.ArgumentParser(description="Smoke-run Value Edge backtest per timeframe.")
+    ap.add_argument("--db-path", default="data/orderflow.duckdb")
+    ap.add_argument(
+        "--stop-loss-ticks",
+        type=float,
+        default=None,
+        help="Optional run-wide SL override (ticks); omit for flip-only strategy defaults.",
+    )
+    args = ap.parse_args()
+
+    con = duckdb.connect(str(Path(args.db_path)))
     init_schema(con)
     try:
         engine = BacktestEngine(con)
+        cfg = BrokerConfig(stop_loss_ticks=args.stop_loss_ticks)
         for tf in ("1m", "15m", "1h"):
             lo, hi = con.execute(
                 "SELECT MIN(bar_time), MAX(bar_time) FROM bars WHERE timeframe = ?",
@@ -32,7 +44,7 @@ def main() -> int:
                 timeframe=tf,
                 from_time=lo if isinstance(lo, datetime) else datetime.fromisoformat(str(lo)),
                 to_time=hi if isinstance(hi, datetime) else datetime.fromisoformat(str(hi)),
-                config=BrokerConfig(),
+                config=cfg,
                 watch_ids={"valueEdgeReject"},
                 use_regime_filter=True,
             )

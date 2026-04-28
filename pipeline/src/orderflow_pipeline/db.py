@@ -192,6 +192,7 @@ _SCHEMA_SQL: tuple[str, ...] = (
         commission           DOUBLE     NOT NULL,
         net_pnl              DOUBLE     NOT NULL,
         bars_held            INTEGER    NOT NULL,
+        exit_reason          VARCHAR,
         PRIMARY KEY (run_id, trade_id)
     )
     """,
@@ -253,6 +254,9 @@ _FIRE_DIAGNOSTIC_COLUMNS: tuple[tuple[str, str], ...] = (
     ("diagnostic_version", "VARCHAR"),
     ("diagnostics_json", "VARCHAR"),
 )
+_BACKTEST_TRADE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("exit_reason", "VARCHAR"),
+)
 
 
 def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
@@ -281,6 +285,8 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _FIRE_DIAGNOSTIC_COLUMNS:
         con.execute(f"ALTER TABLE fires ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    for col_name, col_type in _BACKTEST_TRADE_COLUMNS:
+        con.execute(f"ALTER TABLE backtest_trades ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
 
 
 def write_session(
@@ -473,9 +479,9 @@ def write_backtest_results(
                 INSERT INTO backtest_trades (
                     run_id, trade_id, watch_id, entry_time, exit_time,
                     direction, qty, entry_price, exit_price, gross_pnl,
-                    commission, net_pnl, bars_held
+                    commission, net_pnl, bars_held, exit_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     [
@@ -492,6 +498,7 @@ def write_backtest_results(
                         t["commission"],
                         t["net_pnl"],
                         t["bars_held"],
+                        t.get("exit_reason"),
                     ]
                     for t in trades
                 ],
