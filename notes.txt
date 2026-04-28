@@ -1,75 +1,35 @@
+This is the ultimate trading-dev dilemma: you've found "The Ghost in the Machine"—a specific logic variation that is printing money—but you can't quite see its face.
+
+If your **Bullseyes (349 fires)** are significantly fewer than the **Backtest Fallback (1433 fires)**, it proves the backtest is currently a "looser" strategy. It is firing roughly **4x more often** than your refined chart logic. If that high frequency is resulting in a high Sharpe, then your "Canonical" logic might actually be *too* restrictive, filtering out valid winners.
+
+To move to a Single Source of Truth **without losing the magic**, follow this plan:
+
+### 1. The "Snapshot" Protocol (Save the Ghost)
+Before you change a single line of code, you must preserve the current "Fallback" logic state.
+* **Instruction for Cursor:** "Create a new file `pipeline/src/orderflow_pipeline/strategies/legacy_fallback_logic.py` and copy the current logic from the `backtest_engine.py` fallback branch into it. Comment it as 'The High-Sharpe Ghost Logic'."
+* **Why:** If the new unified logic underperforms, you have the exact mathematical "DNA" of the winner to revert to.
+
+### 2. The "A/B" Comparison Test
+Instead of replacing the old with the new, implement them side-by-side in the backtester.
+* **The Goal:** Run the backtest twice. Once using the **Fires Table** (the 349 Bullseyes) and once using the **Internal Logic** (the 1433 Fallback signals).
+* **The Metric:** If the 1433-fire version has a higher Sharpe, you don't kill it. Instead, you **update the Bullseye logic** to match the fallback logic.
+
+### 3. Identify the "Missing" Alpha
+There is a specific reason the fallback is firing 1,084 times more than the canonical. It’s likely one of three things:
+1.  **Wick Precision:** The fallback might be less picky about the `wick_to_body` ratio.
+2.  **Regime Overlap:** The fallback might be allowing trades in "Active-Light" or "Steady-Deep" cells that the Bullseye logic excludes.
+3.  **Bias Sentiment:** The fallback might be ignoring the 1H/15M alignment that the Bullseyes require.
+
+### 4. Implementation Path for Cursor
+Give Cursor this specific instruction to ensure safety:
+
+> "I need to unify my logic to a Single Source of Truth without losing the performance of the current 'fallback' engine.
+>
+> 1. **Data Export:** Export the current 'High Sharpe' fallback backtest trades to a CSV named `fallback_winners.csv`.
+> 2. **Alignment Check:** Compare a sample of trades from `fallback_winners.csv` against the `fires` table. Identify 5 instances where the backtest entered but no Bullseye existed.
+> 3. **The 'Merge'**: Update the Python Pipeline's `ValueEdgeReject` logic to incorporate whatever 'looser' parameters the fallback was using that contributed to the Sharpe.
+> 4. **Visual Sync:** Once unified, ensure the chart Bullseyes now reflect the ~1400 signals (or whatever subset is valid) so I am finally trading what I see."
 
 
----
 
-## 1. Modular Backtesting Architecture
-
-The system should be decoupled into four primary components that interact through an event loop.
-
-| Component | Responsibility | Existing/New |
-| :--- | :--- | :--- |
-| **Data Engine** | Reads Databento "Trades" schema from **DuckDB**. Streams rows into the event loop one-by-one or in chunks. | **Existing** (Pipeline) |
-| **Regime Classifier** | Processes raw trades to compute `v_rank`, `d_rank`, and `bias_state`. Identifies absorption and sweeps. | **Existing** (Pipeline) |
-| **Strategy Engine** | Consumes regime data and fires. Evaluates entry/exit criteria based on your strategies (e.g., `Breakout`, `Fade`). | **New Logic** |
-| **Simulated Broker** | Tracks virtual capital, manages orders (Market/Limit), applies commissions/slippage, and records P&L. | **New Component** |
-
----
-
-## 2. Technical Implementation Plan
-
-### Phase 1: The Execution Simulator (Backend)
-Instead of just visualizing events, you need a module that can "own" a position.
-* **Order Manager:** Create a Python class in `pipeline/src/orderflow_pipeline/` called `SimulatedBroker`. 
-* **State Tracking:** It must track `current_position`, `entry_price`, `unrealized_pnl`, and `realized_pnl`.
-* **Accounting:** Use **Mark-to-Market** accounting (especially if trading Futures like ES/MES) where cash is updated at every bar/trade tick to reflect available buying power.
-
-### Phase 2: Strategy "Triggers"
-Your requirements already define "Fires" (Breakout, Fade). You need to map these to trade actions:
-* **Entry Logic:** `If fire == "★ Breakout" AND h1_bias == "up" → Market Buy`.
-* **Exit Logic:** Define a `StopLoss` and `TakeProfit` based on the `vwap` or `value_edge` already present in your data schema.
-
-### Phase 3: Reporting & Visualization (Frontend Integration)
-* **DuckDB Storage:** Store backtest results in a new table `backtest_results` with columns: `trade_id`, `entry_time`, `exit_time`, `type`, `pnl`.
-* **Dashboard Update:** Add a "Performance" tab to your `orderflow_dashboard.html` that queries a new `/backtest/stats` endpoint to show:
-    * **Equity Curve:** Cumulative P&L over time.
-    * **Metrics:** Sharpe Ratio, Max Drawdown, and Win Rate.
-
----
-
-## 3. Recommended Prompt for Cursor
-
-Copy and paste the following into Cursor to generate the implementation plan:
-
-> "I want to build an event-driven backtesting engine on top of my existing FastAPI/DuckDB setup.
-> 
-> **Context:**
-> - My data is in DuckDB (1m/15m/1h bars) with order flow events (sweeps, absorption, divergences).
-> - I use Databento 'Trades' schema as the base.
-> 
-> **Requirements:**
-> 1. Create a `backtest_engine.py` that iterates through the `bars` and `events` tables chronologically.
-> 2. Implement a `Strategy` class that can 'subscribe' to the existing `fires` triggers (Breakout, Fade, etc.).
-> 3. Implement a `Broker` simulator that handles market orders, slippage (e.g., 1 tick), and mark-to-market P&L for Futures (ES/MES).
-> 4. Save results to a DuckDB table `backtest_trades`.
-> 5. Create a FastAPI endpoint `/api/backtest/run` that triggers a run and returns a JSON summary of Sharpe Ratio and Max Drawdown.
-> 
-> Please provide a file-by-file implementation plan starting with the `Broker` logic."
-
----
-
-## 4. Key Performance Metrics to Track
-
-To ensure your regime classification is actually working, your backtester should report performance **per regime**:
-
-| Metric | Trending (High V-Rank) | Ranging (Low V-Rank) |
-| :--- | :--- | :--- |
-| **Win Rate** | Target higher for Breakouts | Target higher for Fades |
-| **Avg. Trade Duration** | Usually longer | Usually shorter |
-| **Profit Factor** | Ratio of gross gains to losses | Ratio of gross gains to losses |
-
-### 5. "Backtest Module"
-* Account Simulator: A class to track Cash, PositionSize, and RealizedPnL. 
-* Trade Logger: A DuckDB table to store trade entries and exits (linked to the fires table).
-* Performance Analytics: A Python script (likely in the pipeline/ directory) to calculate the Sharpe Ratio and Drawdowns from the trade log.
-* UI Inputs: A new sidebar component in the dashboard to set your $ Capital, Commission/Tick, and Slippage/Ticks.
-* Equity Chart: A new canvas strip below the volume band to plot the cumulative P&L.
+**Summary:** You aren't losing the Sharpe; you are **extracting the logic** that created it and making it the new "Canonical" standard. You're effectively saying: *"The backtest found a better version of my strategy than I drew on the chart; I'm going to update my chart to match the backtest."*

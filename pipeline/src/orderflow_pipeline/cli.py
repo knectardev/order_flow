@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from .aggregate import (
@@ -34,6 +34,7 @@ from .aggregate import (
 )
 from .decode import iter_trades
 from .serialize import DEFAULT_TUNINGS, write_index, write_session_json
+from .strategies.legacy_fallback_logic import LegacyFallbackConfig, derive_fires_from_bars
 from .symbology import resolve_front_month
 
 # Phase 6: timeframes are processed HTF-first within each session so the
@@ -340,16 +341,43 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
         columns=["bar_time", "timeframe", "price_tick", "volume", "delta"],
     )
 
-    # Empty placeholders with the expected schema (DuckDB can SELECT from a
+    # Empty placeholder with the expected schema (DuckDB can SELECT from a
     # zero-row DataFrame as long as the column names line up).
     events_df = pd.DataFrame(
         columns=["bar_time", "timeframe", "event_type", "direction", "price"]
     )
+    fires_rows: list[dict] = []
+    # Backtest baseline parity lock: keep the original high-Sharpe fallback
+    # parameterization as the canonical pipeline signal engine for now.
+    derived = derive_fires_from_bars(
+        bar_rows,
+        watch_ids={"breakout", "fade", "absorptionWall", "valueEdgeReject"},
+        config=LegacyFallbackConfig(use_regime_filter=True),
+    )
+    for bt, batch in sorted(derived.items(), key=lambda kv: kv[0]):
+        for fire in batch:
+            fires_rows.append(
+                {
+                    "bar_time": bt,
+                    "timeframe": timeframe,
+                    "watch_id": fire["watch_id"],
+                    "direction": fire.get("direction"),
+                    "price": fire["price"],
+                    "outcome": None,
+                    "outcome_resolved_at": None,
+                }
+            )
     fires_df = pd.DataFrame(
+        fires_rows,
         columns=[
-            "bar_time", "timeframe", "watch_id", "direction", "price",
-            "outcome", "outcome_resolved_at",
-        ]
+            "bar_time",
+            "timeframe",
+            "watch_id",
+            "direction",
+            "price",
+            "outcome",
+            "outcome_resolved_at",
+        ],
     )
 
     from . import db as db_module
@@ -435,6 +463,122 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     return cmd_aggregate(args)
 
 
+def _parse_iso_utc(ts: str | None) -> datetime | None:
+    if ts is None or ts == "":
+        return None
+    s = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+def cmd_recompute_fires(args: argparse.Namespace) -> int:
+    import pandas as pd
+
+    from . import db as db_module
+
+    db_path = Path(args.db_path)
+    con = db_module.connect(db_path)
+    db_module.init_schema(con)
+    try:
+        tf = args.timeframe
+        lo = _parse_iso_utc(args.from_)
+        hi = _parse_iso_utc(args.to)
+        if (lo is None) != (hi is None):
+            print("Provide both --from and --to together, or neither.", file=sys.stderr)
+            return 2
+        if lo is None:
+            row = con.execute(
+                "SELECT MIN(bar_time), MAX(bar_time) FROM bars WHERE timeframe = ?",
+                [tf],
+            ).fetchone()
+            if row is None or row[0] is None:
+                print(f"No bars found for timeframe={tf}", file=sys.stderr)
+                return 2
+            lo, hi = row[0], row[1]
+
+        bars = con.execute(
+            """
+            SELECT bar_time, open, high, low, close, volume
+            FROM bars
+            WHERE timeframe = ? AND bar_time BETWEEN ? AND ?
+            ORDER BY bar_time
+            """,
+            [tf, lo, hi],
+        ).fetchall()
+        if not bars:
+            print(f"No bars in window for timeframe={tf}.")
+            return 0
+
+        bar_rows = [
+            {
+                "bar_time": r[0],
+                "open": r[1],
+                "high": r[2],
+                "low": r[3],
+                "close": r[4],
+                "volume": r[5],
+            }
+            for r in bars
+        ]
+        watch_ids = set(args.watch_ids.split(",")) if args.watch_ids else {
+            "breakout",
+            "fade",
+            "absorptionWall",
+            "valueEdgeReject",
+        }
+        derived = derive_fires_from_bars(
+            bar_rows,
+            watch_ids=watch_ids,
+            config=LegacyFallbackConfig(use_regime_filter=bool(args.use_regime_filter)),
+        )
+        fire_rows = []
+        for bt, batch in sorted(derived.items(), key=lambda kv: kv[0]):
+            for f in batch:
+                fire_rows.append(
+                    {
+                        "bar_time": bt,
+                        "timeframe": tf,
+                        "watch_id": f["watch_id"],
+                        "direction": f.get("direction"),
+                        "price": f["price"],
+                        "outcome": None,
+                        "outcome_resolved_at": None,
+                    }
+                )
+
+        con.execute(
+            "DELETE FROM fires WHERE timeframe = ? AND bar_time BETWEEN ? AND ?",
+            [tf, lo, hi],
+        )
+        fires_df = pd.DataFrame(
+            fire_rows,
+            columns=[
+                "bar_time",
+                "timeframe",
+                "watch_id",
+                "direction",
+                "price",
+                "outcome",
+                "outcome_resolved_at",
+            ],
+        )
+        if len(fires_df) > 0:
+            con.execute(
+                """
+                INSERT INTO fires
+                    (bar_time, timeframe, watch_id, direction, price, outcome, outcome_resolved_at)
+                SELECT bar_time, timeframe, watch_id, direction, price, outcome, outcome_resolved_at
+                FROM fires_df
+                """
+            )
+        print(f"Recomputed fires: timeframe={tf} window=[{lo}..{hi}] rows={len(fire_rows)}")
+        return 0
+    finally:
+        con.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="orderflow_pipeline",
@@ -452,6 +596,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_aggregate_args(r, db_path_required=True)
     r.set_defaults(func=cmd_rebuild)
+
+    rf = sub.add_parser(
+        "recompute-fires",
+        help="Recompute canonical fires from bars already in DuckDB.",
+    )
+    rf.add_argument("--db-path", required=True, help="DuckDB file path")
+    rf.add_argument("--timeframe", default="1m", choices=["1m", "15m", "1h"])
+    rf.add_argument("--from", dest="from_", default=None, help="ISO UTC start (optional)")
+    rf.add_argument("--to", default=None, help="ISO UTC end (optional)")
+    rf.add_argument("--watch-ids", default=None, help="Comma list, e.g. breakout,fade")
+    rf.add_argument(
+        "--use-regime-filter",
+        action="store_true",
+        default=True,
+        help="Use locked baseline regime-filtered strategy thresholds (default true).",
+    )
+    rf.set_defaults(func=cmd_recompute_fires)
 
     c = sub.add_parser("calibrate", help="Print distributions + side-by-side detection counts")
     c.add_argument("--bars-dir", required=True, help="Directory containing aggregated bars JSON")

@@ -367,6 +367,7 @@ class BacktestRunRequest(BaseModel):
     tick_size: float = 0.25
     point_value: float = 50.0
     watch_ids: list[str] | None = None
+    use_regime_filter: bool = True
 
 
 # ───────────────────────────────────────────────────────────
@@ -873,6 +874,7 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
                 point_value=payload.point_value,
             ),
             watch_ids=set(watch_ids) if watch_ids else None,
+            use_regime_filter=bool(payload.use_regime_filter),
         )
         return summary
     except ValueError as exc:
@@ -994,6 +996,8 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
                 "watchId": r[1],
                 "entryTime": r[2].strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "exitTime": r[3].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "entryEvent": "ENTRY",
+                "exitEvent": "EXIT",
                 "direction": r[4],
                 "qty": r[5],
                 "entryPrice": r[6],
@@ -1002,6 +1006,53 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
                 "commission": r[9],
                 "netPnl": r[10],
                 "barsHeld": r[11],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/backtest/skipped-fires")
+def get_backtest_skipped_fires(run_id: str | None = Query(default=None, alias="runId")) -> dict:
+    con = _connect()
+    try:
+        rid = run_id
+        if rid is None:
+            latest = con.execute(
+                "SELECT run_id FROM backtest_runs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            rid = latest[0] if latest else None
+        if rid is None:
+            raise HTTPException(status_code=404, detail="No backtest runs found.")
+        rows = con.execute(
+            """
+            SELECT bar_time, watch_id, direction, reason_code, price,
+                   position_side_before, position_size_before, reason_detail_json
+            FROM skipped_fires
+            WHERE run_id = ?
+            ORDER BY bar_time, watch_id
+            """,
+            [rid],
+        ).fetchall()
+    finally:
+        con.close()
+    summary: dict[str, int] = {}
+    for r in rows:
+        rc = str(r[3] or "unknown")
+        summary[rc] = summary.get(rc, 0) + 1
+    return {
+        "runId": rid,
+        "summary": summary,
+        "rows": [
+            {
+                "barTime": r[0].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "watchId": r[1],
+                "direction": r[2],
+                "reasonCode": r[3],
+                "price": r[4],
+                "positionSideBefore": r[5],
+                "positionSizeBefore": r[6],
+                "reasonDetailJson": r[7],
             }
             for r in rows
         ],
@@ -1018,6 +1069,7 @@ def root() -> dict:
             "/timeframes", "/sessions", "/date-range", "/bars", "/events",
             "/fires", "/profile", "/occupancy",
             "/api/backtest/run", "/api/backtest/stats", "/api/backtest/equity", "/api/backtest/trades",
+            "/api/backtest/skipped-fires",
         ],
         "supported_timeframes": list(SUPPORTED_TIMEFRAMES),
     }

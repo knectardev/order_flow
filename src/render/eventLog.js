@@ -180,7 +180,7 @@ function renderEventLog() {
   // ── Build a unified, time-ordered row list (events + canonical fires).
   // Plan §4c-d: fires are clickable rows in the log so they can serve as
   // the brushing entry point alongside chart-fire-halo clicks.
-  const fires = state.replay.mode === 'real' && state.replay.allFires.length
+  const fires = state.replay.mode === 'real'
     ? state.replay.allFires
     : state.canonicalFires;
   const events = state.replay.mode === 'real' && state.replay.allEvents.length
@@ -357,7 +357,7 @@ function bindEventLogClicks() {
     const ms = +fireRow.dataset.fireMs;
     const id = fireRow.dataset.fireId;
     // Find the actual fire object so selectFire can resolve its bar.
-    const fires = state.replay.mode === 'real' && state.replay.allFires.length
+    const fires = state.replay.mode === 'real'
       ? state.replay.allFires
       : state.canonicalFires;
     const fire = fires.find(f => {

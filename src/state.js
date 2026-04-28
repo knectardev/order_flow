@@ -124,6 +124,7 @@ export const state = {
   backtest: {
     runParams: {
       scope: 'all',
+      showMarkers: true,
       initialCapital: 50000,
       commissionPerSide: 2,
       slippageTicks: 1,
@@ -133,6 +134,10 @@ export const state = {
     stats: null,
     equity: [],
     trades: [],
+    compare: {
+      filtered: { runId: null, stats: null, equity: [], trades: [], skipped: { summary: {}, rows: [] } },
+      unfiltered: { runId: null, stats: null, equity: [], trades: [], skipped: { summary: {}, rows: [] } },
+    },
     loading: false,
     error: null,
   },

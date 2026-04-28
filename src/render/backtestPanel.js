@@ -11,7 +11,15 @@ function _setStat(id, value) {
   el.textContent = value;
 }
 
-function _drawEquity(points) {
+function _setDualStat(id, filtered, unfiltered, formatter) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const a = formatter(filtered);
+  const b = formatter(unfiltered);
+  el.innerHTML = `<span class="bt-val teal">${a}</span><span class="bt-val orange">${b}</span>`;
+}
+
+function _drawEquity(pointsA, pointsB) {
   const cv = document.getElementById('backtestEquityChart');
   if (!cv) return;
   const dpr = window.devicePixelRatio || 1;
@@ -31,42 +39,60 @@ function _drawEquity(points) {
   ctx.lineTo(w, h - 0.5);
   ctx.stroke();
 
-  if (!points || points.length < 2) return;
-  const ys = points.map(p => Number(p.equity || 0));
+  const pA = pointsA || [];
+  const pB = pointsB || [];
+  if (pA.length < 2 && pB.length < 2) return;
+  const ys = [...pA, ...pB].map(p => Number(p.equity || 0));
   const lo = Math.min(...ys);
   const hi = Math.max(...ys);
   const span = Math.max(1e-6, hi - lo);
 
-  ctx.strokeStyle = '#21a095';
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = (i / (points.length - 1)) * (w - 1);
-    const y = h - ((Number(p.equity || 0) - lo) / span) * (h - 8) - 4;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
+  const drawLine = (pts, color) => {
+    if (!pts || pts.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = (i / (pts.length - 1)) * (w - 1);
+      const y = h - ((Number(p.equity || 0) - lo) / span) * (h - 8) - 4;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
+
+  drawLine(pA, '#21a095');
+  drawLine(pB, '#d39145');
 }
 
 function renderBacktestPanel() {
-  const stats = state.backtest.stats;
-  const points = state.backtest.equity || [];
+  const f = state.backtest.compare?.filtered || { stats: null, equity: [] };
+  const u = state.backtest.compare?.unfiltered || { stats: null, equity: [] };
   _setStat('btStatRunId', state.backtest.runId || '—');
   _setStat('btStatScope', state.backtest.runParams?.scope || 'all');
-  _setStat('btStatTrades', stats ? String(stats.tradeCount ?? '—') : '—');
-  _setStat('btStatWinRate', stats && stats.winRate != null ? `${(stats.winRate * 100).toFixed(1)}%` : '—');
-  _setStat('btStatSharpe', stats ? _fmtNum(stats.sharpe, 3) : '—');
-  _setStat('btStatMaxDd', stats && stats.maxDrawdown != null ? `${(stats.maxDrawdown * 100).toFixed(2)}%` : '—');
-  _setStat('btStatNetPnl', stats ? _fmtNum(stats.netPnl, 2) : '—');
-  _setStat('btStatEqPoints', String(points.length || 0));
+  _setDualStat('btStatRunId', f.runId, u.runId, (v) => v ? String(v).slice(0, 8) : '—');
+  _setDualStat('btStatTrades', f.stats, u.stats, (s) => s ? String(s.tradeCount ?? '—') : '—');
+  _setDualStat('btStatWinRate', f.stats, u.stats, (s) => (s && s.winRate != null) ? `${(s.winRate * 100).toFixed(1)}%` : '—');
+  _setDualStat('btStatSharpe', f.stats, u.stats, (s) => s ? _fmtNum(s.sharpe, 3) : '—');
+  _setDualStat('btStatMaxDd', f.stats, u.stats, (s) => (s && s.maxDrawdown != null) ? `${(s.maxDrawdown * 100).toFixed(2)}%` : '—');
+  _setDualStat('btStatNetPnl', f.stats, u.stats, (s) => s ? _fmtNum(s.netPnl, 2) : '—');
+  _setDualStat('btStatEqPoints', f.equity, u.equity, (p) => String((p || []).length || 0));
   const statusEl = document.getElementById('backtestStatus');
   if (statusEl) {
     if (state.backtest.loading) statusEl.textContent = 'Running backtest...';
     else if (state.backtest.error) statusEl.textContent = state.backtest.error;
-    else statusEl.textContent = 'Ready';
+    else {
+      const summarize = (summary) => {
+        const entries = Object.entries(summary || {});
+        if (!entries.length) return '0';
+        const total = entries.reduce((s, [, n]) => s + Number(n || 0), 0);
+        const top = entries.sort((a, b) => Number(b[1]) - Number(a[1]))[0];
+        return `${total} skipped (top: ${top[0]})`;
+      };
+      statusEl.textContent = `Ready · ON ${summarize(f.skipped?.summary)} · OFF ${summarize(u.skipped?.summary)}`;
+    }
   }
-  _drawEquity(points);
+  _drawEquity(f.equity || [], u.equity || []);
 }
 
 export { renderBacktestPanel };

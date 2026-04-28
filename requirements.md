@@ -49,6 +49,7 @@ Design intent remains unchanged:
   - `GET /api/backtest/stats`
   - `GET /api/backtest/equity`
   - `GET /api/backtest/trades`
+  - `GET /api/backtest/skipped-fires`
 - API endpoints that return market rows are timeframe-aware (`timeframe` query parameter, default `1m`), and must not mix contexts across timeframes.
 - `/bars`, `/events`, `/fires` payloads include `vwap`, `biasState`, `biasH1`, `bias15m` (camelCase) projected from the persisted columns via `_attach_htf_bias`.
 - Storage: DuckDB (`data/orderflow.duckdb` by default).
@@ -476,7 +477,9 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 ### 14.1 Scope
 
 - The MVP backtester reuses persisted `fires` as strategy triggers (no new signal model).
-- If persisted `fires` are absent in the selected window, the engine derives deterministic fallback breakout/fade proxy signals from bars so backtests still execute.
+- Backtest execution is DB-fire only in production mode; if scoped `fires` are absent in-window, the run fails fast with a clear error.
+- Recovery path: `python -m orderflow_pipeline.cli recompute-fires --db-path <duckdb> --timeframe <tf>` regenerates canonical `fires` from persisted `bars` for the selected window/timeframe without requiring a raw-data rebuild.
+- Compare-mode exception: the **Regime filter OFF** branch derives signals from the same bar window using the extracted legacy strategy with regime gates disabled (`signalSource=derived_no_regime`) so ON vs OFF remains a true A/B test.
 - Execution is single-position and deterministic: one open position max, flip on opposite signal, flatten at the window end.
 - Fire mapping:
   - `breakout`: trade with fire direction.
@@ -501,10 +504,29 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 
 - `POST /api/backtest/run` runs synchronously for a requested timeframe/window and returns run summary (`runId`, `tradeCount`, `winRate`, `sharpe`, `maxDrawdown`, `netPnl`, `endingEquity`).
 - `POST /api/backtest/run` accepts optional `watch_ids` to scope execution to specific canonical watches (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`).
-- `GET /api/backtest/stats`, `/api/backtest/equity`, `/api/backtest/trades` return latest run by default, or a specific run via `runId`.
+- `GET /api/backtest/stats`, `/api/backtest/equity`, `/api/backtest/trades`, `/api/backtest/skipped-fires` return latest run by default, or a specific run via `runId`.
 - Dashboard `Performance` panel includes:
   - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params).
+  - On each run, a two-variant comparison:
+    - **Regime filter ON** (teal): current strategy behavior.
+    - **Regime filter OFF** (orange): same entry/exit logic with regime gating removed.
+  - Metrics cards render both variant values in matching colors, and the equity chart overlays both curves.
+  - Price chart overlays backtest executions for the visible window:
+    - entry marker = triangle
+    - exit marker = X
+    - entry/exit markers include explicit `E` / `X` text labels
+    - markers are offset from candle bodies with a dark halo for visual separation
+    - teal markers = regime-filter ON run
+    - orange markers = regime-filter OFF run
+    - overlay visibility is user-toggleable via `Show trade markers on chart`
+  - Backtest status line includes skipped-fire summaries (ON/OFF) to explain why chart fires did not become entries.
   - Inputs: capital, commission-per-side, slippage ticks.
   - Run action button.
   - Metric cards (Sharpe, max drawdown, win rate, net P&L, trade count).
   - Equity curve canvas rendered from `/api/backtest/equity`.
+
+### 14.5 Skipped Fire Diagnostics
+
+- `skipped_fires` stores one row per non-executed fire candidate keyed by `(run_id, bar_time, watch_id, direction, reason_code)`.
+- Required fields: `reason_code`; optional diagnostics include `price`, `position_side_before`, `position_size_before`, `reason_detail_json`.
+- `backtest_runs.metadata_json` includes a `skipped_fires` reason-count summary for fast run-level diagnostics.

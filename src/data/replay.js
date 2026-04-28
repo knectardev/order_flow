@@ -444,9 +444,36 @@ async function loadEventsForActiveTypes() {
   renderEventInventory();
 }
 
+async function _loadAllFiresFromApi() {
+  state.replay.allFires = [];
+  if (state.replay.mode !== 'real' || !state.replay.apiBase) return;
+  const dr = state.replay.dateRange;
+  if (!dr?.min || !dr?.max) return;
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  const url = `${state.replay.apiBase}/fires?timeframe=${encodeURIComponent(tf)}`
+    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const rows = Array.isArray(data.fires) ? data.fires : [];
+    state.replay.allFires = rows.map(f => ({
+      ...f,
+      barTime: f.barTime || f.time || f.bar_time,
+    }));
+  } catch (e) {
+    console.warn('[orderflow] _loadAllFiresFromApi failed:', e.message);
+    state.replay.allFires = [];
+  }
+}
+
 function precomputeAllFires() {
   if (state.replay.mode !== 'real' || !state.replay.allBars.length) {
     state.replay.allFires = [];
+    return;
+  }
+  if (state.replay.apiBase) {
+    // API-mode source-of-truth is /fires (loaded asynchronously by bootstrap/tf switch).
     return;
   }
   const n = state.replay.allBars.length;
@@ -874,7 +901,7 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
     // Sync seek aborted the async pass (rare); finish at tape end so precompute/events run on full data.
     seek(allBars.length);
   }
-  precomputeAllFires();
+  await _loadAllFiresFromApi();
   await loadEventsForActiveTypes();
   window.dispatchEvent(new CustomEvent('orderflow:replay-ready'));
 }

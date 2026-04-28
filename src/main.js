@@ -2,7 +2,7 @@ import { state } from './state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
 import { bootstrapReplay, setActiveTimeframe } from './data/replay.js';
-import { fetchBacktestEquity, fetchBacktestStats, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
+import { fetchBacktestEquity, fetchBacktestSkippedFires, fetchBacktestStats, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { restoreDisplayStateFromUrl } from './render/eventInventory.js';
@@ -120,12 +120,26 @@ async function refreshBacktestPanel(runId = null) {
     const stats = await fetchBacktestStats(runId);
     state.backtest.stats = stats;
     state.backtest.runId = stats.runId;
-    const [equity, trades] = await Promise.all([
+    const [equity, trades, skipped] = await Promise.all([
       fetchBacktestEquity(stats.runId),
       fetchBacktestTrades(stats.runId),
+      fetchBacktestSkippedFires(stats.runId),
     ]);
     state.backtest.equity = equity.points || [];
     state.backtest.trades = trades.trades || [];
+    state.backtest.compare.filtered = {
+      runId: stats.runId,
+      stats,
+      equity: equity.points || [],
+      trades: trades.trades || [],
+      skipped: {
+        summary: skipped.summary || {},
+        rows: skipped.rows || [],
+      },
+    };
+    state.backtest.compare.unfiltered = {
+      runId: null, stats: null, equity: [], trades: [], skipped: { summary: {}, rows: [] },
+    };
     state.backtest.error = null;
   } catch (_) {
     // No prior run is a normal initial state.
@@ -152,7 +166,18 @@ function bindBacktestUI() {
   const capInput = document.getElementById('btInitialCapital');
   const commInput = document.getElementById('btCommission');
   const slipInput = document.getElementById('btSlippage');
-  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput) return;
+  const markersInput = document.getElementById('btShowMarkers');
+  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !markersInput) return;
+  markersInput.checked = state.backtest.runParams.showMarkers !== false;
+
+  markersInput.addEventListener('change', () => {
+    state.backtest.runParams = {
+      ...state.backtest.runParams,
+      showMarkers: !!markersInput.checked,
+    };
+    drawPriceChart();
+    renderBacktestPanel();
+  });
 
   runBtn.addEventListener('click', async () => {
     if (state.backtest.loading) return;
@@ -160,6 +185,7 @@ function bindBacktestUI() {
     state.backtest.error = null;
     state.backtest.runParams = {
       scope: String(scopeInput.value || 'all'),
+      showMarkers: !!markersInput.checked,
       initialCapital: Number(capInput.value || 50000),
       commissionPerSide: Number(commInput.value || 2),
       slippageTicks: Number(slipInput.value || 1),
@@ -168,7 +194,7 @@ function bindBacktestUI() {
     renderBacktestPanel();
     try {
       const { from, to } = _windowBoundsIso();
-      const run = await runBacktest({
+      const common = {
         from,
         to,
         timeframe: state.activeTimeframe || '1m',
@@ -177,8 +203,39 @@ function bindBacktestUI() {
         commissionPerSide: state.backtest.runParams.commissionPerSide,
         slippageTicks: state.backtest.runParams.slippageTicks,
         qty: state.backtest.runParams.qty,
-      });
-      await refreshBacktestPanel(run.runId);
+      };
+      const [filteredRun, unfilteredRun] = await Promise.all([
+        runBacktest({ ...common, useRegimeFilter: true }),
+        runBacktest({ ...common, useRegimeFilter: false }),
+      ]);
+      const [eqA, eqB, trA, trB, skA, skB] = await Promise.all([
+        fetchBacktestEquity(filteredRun.runId),
+        fetchBacktestEquity(unfilteredRun.runId),
+        fetchBacktestTrades(filteredRun.runId),
+        fetchBacktestTrades(unfilteredRun.runId),
+        fetchBacktestSkippedFires(filteredRun.runId),
+        fetchBacktestSkippedFires(unfilteredRun.runId),
+      ]);
+      state.backtest.runId = filteredRun.runId;
+      state.backtest.stats = filteredRun;
+      state.backtest.equity = eqA.points || [];
+      state.backtest.trades = trA.trades || [];
+      state.backtest.compare.filtered = {
+        runId: filteredRun.runId,
+        stats: filteredRun,
+        equity: eqA.points || [],
+        trades: trA.trades || [],
+        skipped: { summary: skA.summary || {}, rows: skA.rows || [] },
+      };
+      state.backtest.compare.unfiltered = {
+        runId: unfilteredRun.runId,
+        stats: unfilteredRun,
+        equity: eqB.points || [],
+        trades: trB.trades || [],
+        skipped: { summary: skB.summary || {}, rows: skB.rows || [] },
+      };
+      state.backtest.error = null;
+      renderBacktestPanel();
     } catch (err) {
       state.backtest.error = err?.message || 'Backtest failed.';
       renderBacktestPanel();

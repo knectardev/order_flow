@@ -9,7 +9,7 @@ function _scopeToWatchIds(scope) {
   return [scope];
 }
 
-async function runBacktest({ from, to, timeframe, scope, initialCapital, commissionPerSide, slippageTicks, qty }) {
+async function runBacktest({ from, to, timeframe, scope, initialCapital, commissionPerSide, slippageTicks, qty, useRegimeFilter = true }) {
   const watchIds = _scopeToWatchIds(scope);
   const res = await fetch(`${_apiBase()}/api/backtest/run`, {
     method: 'POST',
@@ -23,6 +23,7 @@ async function runBacktest({ from, to, timeframe, scope, initialCapital, commiss
       slippage_ticks: slippageTicks,
       qty,
       watch_ids: watchIds,
+      use_regime_filter: !!useRegimeFilter,
     }),
   });
   if (!res.ok) {
@@ -63,9 +64,19 @@ async function fetchBacktestTrades(runId = null) {
   return res.json();
 }
 
+async function fetchBacktestSkippedFires(runId = null) {
+  const url = runId
+    ? `${_apiBase()}/api/backtest/skipped-fires?runId=${encodeURIComponent(runId)}`
+    : `${_apiBase()}/api/backtest/skipped-fires`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`/api/backtest/skipped-fires ${res.status}`);
+  return res.json();
+}
+
 export {
   runBacktest,
   fetchBacktestStats,
   fetchBacktestEquity,
   fetchBacktestTrades,
+  fetchBacktestSkippedFires,
 };

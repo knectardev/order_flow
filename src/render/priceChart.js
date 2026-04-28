@@ -88,21 +88,11 @@ function _filterFiresByGlossary(fires) {
   return fires.filter(f => f.watchId && state.activeCanonicalFireTypes.has(f.watchId));
 }
 
-/** Merged list for draw: panned = full scan (if any) + live ring buffer; live = ring only. */
+/** Fire list for draw. In API mode, DuckDB /fires is the single source of truth. */
 function _chartFireListForDraw(isPanned) {
   let merged;
   if (state.replay.mode !== 'real') merged = state.canonicalFires;
-  else if (!isPanned) merged = state.canonicalFires;
-  else {
-    const m = new Map();
-    for (const f of state.replay.allFires) {
-      m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
-    }
-    for (const f of state.canonicalFires) {
-      m.set(`${f.watchId}|${_barTimeMs(f.barTime)}`, f);
-    }
-    merged = [...m.values()];
-  }
+  else merged = state.replay.allFires;
   return _filterFiresByGlossary(merged);
 }
 
@@ -752,6 +742,85 @@ function drawPriceChart() {
         pctx.strokeRect(xCenter - candleW/2 - 0.5, top - 0.5, candleW + 1, bodyH + 1);
       }
     }
+  }
+
+  // Backtest trade overlay (latest compare runs): mark entries/exits on visible bars.
+  // Teal = regime filter ON, Orange = regime filter OFF. This gives a direct
+  // visual sanity-check between chart signals and executed trade points.
+  const btFiltered = state.backtest?.compare?.filtered?.trades || [];
+  const btUnfiltered = state.backtest?.compare?.unfiltered?.trades || [];
+  const showBtMarkers = state.backtest?.runParams?.showMarkers !== false;
+  if (showBtMarkers && (btFiltered.length || btUnfiltered.length) && allBars.length) {
+    const idxByMs = new Map();
+    for (let i = 0; i < allBars.length; i++) {
+      idxByMs.set(_barTimeMs(allBars[i].time), i);
+    }
+    const drawTradeMarkers = (trades, color) => {
+      if (!trades || !trades.length) return;
+      for (const t of trades) {
+        const entryMs = Date.parse(t.entryTime);
+        const exitMs = Date.parse(t.exitTime);
+        const entryIdx = idxByMs.get(entryMs);
+        const exitIdx = idxByMs.get(exitMs);
+        let entryPoint = null;
+        let exitPoint = null;
+        if (entryIdx != null) {
+          const x = PAD.l + (entryIdx + 0.5) * slotW;
+          const yBase = yScaleClamped(Number(t.entryPrice));
+          const y = Math.max(PAD.t + 10, yBase - 10);
+          entryPoint = { x, y };
+          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
+          pctx.beginPath();
+          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
+          pctx.fill();
+          pctx.fillStyle = color;
+          pctx.beginPath();
+          pctx.moveTo(x, y - 5.5);
+          pctx.lineTo(x - 4.5, y + 3.5);
+          pctx.lineTo(x + 4.5, y + 3.5);
+          pctx.closePath();
+          pctx.fill();
+          pctx.fillStyle = color;
+          pctx.font = '8px "IBM Plex Mono", monospace';
+          pctx.textAlign = 'left';
+          pctx.fillText('E', x + 7, y + 2);
+        }
+        if (exitIdx != null) {
+          const x = PAD.l + (exitIdx + 0.5) * slotW;
+          const yBase = yScaleClamped(Number(t.exitPrice));
+          const y = Math.min(PAD.t + chartH - 10, yBase + 10);
+          exitPoint = { x, y };
+          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
+          pctx.beginPath();
+          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
+          pctx.fill();
+          pctx.strokeStyle = color;
+          pctx.lineWidth = 1.7;
+          pctx.beginPath();
+          pctx.moveTo(x - 4.4, y - 4.4);
+          pctx.lineTo(x + 4.4, y + 4.4);
+          pctx.moveTo(x + 4.4, y - 4.4);
+          pctx.lineTo(x - 4.4, y + 4.4);
+          pctx.stroke();
+          pctx.fillStyle = color;
+          pctx.font = '8px "IBM Plex Mono", monospace';
+          pctx.textAlign = 'left';
+          pctx.fillText('X', x + 7, y + 2);
+        }
+        if (entryPoint && exitPoint) {
+          pctx.strokeStyle = color.replace('0.95', '0.40');
+          pctx.lineWidth = 1;
+          pctx.setLineDash([3, 3]);
+          pctx.beginPath();
+          pctx.moveTo(entryPoint.x, entryPoint.y);
+          pctx.lineTo(exitPoint.x, exitPoint.y);
+          pctx.stroke();
+          pctx.setLineDash([]);
+        }
+      }
+    };
+    drawTradeMarkers(btFiltered, 'rgba(33, 160, 149, 0.95)');
+    drawTradeMarkers(btUnfiltered, 'rgba(211, 145, 69, 0.95)');
   }
 
   // Volume sub-band — bottom of the price canvas, color-matched to candle direction.

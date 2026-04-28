@@ -331,6 +331,27 @@
     gap: 8px;
     margin-bottom: 10px;
   }
+  .backtest-legend {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .legend-dot.teal { background: #21a095; }
+  .legend-dot.orange { background: #d39145; }
   .backtest-controls label {
     display: flex;
     flex-direction: column;
@@ -359,6 +380,18 @@
   .backtest-controls button {
     grid-column: span 2;
     margin-top: 2px;
+  }
+  .bt-toggle-row {
+    grid-column: span 2;
+    display: inline-flex !important;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-2);
+    font-size: 10px;
+    letter-spacing: 0.2px;
+  }
+  .bt-toggle-row input[type="checkbox"] {
+    accent-color: var(--accent);
   }
   .backtest-metrics {
     display: grid;
@@ -389,6 +422,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .bt-val {
+    display: block;
+    line-height: 1.25;
+  }
+  .bt-val.teal { color: #21a095; }
+  .bt-val.orange { color: #d39145; }
   .backtest-chart-wrap #backtestEquityChart {
     display: block;
     width: 100%;

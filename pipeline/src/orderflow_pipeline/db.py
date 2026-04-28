@@ -204,10 +204,25 @@ _SCHEMA_SQL: tuple[str, ...] = (
         PRIMARY KEY (run_id, bar_time)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS skipped_fires (
+        run_id                VARCHAR    NOT NULL,
+        bar_time              TIMESTAMP  NOT NULL,
+        watch_id              VARCHAR    NOT NULL,
+        direction             VARCHAR,
+        reason_code           VARCHAR    NOT NULL,
+        price                 DOUBLE,
+        position_side_before  INTEGER,
+        position_size_before  INTEGER,
+        reason_detail_json    VARCHAR,
+        PRIMARY KEY (run_id, bar_time, watch_id, direction, reason_code)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_backtest_runs_created ON backtest_runs(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_runs_tf_time ON backtest_runs(timeframe, from_time, to_time)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_trades_run ON backtest_trades(run_id, entry_time)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_equity_run ON backtest_equity(run_id, bar_time)",
+    "CREATE INDEX IF NOT EXISTS idx_skipped_fires_run ON skipped_fires(run_id, bar_time)",
 )
 
 
@@ -388,6 +403,7 @@ def write_backtest_results(
     run_row: dict[str, Any],
     trades: list[dict[str, Any]],
     equity_points: list[dict[str, Any]],
+    skipped_fires: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist one backtest run plus its trades/equity timeline atomically."""
     con.execute("BEGIN TRANSACTION")
@@ -395,6 +411,7 @@ def write_backtest_results(
         con.execute("DELETE FROM backtest_runs WHERE run_id = ?", [run_row["run_id"]])
         con.execute("DELETE FROM backtest_trades WHERE run_id = ?", [run_row["run_id"]])
         con.execute("DELETE FROM backtest_equity WHERE run_id = ?", [run_row["run_id"]])
+        con.execute("DELETE FROM skipped_fires WHERE run_id = ?", [run_row["run_id"]])
 
         con.execute(
             """
@@ -475,6 +492,31 @@ def write_backtest_results(
                         p["realized_pnl"],
                     ]
                     for p in equity_points
+                ],
+            )
+
+        if skipped_fires:
+            con.executemany(
+                """
+                INSERT INTO skipped_fires (
+                    run_id, bar_time, watch_id, direction, reason_code, price,
+                    position_side_before, position_size_before, reason_detail_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    [
+                        s["run_id"],
+                        s["bar_time"],
+                        s["watch_id"],
+                        s.get("direction"),
+                        s["reason_code"],
+                        s.get("price"),
+                        s.get("position_side_before"),
+                        s.get("position_size_before"),
+                        s.get("reason_detail_json"),
+                    ]
+                    for s in skipped_fires
                 ],
             )
 

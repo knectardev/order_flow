@@ -256,7 +256,7 @@ function restoreSelectionFromUrl() {
     if (!raw) return false;
     const ms = Number(raw);
     if (!Number.isFinite(ms)) return false;
-    const fires = state.replay.mode === 'real' && state.replay.allFires.length
+    const fires = state.replay.mode === 'real'
       ? state.replay.allFires
       : state.canonicalFires;
     const match = fires.find(f => {

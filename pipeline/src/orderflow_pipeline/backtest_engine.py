@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
@@ -9,6 +10,7 @@ from uuid import uuid4
 import duckdb
 
 from . import db as db_module
+from .strategies.legacy_fallback_logic import LegacyFallbackConfig, derive_fires_from_bars
 
 
 def _safe_float(v: float | int | None, default: float = 0.0) -> float:
@@ -185,116 +187,16 @@ class BacktestEngine:
         return by_time
 
     @staticmethod
-    def _derive_fires_from_bars(bars: list[dict], watch_ids: set[str] | None = None) -> dict[datetime, list[dict]]:
-        """Fallback signal source when DuckDB `fires` is empty.
-
-        This keeps backtests usable before pipeline-side fire persistence lands.
-        Signals are deterministic and conservative with per-watch cooldown.
-        """
-        if len(bars) < 20:
-            return {}
-
-        out: dict[datetime, list[dict]] = {}
-        cooldown = 4
-        last_idx: dict[tuple[str, str], int] = {}
-
-        def can_emit(watch_id: str, direction: str, idx: int) -> bool:
-            prev = last_idx.get((watch_id, direction))
-            if prev is None:
-                return True
-            return (idx - prev) >= cooldown
-
-        def emit(watch_id: str, direction: str, price: float, idx: int) -> None:
-            last_idx[(watch_id, direction)] = idx
-            ts = bars[idx]["bar_time"]
-            out.setdefault(ts, []).append(
-                {
-                    "bar_time": ts,
-                    "watch_id": watch_id,
-                    "direction": direction,
-                    "price": round(float(price), 6),
-                }
-            )
-
-        for i in range(12, len(bars)):
-            b = bars[i]
-            prev10 = bars[i - 10:i]
-            avg_vol = sum(float(x["volume"]) for x in prev10) / len(prev10)
-            recent_high = max(float(x["high"]) for x in prev10)
-            recent_low = min(float(x["low"]) for x in prev10)
-            recent_close_mean = sum(float(x["close"]) for x in prev10) / len(prev10)
-            close = float(b["close"])
-            open_ = float(b["open"])
-            high = float(b["high"])
-            low = float(b["low"])
-            vol = float(b["volume"])
-            rng = max(1e-9, high - low)
-
-            # Breakout proxy: fresh extreme + volume expansion.
-            if (watch_ids is None) or ("breakout" in watch_ids):
-                if high > recent_high and vol > (avg_vol * 1.65):
-                    if can_emit("breakout", "up", i):
-                        emit("breakout", "up", high, i)
-                elif low < recent_low and vol > (avg_vol * 1.65):
-                    if can_emit("breakout", "down", i):
-                        emit("breakout", "down", low, i)
-
-            # Fade proxy: 3-bar stretch from rolling close mean and stalling.
-            closes10 = [float(x["close"]) for x in prev10]
-            mean_close = sum(closes10) / len(closes10)
-            var = sum((x - mean_close) ** 2 for x in closes10) / max(1, len(closes10) - 1)
-            sigma = var ** 0.5
-            if sigma <= 0:
-                continue
-            last3 = [float(x["close"]) for x in bars[i - 2:i + 1]]
-            prev_close = float(bars[i - 1]["close"])
-            if (watch_ids is None) or ("fade" in watch_ids):
-                if all(x > mean_close + (1.0 * sigma) for x in last3) and close < prev_close:
-                    if can_emit("fade", "down", i):
-                        emit("fade", "down", close, i)
-                elif all(x < mean_close - (1.0 * sigma) for x in last3) and close > prev_close:
-                    if can_emit("fade", "up", i):
-                        emit("fade", "up", close, i)
-
-            # Absorption Wall proxy:
-            #   - volume spike
-            #   - small body (stalling auction)
-            #   - bar closes near rolling mean area
-            if (watch_ids is None) or ("absorptionWall" in watch_ids):
-                body = abs(close - open_)
-                near_mean = abs(close - recent_close_mean) <= (0.35 * max(0.25, sigma))
-                if vol > (avg_vol * 1.25) and body <= (0.40 * rng) and near_mean:
-                    direction = "down" if close >= open_ else "up"
-                    if can_emit("absorptionWall", direction, i):
-                        emit("absorptionWall", direction, close, i)
-
-            # Value Edge Reject proxy:
-            #   - probe prior 10-bar extreme
-            #   - close back inside prior range
-            #   - rejection wick shape
-            #   - normal (not spike) participation
-            if (watch_ids is None) or ("valueEdgeReject" in watch_ids):
-                vol_ratio = vol / avg_vol if avg_vol > 0 else 1.0
-                normal_vol = 0.8 <= vol_ratio <= 1.2
-                close_inside = recent_low < close < recent_high
-                upper_reject = (
-                    high >= recent_high and
-                    close_inside and
-                    (high - close) > max(0.0, close - open_)
-                )
-                lower_reject = (
-                    low <= recent_low and
-                    close_inside and
-                    (close - low) > max(0.0, open_ - close)
-                )
-                if normal_vol and upper_reject:
-                    if can_emit("valueEdgeReject", "down", i):
-                        emit("valueEdgeReject", "down", close, i)
-                elif normal_vol and lower_reject:
-                    if can_emit("valueEdgeReject", "up", i):
-                        emit("valueEdgeReject", "up", close, i)
-
-        return out
+    def _derive_fires_from_bars(
+        bars: list[dict],
+        watch_ids: set[str] | None = None,
+        use_regime_filter: bool = True,
+    ) -> dict[datetime, list[dict]]:
+        return derive_fires_from_bars(
+            bars,
+            watch_ids=watch_ids,
+            config=LegacyFallbackConfig(use_regime_filter=use_regime_filter),
+        )
 
     @staticmethod
     def _signal_side(watch_id: str, direction: str | None) -> int | None:
@@ -348,16 +250,53 @@ class BacktestEngine:
         to_time: datetime,
         config: BrokerConfig,
         watch_ids: set[str] | None = None,
+        use_regime_filter: bool = True,
     ) -> dict:
         bars = self._load_bars(timeframe, from_time, to_time)
         if not bars:
             raise ValueError("No bars in requested window.")
-        fires_by_time = self._load_fires(timeframe, from_time, to_time, watch_ids=watch_ids)
-        used_fallback = False
-        if not fires_by_time:
-            fires_by_time = self._derive_fires_from_bars(bars, watch_ids=watch_ids)
-            used_fallback = True
+        signal_source = "db"
+        if use_regime_filter:
+            fires_by_time = self._load_fires(timeframe, from_time, to_time, watch_ids=watch_ids)
+            if not fires_by_time:
+                scope = sorted(watch_ids) if watch_ids else ["all"]
+                raise ValueError(
+                    "No DB fires in requested window/scope. Rebuild pipeline fires first "
+                    f"(scope={scope}, timeframe={timeframe})."
+                )
+        else:
+            # Compare-path behavior: run the exact extracted strategy logic
+            # with regime gates disabled so ON/OFF produce genuinely distinct
+            # fire streams while keeping the same bar inputs and broker logic.
+            fires_by_time = self._derive_fires_from_bars(
+                bars,
+                watch_ids=watch_ids,
+                use_regime_filter=False,
+            )
+            signal_source = "derived_no_regime"
+            if not fires_by_time:
+                scope = sorted(watch_ids) if watch_ids else ["all"]
+                raise ValueError(
+                    "No derived fires in requested window/scope for regime-filter OFF "
+                    f"(scope={scope}, timeframe={timeframe})."
+                )
         broker = SimulatedBroker(config)
+        skipped_fires: list[dict] = []
+
+        def log_skip(fire: dict, reason_code: str, detail: dict | None = None) -> None:
+            pos = broker.position
+            skipped_fires.append(
+                {
+                    "bar_time": fire["bar_time"],
+                    "watch_id": fire.get("watch_id") or "unknown",
+                    "direction": fire.get("direction"),
+                    "reason_code": reason_code,
+                    "price": float(fire.get("price")) if fire.get("price") is not None else None,
+                    "position_side_before": pos.side if pos else None,
+                    "position_size_before": pos.qty if pos else None,
+                    "reason_detail_json": json.dumps(detail or {}),
+                }
+            )
 
         for idx, bar in enumerate(bars):
             ts = bar["bar_time"]
@@ -365,6 +304,7 @@ class BacktestEngine:
             for fire in fire_batch:
                 side = self._signal_side(fire["watch_id"], fire.get("direction"))
                 if side is None:
+                    log_skip(fire, "invalid_direction")
                     continue
                 if not broker.has_open_position():
                     broker.open_position(ts, _safe_float(fire.get("price"), _safe_float(bar.get("close"))), side, fire["watch_id"], idx)
@@ -372,6 +312,8 @@ class BacktestEngine:
                 if broker.position and broker.position.side != side:
                     broker.close_position(ts, _safe_float(fire.get("price"), _safe_float(bar.get("close"))), "flip", idx)
                     broker.open_position(ts, _safe_float(fire.get("price"), _safe_float(bar.get("close"))), side, fire["watch_id"], idx)
+                    continue
+                log_skip(fire, "already_in_position_same_side")
             broker.mark_to_market(ts, _safe_float(bar.get("close")))
 
         last_bar = bars[-1]
@@ -390,6 +332,7 @@ class BacktestEngine:
 
         run_id = str(uuid4())
         created_at = datetime.utcnow()
+        skip_counts = Counter([s["reason_code"] for s in skipped_fires])
 
         run_row = {
             "run_id": run_id,
@@ -413,17 +356,26 @@ class BacktestEngine:
                     "bars": len(bars),
                     "fires": sum(len(v) for v in fires_by_time.values()),
                     "watch_ids": sorted(watch_ids) if watch_ids else ["all"],
-                    "fire_source": "fallback" if used_fallback else "db",
+                    "fire_source": signal_source,
+                    "use_regime_filter": bool(use_regime_filter),
+                    "skipped_fires": dict(skip_counts),
                 }
             ),
         }
         trade_rows = [{**t, "run_id": run_id} for t in closed]
+        skipped_rows = [{**s, "run_id": run_id} for s in skipped_fires]
         # Guard against duplicate timestamps (e.g. final flatten + mark in same bar).
         eq_by_time: dict[datetime, dict] = {}
         for p in broker.equity_curve:
             eq_by_time[p["bar_time"]] = p
         equity_rows = [{**p, "run_id": run_id} for _, p in sorted(eq_by_time.items(), key=lambda kv: kv[0])]
-        db_module.write_backtest_results(self.con, run_row, trade_rows, equity_rows)
+        db_module.write_backtest_results(
+            self.con,
+            run_row,
+            trade_rows,
+            equity_rows,
+            skipped_fires=skipped_rows,
+        )
         return {
             "runId": run_id,
             "timeframe": timeframe,
@@ -437,5 +389,7 @@ class BacktestEngine:
             "initialCapital": config.initial_capital,
             "endingEquity": end_equity,
             "scope": sorted(watch_ids) if watch_ids else ["all"],
-            "signalSource": "fallback" if used_fallback else "db",
+            "signalSource": signal_source,
+            "useRegimeFilter": bool(use_regime_filter),
+            "skippedFires": dict(skip_counts),
         }
