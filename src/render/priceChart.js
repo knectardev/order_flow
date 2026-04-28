@@ -761,14 +761,18 @@ function drawPriceChart() {
     const yMid = yScale((bar.high + bar.low) / 2);
     const haloR = Math.max(10, slotW * 0.7);
 
-    // Color by watch type. Breakout = amber (warn). Fade = blue (absorb).
+    // Color by watch type. Breakout = amber. Fade = blue. Absorption Wall = indigo.
     const isFade = fire.watchId === 'fade';
+    const isAbsorptionWall = fire.watchId === 'absorptionWall';
     const isSel = state.selection.kind === 'fire' && state.selection.fireBarTime
       && ft === state.selection.fireBarTime;
-    const ringMain = isFade ? 'rgba(107, 140, 206, 0.55)' : 'rgba(212, 160, 74, 0.55)';
-    const ringDim  = isFade ? 'rgba(107, 140, 206, 0.22)' : 'rgba(212, 160, 74, 0.22)';
-    const glyphCol = isFade ? 'rgba(107, 140, 206, 0.95)' : 'rgba(212, 160, 74, 0.95)';
-    const glyph = isFade ? '◆' : '★';
+    const ringMain = isFade ? 'rgba(107, 140, 206, 0.55)'
+      : isAbsorptionWall ? 'rgba(95, 115, 200, 0.55)' : 'rgba(212, 160, 74, 0.55)';
+    const ringDim  = isFade ? 'rgba(107, 140, 206, 0.22)'
+      : isAbsorptionWall ? 'rgba(95, 115, 200, 0.22)' : 'rgba(212, 160, 74, 0.22)';
+    const glyphCol = isFade ? 'rgba(107, 140, 206, 0.95)'
+      : isAbsorptionWall ? 'rgba(110, 130, 210, 0.95)' : 'rgba(212, 160, 74, 0.95)';
+    const glyph = isFade ? '◆' : isAbsorptionWall ? '🛡' : '★';
 
     // Outer warm ring
     pctx.strokeStyle = ringMain;
@@ -801,7 +805,11 @@ function drawPriceChart() {
     pctx.fillStyle = glyphCol;
     pctx.font = '11px "IBM Plex Mono", monospace';
     pctx.textAlign = 'center';
-    pctx.fillText(glyph, xCenter, yScale(bar.high) - 8);
+    // 🛡: pin to the bar’s push extreme (high = bid-into offer / up impulse, low = down).
+    const yGlyph = isAbsorptionWall
+      ? (bar.close >= bar.open ? yScale(bar.high) - 8 : yScale(bar.low) + 12)
+      : yScale(bar.high) - 8;
+    pctx.fillText(glyph, xCenter, yGlyph);
 
     // Phase 6 follow-up: directional tail on fade diamonds. A fade fire's
     // trade direction is the *opposite* of the stretch (up = mean-revert
@@ -814,11 +822,11 @@ function drawPriceChart() {
     // engine populated `canonical.direction`). Breakouts keep the bare
     // star: their direction trivially follows the underlying sweep, so
     // the extra glyph would just add chart noise.
-    if (isFade && (fire.direction === 'up' || fire.direction === 'down')) {
+    if ((isFade || isAbsorptionWall) && (fire.direction === 'up' || fire.direction === 'down')) {
       const arrow = fire.direction === 'up' ? '↑' : '↓';
       pctx.font = '9px "IBM Plex Mono", monospace';
       pctx.textAlign = 'left';
-      pctx.fillText(arrow, xCenter + 6, yScale(bar.high) - 8);
+      pctx.fillText(arrow, xCenter + 6, yGlyph);
     }
 
     // Hit-test entry for tooltip + click-to-open-modal.

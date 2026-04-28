@@ -16,7 +16,7 @@
 // diagnostic.
 // ───────────────────────────────────────────────────────────
 import { state } from '../state.js';
-import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { computeMatrixScores } from '../analytics/regime.js';
 import { renderMatrix } from '../render/matrix.js';
 
@@ -159,7 +159,8 @@ function repaintMatrix() {
     : computeMatrixScores();
   const breakout = evaluateBreakoutCanonical();
   const fade     = evaluateFadeCanonical();
-  renderMatrix(breakout, fade);
+  const absorptionWall = evaluateAbsorptionWallCanonical();
+  renderMatrix(breakout, fade, absorptionWall);
 }
 
 function bindMatrixRangeUI() {

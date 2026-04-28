@@ -1,6 +1,6 @@
 import { MAX_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
-import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { _syncCurrentSession, precomputeAllFires } from '../data/replay.js';
 import { renderMatrix } from '../render/matrix.js';
@@ -67,7 +67,8 @@ function _refreshMatrixForView() {
     state.matrixScores = computeMatrixScores();
     const b = evaluateBreakoutCanonical();
     const f = evaluateFadeCanonical();
-    renderMatrix(b, f);
+    const a = evaluateAbsorptionWallCanonical();
+    renderMatrix(b, f, a);
     return;
   }
 
@@ -120,7 +121,8 @@ function _refreshMatrixForView() {
   state.sim.depthState = savedDepth;
   const b = evaluateBreakoutCanonical();
   const f = evaluateFadeCanonical();
-  renderMatrix(b, f);
+  const a = evaluateAbsorptionWallCanonical();
+  renderMatrix(b, f, a);
 
   // Restore live render state for the next live tick.
   state.trail.length = 0;

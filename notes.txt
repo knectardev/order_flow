@@ -1,71 +1,32 @@
-BAckground: 
-
-The **"Exhaustion Absorption" (or Absorption Bounce)** is not just a logical addition; it is arguably more essential to a professional-grade dashboard than the current "Breakout" fire.
-
-While **Breakouts** (Volatility + Low Depth) are exciting to watch, they are often low-probability "traps" in the ES. **Absorption** (Volatility + High Depth) is the institutional "footprint" of a reversal. Adding this as a third canonical watch completes the "Microstructure Trinity":
-
-1.  **FADE:** Mean reversion based on exhaustion (Price/Volume divergence).
-2.  **BREAKOUT:** Momentum based on a liquidity void (High Vol + Low Depth).
-3.  **ABSORPTION (New):** Support/Resistance based on institutional passive walls (High Vol + High Depth).
-
-
-
-### 1. Integration with Your Current Build
-This setup fits perfectly into your existing **5x5 Regime Matrix** and `Watch` architecture. Here is how you would define the logic gates in your `requirements.md` framework:
-
-* **Regime Coordinate:** Targeted at the **Top-Right** of the matrix (Row 4-5: High Volatility | Col 4-5: Deep/Heavy Depth).
-* **The "Fire" Trigger:** A specific **Vector Shift**. The event should fire when the matrix moves horizontally from the **Top-Left** (Regime 4,0) to the **Top-Right** (Regime 4,4) while price is stalled at a structural level (VWAP, VAH, or VAL).
-* **Visual Glyph:** In your UI, this could be represented by a **"Wall" icon ( 🧱 )** or a **"Shield" icon ( 🛡️ )** on the chart, indicating that aggressive selling/buying has met a limit-order wall.
-
-### 2. Why ES Data Makes This "Fire" More Meaningful
-Now that you are switching to **ES data**, this event becomes your most "alpha-heavy" signal.
-* **In MES:** You might miss the "wall" because institutional limit orders are placed on the ES book.
-* **In ES:** You will see the **Depth Proxy** (Large Prints) spike at a specific price level. When $V$ (Volatility) is high but $P$ (Price) stops moving, and the matrix shifts to "Deep," you have a mathematically backed high-probability reversal.
-
-### 3. Proposed Logic for the "Absorption Watch"
-You can add this to your `requirements.md` under a new section, **§8.10**:
-
-| Criteria | Condition | Reasoning |
-| :--- | :--- | :--- |
-| **VolState** | $\ge 4$ (Top Row) | High velocity/intensity is required to prove "Exhaustion." |
-| **DepthState** | $\ge 4$ (Far Right) | Proves that passive liquidity has "stepped in" to stop the move. |
-| **Price Action** | $|\Delta Price| < 2$ ticks | Price must be "stalled" or "grinding" despite the high volume. |
-| **Context** | Near VAH/VAL/VWAP | Structural levels provide the "reason" for the absorption to occur. |
-
-### 4. Implementation Concerns
-* **The "Jitter" Problem:** High-volatility absorption is chaotic. Your "Confidence Sigmoid" (§7.4) will be critical here. You don't want the "Wall" icon to flicker. You might need a **"Sticky Fire"**—once absorption is detected at a level, the icon stays for 3–5 bars to allow the user to see the result.
-* **Visualizing the "Wall":** On your Volume Profile (§10), you could highlight the specific price bin where the absorption fire occurred with a unique color (e.g., a bright "Institutional Blue") to show where the "brakes were slammed on."
-
-### Final Verdict:
-**Yes, build it.** It transforms the dashboard from a "momentum tracker" into a "reversal hunter." Since you're using ES, this will be the most "accurate" event your dashboard detects, as it captures the core interaction of the ES market: **huge passive liquidity absorbing aggressive flow.**
-
-Act as a Senior Frontend Engineer specialized in Market Microstructure. We are adding a third canonical watch to our Order Flow Dashboard: the "Absorption Wall" (🛡️).
+Act as a Senior Market Microstructure Engineer. We are adding a fourth canonical watch: the "Value Edge Rejection" (🎯). This watch targets high-frequency mean reversion setups when price overextends past the Value Area but lacks the momentum to break out.
 
 ### 1. Goal
-Implement the 'Absorption Wall' event logic, which detects when high-volatility price action meets institutional passive liquidity, resulting in price stalling despite high volume.
+Implement the 'Value Edge Rejection' watch logic. This captures the "Rubber Band" snap-back effect from the VAH/VAL toward the POC.
 
-### 2. Logic Implementation (update relevant detection functions)
-Add a new watch object `ABSORPTION_WALL` to the `WATCHES` constant:
-- **ID:** 'absorption'
-- **Target Regime:** Row 4 or 5 (High Vol), Col 4 or 5 (Deep Depth).
-- **Trigger Criteria:**
-    1. VolState >= 4 AND DepthState >= 4.
-    2. Price Stalling: The absolute difference between the current price and the previous bar's close must be < 1.5 ticks.
-    3. Volume Confirmation: Current bar volume must be > 1.5x the rolling average (or Z-score > 1.5).
-    4. Context: Price must be within 3 ticks of the current session VWAP, VAH, or VAL.
+### 2. Configuration (Add to constants.js)
+Define `VALUE_REJECT_CELL`:
+- **volState:** 2 or 3 (Active or Steady). We want "normal" participation, not a climactic crash.
+- **depthState:** 2 or 3 (Normal or Deep). We want a healthy book that can facilitate a return to mean.
+- **Tuning Defaults:**
+    - `valueRejectLevelTicks`: 4 (Must be very close to the edge).
+    - `valueRejectDeltaDivergence`: true (Requires price to be at a high/low while Delta is neutral or reversing).
 
-### 3. UI & Visuals
-- **Glyph:** Use the Shield emoji (🛡️) or a Brick Wall (🧱) as the event marker.
-- **Layering:** Ensure the marker is placed exactly at the bar's High (if price was rising into the wall) or Low (if falling into it).
-- **Matrix Mapping:** Add the 'Watched Cell' styling (persistent stripe + corner mark) to the (4,4) cell in the Regime Matrix to represent this new watch.
-- **Banner Color:** Use a distinct "Institutional Blue" or "Deep Indigo" for the fire banner.
+### 3. Logic Implementation (canonical.js)
+Create `evaluateValueEdgeReject()`. It must pass 5 gates:
+1. **Regime Gate:** `volState` is 2-3 AND `depthState` is 2-3.
+2. **Proximity Gate:** Last settled bar's Close is within 4 ticks of VAH (Value Area High) or VAL (Value Area Low).
+3. **Rejection Gate:** - If at VAH: The bar must have a "wick" on top (High - Close > Close - Open).
+    - If at VAL: The bar must have a "wick" on bottom (Close - Low > Open - Close).
+4. **Volume Gate:** Volume is within 0.8x to 1.2x of the 10-bar average (we want "standard" volume, not a spike).
+5. **Alignment:** Use `buildAlignment(..., 'fade')` logic. We are fading the edge, so we want the HTF context to suggest the market is in a "ranging" or "balanced" state.
 
-### 4. Technical Integration
-- Update `checkWatches()` to iterate through this new third watch.
-- Ensure `lastFiredWatch` and the `Details` modal handle the 'absorption' type.
-- Add a description to the "Fire Details" modal explaining that this represents aggressive market orders being absorbed by a passive limit-order wall at a structural level.
+### 4. UI & Visuals
+- **Glyph:** Use the Target emoji (🎯) or an Arrow Curve (↩️).
+- **Placement:** Place at the VAH/VAL boundary where the rejection occurred.
+- **Matrix Mapping:** Highlight the (2,2) and (3,3) "Middle" cells as the watched territory for this strategy.
+- **Banner Color:** Use a "Forest Green" or "Success Teal" to indicate a high-probability structural setup.
 
-### 5. Constraints
-- Do not break the existing FADE or BREAKOUT logic.
-- Ensure the "Confidence Sigmoid" logic remains applied to the matrix illumination.
-- Use the provided ES tick-size (0.25) for price-stalling calculations.
+### 5. Integration
+- Update `checkWatches()` to include `VALUE_EDGE_REJECT`.
+- Ensure the 'Details' modal explains that this is a "Balance-based Mean Reversion" targeting a return to the Point of Control (POC).
+- Ensure the `direction` returned is always toward the POC (Down if at VAH, Up if at VAL).

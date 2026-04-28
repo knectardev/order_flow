@@ -32,11 +32,30 @@ export const FADE_CELL = {
   volState: 2, depthState: 2,
   name: 'Active · Normal',
 };
+// ABSORPTION WALL: label cell [Climactic · Stacked]. Regime for fires is wider
+// (see isAbsorptionWallRegime): Deep+ book, Active+ vol.
+export const ABSORPTION_WALL_CELL = {
+  r: 0, c: 4,
+  volState: 4, depthState: 4,
+  name: 'Climactic · Stacked',
+};
+
+/**
+ * "Hybrid" book depth: **Deep (3) or Stacked (4)** — not only the far column —
+ * with **Active+** volatility (2..4). Highest hit-rate lift vs Stacked-only.
+ */
+export function isAbsorptionWallRegime(volState, depthState) {
+  return depthState >= 3 && volState >= 2;
+}
 // Backward-compatible alias for any straggling references.
 export const WATCHED_CELL = BREAKOUT_CELL;
 
 export const BREAKOUT_LABELS = { cell: 'cell', sweep: 'sweep', flow: 'flow', clean: 'clean', alignment: 'HTF align' };
 export const FADE_LABELS     = { balanced: 'balance', cell: 'cell', stretchPOC: 'POC stretch', stretchVWAP: 'VWAP stretch', noMomentum: 'momentum', alignment: 'HTF align' };
+export const ABSORPTION_WALL_LABELS = { cell: 'cell', stall: 'stall', volume: 'volume', level: 'VWAP/VA', alignment: 'HTF align' };
+
+/** ES / MES minimum price increment (for tick-based stall/level gates). */
+export const ES_MIN_TICK = 0.25;
 
 // ───────────────────────────────────────────────────────────
 // Synthetic-default detection thresholds — match the inline numbers in
@@ -65,6 +84,22 @@ const _BASE_TUNINGS_1M = {
    * When omitted, `eventCooldownBars` is used.
    */
   fireCooldownBars:    4,
+  /**
+   * Absorption Wall: last bar volume > this × mean volume of prior bars (up to 10).
+   * 1.15 captures smaller walls (notes); raise toward 1.3+ if too chatty in RTH.
+   */
+  absorptionWallVolMult:   1.15,
+  /** Max |close − prev close| in ticks — ES often "vibrates" a few ticks in absorption. */
+  absorptionWallStallTicks: 4.5,
+  /** Max |close − open| in ticks for in-bar indecision (OR'd with close-to-close stall). */
+  absorptionWallStallBodyTicks: 3.5,
+  /**
+   * With ≥11 settled bars: stall also requires (high−low) > this × mean prior-10
+   * bar range, so wick+unchanged close counts as "energy" and flat inside bars do not.
+   */
+  absorptionWallStallMinRangeMult: 0.25,
+  /** Bar close must be within this many ticks of VWAP, VAH, VAL, or POC (wider = vacuum). */
+  absorptionWallLevelTicks: 15,
 };
 
 export const SYNTH_TUNINGS_BY_TF = {

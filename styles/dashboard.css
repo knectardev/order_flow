@@ -16,6 +16,8 @@
     --down-dim: #7a363c;
     --warn: #d4a04a;
     --absorb: #6b8cce;
+    /* Absorption Wall canonical (distinct from --absorb / fade) */
+    --indigo-fire: #5b6fc9;
     --sweep: #b07ac9;
     --stop: #d4634a;
     --neutral: #4a5266;
@@ -466,6 +468,7 @@
   .chart-tooltip.variant-diverge  { border-left: 2px solid var(--warn);   }
   .chart-tooltip.variant-breakout { border-left: 2px solid var(--warn);   }
   .chart-tooltip.variant-fade     { border-left: 2px solid var(--absorb); }
+  .chart-tooltip.variant-absorption-wall { border-left: 2px solid var(--indigo-fire); }
 
   /* "Live edge" button — visible only when chart is panned away from the cursor. */
   .live-edge-btn {
@@ -758,6 +761,17 @@
     z-index: 1;
   }
   .matrix-cell.watched-fade .watch-mark { opacity: 0.65; color: var(--absorb); }
+  .matrix-cell.watched-absorption-wall::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--indigo-fire);
+    opacity: 0.6;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .matrix-cell.watched-absorption-wall .watch-mark { opacity: 0.65; color: var(--indigo-fire); }
 
   /* Brushed selection (regime-DB plan §4b). Matrix cells in
      state.selection.cells get a visible border + inset glow so the
@@ -994,6 +1008,7 @@
   .event-row-fire:hover { background: rgba(33, 160, 149, 0.05); }
   .event-row-fire.fire-breakout .glyph { color: var(--warn); }
   .event-row-fire.fire-fade     .glyph { color: var(--absorb); }
+  .event-row-fire.fire-absorption-wall .glyph { color: var(--indigo-fire); }
 
   /* Canonical Watch section */
   .watch-section { border-color: rgba(212, 160, 74, 0.18); }
@@ -1240,6 +1255,26 @@
   .fire-banner.fade-variant button.fire-details-btn:hover {
     background: rgba(107, 140, 206, 0.12);
   }
+  /* Absorption Wall: deep indigo banner */
+  .fire-banner.absorption-wall-variant {
+    background: linear-gradient(90deg, rgba(80, 96, 200, 0.16), rgba(80, 96, 200, 0.05));
+    border-color: rgba(100, 120, 220, 0.5);
+  }
+  .fire-banner.absorption-wall-variant .fire-icon { color: var(--indigo-fire); }
+  .fire-banner.absorption-wall-variant .fire-text strong { color: var(--indigo-fire); }
+  .fire-banner.absorption-wall-variant button {
+    background: rgba(91, 111, 201, 0.9);
+    color: #0a0e14;
+  }
+  .fire-banner.absorption-wall-variant button:hover { background: var(--indigo-fire); }
+  .fire-banner.absorption-wall-variant button.fire-details-btn {
+    color: var(--indigo-fire);
+    border-color: rgba(100, 120, 220, 0.55);
+    background: transparent;
+  }
+  .fire-banner.absorption-wall-variant button.fire-details-btn:hover {
+    background: rgba(100, 120, 220, 0.12);
+  }
 
   /* Modal system — overlay + panel for glossary-triggered detail views */
   .modal-overlay {
@@ -1278,6 +1313,7 @@
   }
   .modal-panel.variant-breakout { border-color: rgba(212, 160, 74, 0.35); }
   .modal-panel.variant-fade     { border-color: rgba(107, 140, 206, 0.35); }
+  .modal-panel.variant-absorption-wall { border-color: rgba(100, 120, 200, 0.4); }
   .modal-panel.variant-sweep    { border-color: rgba(176, 122, 201, 0.35); }
   .modal-panel.variant-absorb   { border-color: rgba(107, 140, 206, 0.35); }
   .modal-panel.variant-stop     { border-color: rgba(212, 99, 74, 0.35); }
@@ -1303,6 +1339,7 @@
   .modal-title .modal-name { color: var(--text); }
   .variant-breakout .modal-name { color: var(--warn); }
   .variant-fade     .modal-name { color: var(--absorb); }
+  .variant-absorption-wall .modal-name { color: var(--indigo-fire); }
   .variant-sweep    .modal-name { color: var(--sweep); }
   .variant-absorb   .modal-name { color: var(--absorb); }
   .variant-stop     .modal-name { color: var(--stop); }
@@ -1330,6 +1367,7 @@
   }
   .variant-breakout .modal-meta-num { color: var(--warn); }
   .variant-fade     .modal-meta-num { color: var(--absorb); }
+  .variant-absorption-wall .modal-meta-num { color: var(--indigo-fire); }
 
   .watch-snapshot-hint {
     font-size: 10.5px;

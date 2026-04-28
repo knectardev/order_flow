@@ -1,6 +1,6 @@
-import { BREAKOUT_CELL, FADE_CELL, FORMING_STEPS, MAX_BARS, TRAIL_LEN } from '../config/constants.js';
+import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, FADE_CELL, FORMING_STEPS, MAX_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
-import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
 import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldownBars, isCanonicalFireRepeatTooSoon } from '../analytics/events.js';
 import { computeMatrixScores } from '../analytics/regime.js';
 import { _commitRealBar, _renderReplayChrome, _syncCurrentSession } from '../data/replay.js';
@@ -8,7 +8,7 @@ import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
-import { renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
 import { evolveSimState, generateBar } from './synthetic.js';
 import { pauseForFire } from '../ui/fireBanner.js';
 import { _refreshMatrixForView } from '../ui/pan.js';
@@ -49,10 +49,12 @@ function step() {
   // reflect the live state including the unsettled forming bar.)
   const breakoutCanonical = evaluateBreakoutCanonical();
   const fadeCanonical     = evaluateFadeCanonical();
+  const absorptionWallCanonical = evaluateAbsorptionWallCanonical();
 
   if (state.replay.mode !== 'real') {
     handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, null);
     handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, null);
+    handleWatchFire('absorptionWall', absorptionWallCanonical, state.absorptionWallWatch, ABSORPTION_WALL_CELL, null);
   }
 
   // Render
@@ -61,9 +63,10 @@ function step() {
     `${state.bars.length} ${state.replay.mode === 'real' ? 'shown' : 'bars'} · last ${state.formingBar ? 'forming' : 'settled'}`;
   drawPriceChart();
   drawFlowChart();
-  renderMatrix(breakoutCanonical, fadeCanonical);
+  renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical);
   renderBreakoutWatch(breakoutCanonical);
   renderFadeWatch(fadeCanonical);
+  renderAbsorptionWallWatch(absorptionWallCanonical);
   renderEventLog();
   if (state.replay.mode === 'real') _renderReplayChrome();
   // If the user is panned over history while streaming, override the live
@@ -182,7 +185,11 @@ function handleWatchFire(watchId, canonical, watchState, cellDef, sessionStartId
     // Suppress pause/banner during seek/precompute — we want to record the
     // fire but not interrupt the user's scrub.
     if (state.seekInProgress) return;
-    const toggleId = watchId === 'fade' ? 'fadeAutoPauseToggle' : 'autoPauseToggle';
+    const toggleId = watchId === 'fade'
+      ? 'fadeAutoPauseToggle'
+      : watchId === 'absorptionWall'
+        ? 'absorptionWallAutoPauseToggle'
+        : 'autoPauseToggle';
     const toggle = document.getElementById(toggleId);
     // If the modal is closed, the toggle isn't in the DOM. Use the cached preference
     // (defaults to false). When the modal is open, sync the cached preference.

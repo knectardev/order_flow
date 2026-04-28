@@ -32,9 +32,14 @@ export const state = {
     firedThisCycle: false,
     flipTicks: { balanced: null, cell: null, stretchPOC: null, stretchVWAP: null, noMomentum: null, alignment: null },
   },
+  absorptionWallWatch: {
+    lastCanonical: null,
+    firedThisCycle: false,
+    flipTicks: { cell: null, stall: null, volume: null, level: null, alignment: null },
+  },
 
   // Auto-pause preferences — persist outside modal lifecycle since toggles only exist when modal is open
-  autoPausePrefs: { breakout: false, fade: false },
+  autoPausePrefs: { breakout: false, fade: false, absorptionWall: false },
 
   // Scenario forcer — drives demo buttons (synthetic mode only).
   //
@@ -46,7 +51,7 @@ export const state = {
   //
   // Each bucket's fields:
   //   scenarioLockBars   - pin state to scenarioLockCell for N bars
-  //   scenarioLockCell   - BREAKOUT_CELL or FADE_CELL or null
+  //   scenarioLockCell   - BREAKOUT_CELL, FADE_CELL, ABSORPTION_WALL_CELL, or null
   //   primeNextSweep     - next bar guaranteed to produce a sweep (breakout demo)
   //   primedDisplacement - remaining bars of forced directional drift (fade demo)
   //   primedDirection    - -1 or +1 for forced drift
@@ -172,7 +177,7 @@ export const state = {
   // the first 30 bars of its session, OR a zero-volume bar. While true:
   //   - matrix dims to 0.4 opacity, suppresses watched/current borders,
   //     and overlays a centered "WARMING UP" amber label
-  //   - canonical Breakout / Fade evaluators return `fired: false`
+  //   - canonical evaluators (Breakout / Fade / Absorption Wall) return `fired: false`
   //     (suppressed even if the legacy proxy would have fired)
   //   - event log shows a sticky SYSTEM row at top until the first non-
   //     NULL rank emits
@@ -185,8 +190,8 @@ export const state = {
   interval: null,         // setInterval handle for the streaming tick
   speedMultiplier: 5.5,   // 1×..8× tick-speed multiplier from the speed slider
 
-  lastFiredWatch: null,   // 'breakout' | 'fade' | null — used by Details button
-  currentModal: null,     // 'breakout' | 'fade' | 'sweep' | 'absorption' | 'stoprun' | 'divergence' | null
+  lastFiredWatch: null,   // 'breakout' | 'fade' | 'absorptionWall' | null — used by Details button
+  currentModal: null,     // 'breakout' | 'fade' | 'absorptionWall' | 'sweep' | 'absorption' | …
 
   isPanningChart: false,  // chart is currently being click-dragged horizontally
 
@@ -242,10 +247,16 @@ export const state = {
 // — per-timeframe calibration is a follow-up).
 export function getTunings() {
   const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
-  if (tf === '1m') {
-    return state.replay.tunings || getSynthTunings('1m');
+  const base = { ...getSynthTunings(tf) };
+  // 1m: merge session (API) on top of defaults so new SYNTH keys apply when
+  // older embedded JSON omits them; per-session values still win on collision.
+  if (tf === '1m' && state.replay.tunings && typeof state.replay.tunings === 'object') {
+    return { ...base, ...state.replay.tunings };
   }
-  return getSynthTunings(tf);
+  if (tf === '1m') {
+    return base;
+  }
+  return base;
 }
 
 // Active timeframe's scenario bucket. Synthetic engine + force-* demo

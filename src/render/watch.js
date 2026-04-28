@@ -1,4 +1,4 @@
-import { BREAKOUT_LABELS, FADE_LABELS } from '../config/constants.js';
+import { ABSORPTION_WALL_LABELS, BREAKOUT_LABELS, FADE_LABELS } from '../config/constants.js';
 import { state } from '../state.js';
 
 function renderWatchPanel(prefix, criterionKeys, labels, watchState, canonical, renderOpts = null) {
@@ -90,4 +90,9 @@ function renderFadeWatch(canonical, renderOpts) {
                     FADE_LABELS, state.fadeWatch, canonical, renderOpts);
 }
 
-export { renderWatchPanel, renderBreakoutWatch, renderFadeWatch };
+function renderAbsorptionWallWatch(canonical, renderOpts) {
+  renderWatchPanel('absorptionWall', ['cell', 'stall', 'volume', 'level', 'alignment'],
+                    ABSORPTION_WALL_LABELS, state.absorptionWallWatch, canonical, renderOpts);
+}
+
+export { renderWatchPanel, renderBreakoutWatch, renderFadeWatch, renderAbsorptionWallWatch };

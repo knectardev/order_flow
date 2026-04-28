@@ -17,6 +17,8 @@ const TOOLTIP_INFO = {
                 desc: 'All 5 criteria met for [Impulsive · Light] entry — predicts directional travel.' },
   fade:       { name: 'Fade Fire',     glyph: '◆', variant: 'fade',
                 desc: 'All 6 criteria met for [Active · Normal] entry — predicts mean-reversion to POC.' },
+  absorptionWall: { name: 'Absorption Wall', glyph: '🛡', variant: 'absorption-wall',
+                desc: '5/5: Stacked book + high vol, stalled/energy bar, vol vs prior-10 avg, level vs VA/POC/VWAP, HTF align. 🛡 at high (up bar) or low (down bar).' },
 };
 
 function _hitTestChart(x, y) {

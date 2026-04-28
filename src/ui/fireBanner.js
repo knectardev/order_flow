@@ -16,12 +16,17 @@ function pauseForFire(watchId, canonical, cellDef) {
   const dir    = canonical.direction === 'up' ? '↑' : '↓';
   const arrow  = canonical.direction === 'up' ? 'upward' : 'downward';
 
-  banner.classList.remove('fade-variant', 'breakout-variant');
+  banner.classList.remove('fade-variant', 'breakout-variant', 'absorption-wall-variant');
   if (watchId === 'fade') {
     banner.classList.add('fade-variant');
     icon.textContent = '◆';
     headline.textContent = `Fade canonical fired · stream paused`;
     detail.textContent = `[${cellDef.name}] · stretch ${canonical.stretchDir === 'up' ? '↑' : '↓'} from POC + VWAP · all 6 criteria met. Predicts ${arrow} drift back toward POC within ~25-40 bars.`;
+  } else if (watchId === 'absorptionWall') {
+    banner.classList.add('absorption-wall-variant');
+    icon.textContent = '🛡';
+    headline.textContent = `Absorption Wall canonical fired · stream paused`;
+    detail.textContent = `[${cellDef.name}] · stalled price + vol spike at structure · all 5 criteria met. Expect ${arrow} responsive move off the passive wall.`;
   } else {
     banner.classList.add('breakout-variant');
     icon.textContent = '⚡';

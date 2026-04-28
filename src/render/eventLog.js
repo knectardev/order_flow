@@ -41,9 +41,13 @@ function _fireLabel(fire) {
   const dirArrow = fire.direction === 'up' ? '↑'
                  : fire.direction === 'down' ? '↓'
                  : '·';
-  return fire.watchId === 'fade'
-    ? `Fade fire ${dirArrow} mean-revert to POC`
-    : `Breakout fire ${dirArrow} impulsive light`;
+  if (fire.watchId === 'fade') {
+    return `Fade fire ${dirArrow} mean-revert to POC`;
+  }
+  if (fire.watchId === 'absorptionWall') {
+    return `Absorption Wall ${dirArrow} passive liquidity`;
+  }
+  return `Breakout fire ${dirArrow} impulsive light`;
 }
 
 // Phase 6: Align column. Maps the anchor-priority tag onto a glyph + a
@@ -158,8 +162,9 @@ function renderEventLog() {
     if (row.kind === 'fire') {
       const f = row.payload;
       const isFade = f.watchId === 'fade';
-      const cls = isFade ? 'fire-fade' : 'fire-breakout';
-      const glyph = isFade ? '◆' : '★';
+      const isAbsorptionWall = f.watchId === 'absorptionWall';
+      const cls = isFade ? 'fire-fade' : isAbsorptionWall ? 'fire-absorption-wall' : 'fire-breakout';
+      const glyph = isFade ? '◆' : isAbsorptionWall ? '🛡' : '★';
       const ms = row.time.getTime();
       // Phase 6: tint + align column. Tag/score come from canonical
       // alignment computed at fire time; null for legacy fires that

@@ -1,7 +1,7 @@
 import { state } from '../state.js';
-import { evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
-import { renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
-import { forceBreakoutScenario, forceFadeScenario } from './controls.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from '../analytics/canonical.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from '../render/watch.js';
+import { forceAbsorptionWallScenario, forceBreakoutScenario, forceFadeScenario } from './controls.js';
 
 const MODAL_CONFIG = {
   breakout: {
@@ -15,6 +15,12 @@ const MODAL_CONFIG = {
     glyph: '◆',
     name: 'Fade · Active · Normal',
     build: buildFadeModalBody,
+  },
+  absorptionWall: {
+    variant: 'absorption-wall',
+    glyph: '🛡',
+    name: 'Absorption Wall · Climactic · Stacked',
+    build: buildAbsorptionWallModalBody,
   },
   sweep: {
     variant: 'sweep',
@@ -82,8 +88,8 @@ function openModal(modalId, openOpts) {
   document.getElementById('modalGlyph').textContent = cfg.glyph;
   document.getElementById('modalName').textContent = cfg.name;
   const headMeta = document.getElementById('modalMeta');
-  if (modalId === 'breakout' || modalId === 'fade') {
-    const total = modalId === 'breakout' ? 5 : 6;
+  if (modalId === 'breakout' || modalId === 'fade' || modalId === 'absorptionWall') {
+    const total = modalId === 'fade' ? 6 : 5;
     headMeta.innerHTML = `<span class="modal-meta-num" id="modalMetaNum">0</span> / ${total}`;
   } else {
     headMeta.innerHTML = '';
@@ -93,7 +99,7 @@ function openModal(modalId, openOpts) {
   body.innerHTML = cfg.build();
 
   const fire = openOpts && openOpts.fire ? openOpts.fire : null;
-  if (fire && (modalId === 'breakout' || modalId === 'fade')) {
+  if (fire && (modalId === 'breakout' || modalId === 'fade' || modalId === 'absorptionWall')) {
     const hint = document.createElement('div');
     hint.className = 'watch-snapshot-hint';
     if (fire.checks) {
@@ -111,6 +117,7 @@ function openModal(modalId, openOpts) {
     btn.addEventListener('click', () => {
       if (btn.dataset.force === 'breakout') forceBreakoutScenario();
       else if (btn.dataset.force === 'fade') forceFadeScenario();
+      else if (btn.dataset.force === 'absorptionWall') forceAbsorptionWallScenario();
     });
   });
 
@@ -151,6 +158,23 @@ function openModal(modalId, openOpts) {
       c = evaluateFadeCanonical();
     }
     renderFadeWatch(c, { fromFireSnapshot });
+  }
+  if (modalId === 'absorptionWall') {
+    let c;
+    if (fire && fire.watchId === 'absorptionWall' && fire.checks) {
+      c = {
+        checks: { ...fire.checks },
+        passing: fire.passing,
+        total: fire.total,
+        fired: fire.passing === fire.total,
+        direction: fire.direction,
+        alignment: fire.alignment,
+        tag: fire.tag,
+      };
+    } else {
+      c = evaluateAbsorptionWallCanonical();
+    }
+    renderAbsorptionWallWatch(c, { fromFireSnapshot });
   }
 }
 
@@ -224,6 +248,32 @@ function buildFadeModalBody() {
   `;
 }
 
+function buildAbsorptionWallModalBody() {
+  return `
+    <div class="watch-summary">
+      <strong>Watching for:</strong> high volatility with deep book, stalled price, volume spike, and price parked near session VAH, VAL, or VWAP. Aggressive flow met passive liquidity — the move that should have continued did not.
+    </div>
+    <ul class="criteria-list" id="absorptionWallCriteriaList">
+      <li class="criterion" data-key="cell"><span class="check">○</span><span class="text">[Active+ · Deep] or [Active+ · Stacked] — last two depth columns, Active vol+</span></li>
+      <li class="criterion" data-key="stall"><span class="check">○</span><span class="text">Contested range + (tight close vs prior OR small body); k× prior range when 10+ lookback</span></li>
+      <li class="criterion" data-key="volume"><span class="check">○</span><span class="text">Volume &gt; mult × 10-bar average volume</span></li>
+      <li class="criterion" data-key="level"><span class="check">○</span><span class="text">Close within N ticks of VAH, VAL, POC, or anchored VWAP</span></li>
+      <li class="criterion" data-key="alignment"><span class="check">○</span><span class="text">1h vote ≥ −1 vs bar impulse; fire arrow = mean-reversion</span></li>
+    </ul>
+    <div class="watch-diagnostic" id="absorptionWallDiagnostic">
+      <span class="diag-label">last to break:</span>
+      <span class="diag-value" id="absorptionWallDiagValue">—</span>
+    </div>
+    <div class="watch-controls">
+      <label class="auto-pause-label">
+        <input type="checkbox" id="absorptionWallAutoPauseToggle" ${state.autoPausePrefs.absorptionWall ? 'checked' : ''}>
+        <span>Auto-pause when this entry fires</span>
+      </label>
+      <button class="watch-force absorption-wall-force" data-force="absorptionWall">${state.replay.mode === 'real' ? 'Jump to next 🛡' : 'Force 🛡'}</button>
+    </div>
+  `;
+}
+
 function buildEventModalBody(eventType) {
   const info = EVENT_INFO[eventType];
   if (!info) return '<p>No info available.</p>';
@@ -268,4 +318,4 @@ function buildEventModalBody(eventType) {
   `;
 }
 
-export { MODAL_CONFIG, EVENT_INFO, openModal, closeModal, onOverlayClick, buildBreakoutModalBody, buildFadeModalBody, buildEventModalBody };
+export { MODAL_CONFIG, EVENT_INFO, openModal, closeModal, onOverlayClick, buildAbsorptionWallModalBody, buildBreakoutModalBody, buildFadeModalBody, buildEventModalBody };

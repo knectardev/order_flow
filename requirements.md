@@ -15,7 +15,7 @@ Design intent remains unchanged:
 
 1. Probabilistic regime framing (posterior distribution, not single hard labels).
 2. Event-typed sparse markers rather than per-bar verdicts.
-3. Contrasting canonical hypotheses (`★ Breakout` vs `◆ Fade`) with explicit failure twins.
+3. Contrasting canonical hypotheses (`★ Breakout`, `◆ Fade`, `🛡 Absorption Wall`) with explicit failure twins on the first two.
 4. Order-flow context from profile + VWAP + event structure.
 
 ---
@@ -61,11 +61,11 @@ Design intent remains unchanged:
 All mutable runtime state is centralized in `src/state.js`:
 
 - **Stream data:** `bars`, `formingBar`, `events`, `canonicalFires`, `trail`, `matrixScores`.
-- **Watch state:** `breakoutWatch`, `fadeWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
+- **Watch state:** `breakoutWatch`, `fadeWatch`, `absorptionWallWatch` with persistent `lastCanonical`, edge-trigger flags, and flip tracking.
 - **Replay state:** `replay.mode`, session metadata, full loaded bars/events/fires, cursor, data source flags.
 - **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
 - **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). Chart halos for ★/◆ merge `allFires` and `canonicalFires` and match `bar` times by epoch ms so a Date/string mismatch does not drop markers. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
-- **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds). A fire selection from the event log or chart (`selectFire`) also sets `chartViewEnd` so the fire bar and the 31-bar window sit in the current viewport, runs `_syncCurrentSession` and `_refreshMatrixForView` (so the panned path isn’t “all dim, marker off-screen”), and the price chart adds a teal focus ring on the active ◆/★.
+- **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds). A fire selection from the event log or chart (`selectFire`) also sets `chartViewEnd` so the fire bar and the 31-bar window sit in the current viewport, runs `_syncCurrentSession` and `_refreshMatrixForView` (so the panned path isn’t “all dim, marker off-screen”), and the price chart adds a teal focus ring on the active ◆/★/🛡.
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
 - **Bias filter state:** `biasFilterMode` (`'soft'` | `'hard'` | `'off'`, default `'soft'`) and `showSuppressed` (`boolean`, default `false`). Bootstrapped from `?biasFilter=` and `?showSuppressed=` URL params (Phase 6 — see §13).
@@ -94,10 +94,11 @@ This behavior is required to prevent false certainty and false trigger events wh
 
 ## 5) Canonical Watches
 
-Two canonical watches continue to run continuously with edge-trigger fire behavior:
+Three canonical watches run continuously with edge-trigger fire behavior:
 
-- `★ Breakout` at `[Impulsive · Light]`.
-- `◆ Fade` at `[Active · Normal]`.
+- `★ Breakout` at `[Impulsive · Light]` (`watchId: 'breakout'`).
+- `◆ Fade` at `[Active · Normal]` (`watchId: 'fade'`).
+- `🛡 Absorption Wall` (`watchId: 'absorptionWall'`) — primary **label** lens `[Climactic · Stacked]`; `isAbsorptionWallRegime` allows **`depthState >= 3` (Deep or Stacked)** and **`volState >= 2` (Active through Climactic)** — the **right-hand two** depth columns × three vol rows = **6/25** matrix cells, so the watch is not locked to a single Stacked column. Stall = contested **range** plus (tight **close vs prior** or small **open→close** body). Level includes **POC**; default band is **15** ticks. `getTunings()` **merges** `SYNTH_TUNINGS` with per-session 1m JSON. **Primitive** `type: 'absorption'` in `events.js` remains a separate concept.
 
 ### 5.1 Fade Criteria Update
 
@@ -112,6 +113,12 @@ Fade watch now evaluates **six** criteria. The five technical gates plus an HTF-
 
 Breakout watch likewise evaluates **five** criteria: `cell`, `sweep`, `flow`, `clean`, plus the same `alignment` gate.
 
+**Absorption Wall** evaluates **five** criteria: `cell` (`isAbsorptionWallRegime`: **`depthState >= 3`** and **`volState >= 2`** — **Active·Deep** through **Climactic·Stacked**), `stall`, `volume` (current volume > `absorptionWallVolMult` × mean volume of **up to 10** settled bars **before** the current bar — with ≥2 settled bars so a one-bar prior mean exists, including **early session**), `level` (min distance to VAH, VAL, **POC**, or last anchored VWAP ≤ `absorptionWallLevelTicks × ES_MIN_TICK`), and `alignment`. **Stall:** when ≥11 prior bars, `(high − low) > absorptionWallStallMinRangeMult ×` mean prior-10 range **and** (|close − prior close| < `absorptionWallStallTicks × ES_MIN_TICK` **or** |close − open| < `absorptionWallStallBodyTicks × ES_MIN_TICK`); if mean prior range is 0, `stall` is false. With &lt;11 bars, the range part is skipped; only the close-vs-prior or in-bar body checks apply.
+
+**Fires and chart glyphs** use `direction` as **mean reversion** off the bar: `close >= open` → `down`, else `up`. **HTF `alignment` votes** use the bar **impulse** the same way as Breakout’s sweep direction: `dir1m =` `close >= open` → `up`, else `down` (push into the level). `buildAlignment(lastBar, impulseDir, 'absorption')` — same anchor-priority tag **base** as `breakout` (no fade Wyckoff overlay).
+
+Tuning keys (higher **hit rate** vs earlier builds): `absorptionWallVolMult` (default **1.15**; raise toward **1.3+** if RTH is too chatty), `absorptionWallStallTicks` (4.5), `absorptionWallStallBodyTicks` (3.5), `absorptionWallStallMinRangeMult` (0.25), `absorptionWallLevelTicks` (15). For 1m, `getTunings()` returns `{ ...SYNTH_TUNINGS, ...session.tunings }` so per-session **keys** override; missing keys keep dashboard defaults. See `getTunings()` in `state.js` for the merge.
+
 All watch diagnostics and flip tracking must remain persistent across modal open/close cycles.
 
 ### 5.1a Canonical fire log rows (chart & event log)
@@ -121,9 +128,9 @@ Each row pushed to `state.canonicalFires` (and the full pre-scan `state.replay.a
 - `checks` — shallow copy of the watch’s `canonical.checks` at commit time
 - `passing` and `total` — same as the evaluator’s `passing` / `total` at that bar
 
-**Watch modal (★ / ◆) behavior**
+**Watch modal (★ / ◆ / 🛡) behavior**
 
-- **Glossary (no fire context):** the modal uses live `evaluateBreakoutCanonical()` / `evaluateFadeCanonical()` for the current bar.
+- **Glossary (no fire context):** the modal uses live `evaluateBreakoutCanonical()` / `evaluateFadeCanonical()` / `evaluateAbsorptionWallCanonical()` for the current bar.
 - **Shift+click a chart fire halo** (or **Details** on the post-fire banner after a pause): if the log row has `checks`, the modal shows that **frozen** gate list and a short “snapshot” note; the flip-tick / `lastCanonical` path is skipped for that one paint so live tracking is not clobbered. Rows recorded before this contract (no `checks`) show the same note and fall back to live evaluation.
 - **Plain click on a chart fire** still only brushes the bar window; the chart tooltip hint documents Shift+click vs. click.
 
@@ -131,7 +138,7 @@ Each row pushed to `state.canonicalFires` (and the full pre-scan `state.replay.a
 
 In API replay mode, force buttons are repurposed:
 
-- Legacy synthetic labels `Force ★/◆` become jump actions (next fire navigation behavior).
+- Legacy synthetic labels `Force ★/◆/🛡` become jump actions (next fire navigation behavior) for matching `watchId`.
 
 ### 5.3 Anchor-Priority Tagging (Phase 6)
 
@@ -144,11 +151,11 @@ Each canonical evaluation that produces a fire also computes an `alignment` bloc
 
 ### 5.4 Alignment as a Gating Check
 
-`alignment` is also a **first-class criterion** in both `evaluateBreakoutCanonical` and `evaluateFadeCanonical`:
+`alignment` is also a **first-class criterion** in `evaluateBreakoutCanonical`, `evaluateFadeCanonical`, and `evaluateAbsorptionWallCanonical`:
 
-- `checks.alignment = (lastBar exists) && (alignment.vote_1h >= 0)` — i.e., the 1h bias must not oppose `direction`.
+- `checks.alignment` — 1h vote on `dir1m`: for **breakout** and **fade**, `(alignment.vote_1h >= 0)` (no opposing 1h trend to the play). For **absorption wall** only, **`alignment.vote_1h >= -1`** (vetoes strong 1h disagreement only) while `dir1m` remains the **bar impulse**, not the MR `direction` on the fire record.
 - The check evaluates `true` when biases are NULL (`vote_1h` defaults to `0` via `vote(null, dir)`) and when `biasFilterMode === 'off'`, preserving synthetic-mode and warmup behavior.
-- `fired = passing === total` continues to be the gate, with `total = 5` for breakout and `total = 6` for fade.
+- `fired = passing === total` continues to be the gate, with `total = 5` for breakout and absorption wall and `total = 6` for fade.
 - Practical effect: in `soft` mode, an opposing 1h bias produces a `LOW_CONVICTION` tag **and** fails the `alignment` check, so the fire no longer triggers — the tag is purely diagnostic. The watch panel still surfaces partial `passing/total` and tag tints so the user can see "would-be" fires that the alignment gate filtered out.
 
 ### 5.5 Fade-Specific Wyckoff Overrides
@@ -164,13 +171,13 @@ For `evaluateFadeCanonical`, `buildAlignment(lastBar, dir1m, 'fade')` applies a 
 
 `score`, `vote_1h`, `vote_15m` are never modified by the overlay — only `tag` (and `reason`) — so score-tinted UI remains consistent with the raw vote sum.
 
-The breakout evaluator continues to use the default `watchKind = 'breakout'` (no overrides).
+The breakout evaluator uses the default `watchKind = 'breakout'`; the absorption-wall evaluator passes `watchKind: 'absorption'`, which shares the same base tag path as `breakout` (no Wyckoff overrides). Both use continuation-style / impulse `dir1m` for the vote (breakout: sweep direction; absorption: bar impulse). Pass-through name `'absorption'` is explicit so the contract is not confused with the MR `direction` on the fire record.
 
 ---
 
 ## 6) Matrix Panel Enhancements
 
-Right column now includes matrix controls beyond posterior view:
+Watched cells: breakout (amber stripe), fade (blue), absorption wall (indigo `--indigo-fire` stripe) on the **six** cells with **Deep or Stacked** book and **Active+** vol (`isAbsorptionWallRegime`). Right column also includes matrix controls beyond posterior view:
 
 - **Display mode toggle:** `Posterior` / `Heatmap`.
 - **Occupancy range selector:**
@@ -191,14 +198,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 `src/render/priceChart.js` must support:
 
 - Candles + event markers + fire halos. When a **sweep** and **divergence** both fire on the same bar and the same side (e.g. both at the low), their glyphs are vertically separated: the sweep triangle stays farther from the candle body and the divergence warning is offset toward the body so the two do not overlap. Standalone sweeps/divergences keep their prior single-event offsets. Fire halos render the watch-type
-  glyph above the bar high (★ for breakout, ◆ for fade). The fade diamond
-  is drawn first at its tuned position (centered on the bar, alphabetic
-  baseline, 11px), then a smaller (9px) directional arrow (`↑` / `↓`)
-  is layered to the *right* of the diamond reflecting `fire.direction`.
-  The arrow is additive — the diamond's render path is unchanged from
-  the pre-tail implementation — so legacy fires with `direction == null`
-  and breakout fires both render exactly as before. The tail is fade-only
-  because breakout direction trivially follows the underlying sweep.
+  glyph: ★ above the bar high for breakout; ◆ above the high for fade; 🛡 for absorption wall at the **high** when `close >= open` and at the **low** otherwise. Fade and absorption-wall halos add a smaller (9px) directional arrow (`↑` / `↓`) to the *right* of the glyph. Breakout keeps no arrow (sweep direction is the primary read).
 - Session-anchored VWAP with reset by session boundaries (real mode).
 - Profile overlays (POC/VAH/VAL).
 - RTH session open dividers and date labeling in replay timelines.
@@ -298,7 +298,7 @@ Fallback behavior:
 14. Bias ribbon must remain visible above the candle pane on every timeframe and fall back gracefully (background-only strip) when bias columns are NULL.
 15. The `?biasFilter=` and `?showSuppressed=` URL params are public surface for replay deep-linking — bootstrap behavior in `src/data/replay.js` must remain stable.
 16. Detection thresholds in `events.js` (`sweepVolMult`, `divergenceFlowMult`) are bias-scaled by the bar's denormalized 1h parent (`biasH1`) via `_biasScale(biasH1, dir)` — the ×0.8 / ×1.0 / ×1.2 family. Null `biasH1` (synthetic / warmup / non-API) must fall back to ×1.0 so synthetic-mode behavior is preserved bit-for-bit. `absorbVolMult` and `absorbRangeMult` are intentionally not scaled (small-range absorption is a structural signal, not a momentum one).
-17. `alignment` is a required first-class criterion in both canonical evaluators (see §5.4). Bumping `total` past `5` (breakout) / `6` (fade) without simultaneously updating `BREAKOUT_LABELS` / `FADE_LABELS`, `criterionKeys` arrays in `src/render/watch.js`, the `flipTicks` initializer in `src/state.js`, every `flipTicks = { ... }` reset in `src/data/replay.js` and `src/ui/controls.js`, and the modal `<li class="criterion">` rows in `src/ui/modal.js` is a regression — these surfaces are coupled by `data-key`.
+17. `alignment` is a required first-class criterion in all three canonical evaluators (see §5.4). Bumping `total` for any watch without simultaneously updating the matching `BREAKOUT_LABELS` / `FADE_LABELS` / `ABSORPTION_WALL_LABELS`, `criterionKeys` arrays in `src/render/watch.js`, the `flipTicks` initializer in `src/state.js`, every `flipTicks = { ... }` reset in `src/data/replay.js` and `src/ui/controls.js`, and the modal `<li class="criterion">` rows in `src/ui/modal.js` is a regression — these surfaces are coupled by `data-key`. Absorption wall uses `total = 5` and keys `cell`, `stall`, `volume`, `level`, `alignment`.
 18. Fade-specific Wyckoff overrides in `buildAlignment` must never modify `score`, `vote_1h`, or `vote_15m`; only `tag` and (optionally) `reason`. Score-tinted UI assumes the raw vote sum.
 19. The 1m price chart's Y-axis must not compress candles into a thin band when the profile's price extent diverges from the visible candles (e.g. a stale `_lastApiProfile` carry-over from a prior session) **and** must not visibly oscillate between two scales when the profile's POC/VAH/VAL hovers at the inclusion threshold during playback. Three layered guards in `src/render/priceChart.js` enforce this:
     1. **Carry-over compatibility** (`_isApiProfileCompatibleWith()`) rejects the API-profile carry-over when (a) its price range is disjoint from the candle range (cross-session staleness) or (b) it fails to cover the candle range within `max(candleRange × 0.5, 2 ticks)` on either side. The 50%-of-range tolerance is intentionally loose: the live edge shifts the rolling 60-bar window by a tick or two each settle, which historically blew through a tighter (5%) tolerance on every frame and caused the renderer to flap between the API profile and the OHLC proxy mid-stream. Both methods compute POC differently, so flapping shows up as a multi-point POC jump. Cross-session detection is preserved by the disjoint check (a), which doesn't depend on the tolerance.
@@ -382,7 +382,7 @@ Aggregation order is `1h → 15m → 1m`; `_stamp_parent_bias(con, session_date,
 
 - `BIAS_VOTE` maps each of the 7 bias levels to a directional vote `{-2, -1, 0, +1, +2}`.
 - `vote(biasState, dir1m)` returns `+v` when the bias agrees with `dir1m`, `-v` when it opposes, `0` for neutral.
-- `buildAlignment(lastBar, dir1m, watchKind = 'breakout')` returns `{score, vote_1h, vote_15m, tag, biasH1, bias15m}` (and optionally `reason` when fade overrides apply) where `score = vote_1h + vote_15m ∈ [-4, +4]`. `watchKind === 'fade'` enables the Wyckoff overlay documented in §5.5.
+- `buildAlignment(lastBar, dir1m, watchKind = 'breakout')` returns `{score, vote_1h, vote_15m, tag, biasH1, bias15m}` (and optionally `reason` when fade overrides apply) where `score = vote_1h + vote_15m ∈ [-4, +4]`. `watchKind === 'fade'` enables the Wyckoff overlay documented in §5.5. `watchKind === 'absorption'` uses the same **base** tag path as `breakout` (no extra overlay; distinct name so `dir1m` semantics stay documented — impulse for absorption wall, see §5.1).
 
 Tag rule (anchor-priority — the 1h vote dominates):
 
@@ -396,7 +396,7 @@ Tag rule (anchor-priority — the 1h vote dominates):
 
 ### 13.5 Bias Filter Modes
 
-- `state.biasFilterMode === 'soft'` (default): no fires are dropped by the tag rule; tags are surfaced as visual hints in the watch panel and event log. Note: the `alignment` gating check in §5.4 still applies — soft-mode `LOW_CONVICTION` fires that have `vote_1h < 0` will fail `checks.alignment` and therefore not reach `fired === true`, even though their tag is not `SUPPRESSED`.
+- `state.biasFilterMode === 'soft'` (default): no fires are dropped by the tag rule; tags are surfaced as visual hints in the watch panel and event log. The **alignment** gate in §5.4 still blocks `fired === true` when 1h votes fail the per-watch rule (e.g. breakout `vote_1h < 0`; absorption wall `vote_1h < -1`) even in soft mode.
 - `state.biasFilterMode === 'hard'`: 1h-opposes fires are tagged `SUPPRESSED`; banner + auto-pause are skipped, but the fire is still recorded so it can be reviewed.
 - `state.biasFilterMode === 'off'`: alignment is still computed for diagnostic purposes but tags never escalate beyond `STANDARD`. The `alignment` gating check is also force-passed (`vote_1h = 0` ⇒ `vote_1h >= 0`), so `'off'` truly disables HTF filtering at every layer.
 - `state.showSuppressed === true` reveals SUPPRESSED rows in the event log; default is hidden.

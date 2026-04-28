@@ -1,11 +1,11 @@
 import { state } from './state.js';
-import { evaluateBreakoutCanonical, evaluateFadeCanonical } from './analytics/canonical.js';
+import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
 import { bootstrapReplay, onScrubberCommit, onScrubberInput, onSessionChange, seekStep, setActiveTimeframe } from './data/replay.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { drawPriceChart } from './render/priceChart.js';
-import { renderBreakoutWatch, renderFadeWatch } from './render/watch.js';
+import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch } from './render/watch.js';
 import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
 import { dismissFire, openFireDetails } from './ui/fireBanner.js';
 import { bindMatrixRangeUI, repaintMatrix } from './ui/matrixRange.js';
@@ -19,9 +19,11 @@ buildMatrix();
 state.matrixScores = computeMatrixScores();
 const initialBreakout = evaluateBreakoutCanonical();
 const initialFade     = evaluateFadeCanonical();
-renderMatrix(initialBreakout, initialFade);
+const initialAbsorptionWall = evaluateAbsorptionWallCanonical();
+renderMatrix(initialBreakout, initialFade, initialAbsorptionWall);
 renderBreakoutWatch(initialBreakout);
 renderFadeWatch(initialFade);
+renderAbsorptionWallWatch(initialAbsorptionWall);
 drawPriceChart();
 drawFlowChart();
 

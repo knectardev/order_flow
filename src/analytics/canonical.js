@@ -1,5 +1,5 @@
-import { BREAKOUT_CELL, FADE_CELL } from '../config/constants.js';
-import { state } from '../state.js';
+import { BREAKOUT_CELL, ES_MIN_TICK, FADE_CELL, isAbsorptionWallRegime, SYNTH_TUNINGS } from '../config/constants.js';
+import { getTunings, state } from '../state.js';
 import { computeProfile } from './profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from './vwap.js';
 
@@ -98,9 +98,10 @@ function _applyFadeOverrides(base, biasH1, dir1m) {
 // has no HTF biases stamped (warmup / non-API mode); callers should
 // treat null as "no alignment context".
 //
-// `watchKind` ∈ { 'breakout', 'fade' } selects the tag rule applied
-// after the base anchor-priority resolution. Defaults to 'breakout' so
-// the existing single-arg call sites continue to work unchanged.
+// `watchKind` ∈ { 'breakout', 'fade', 'absorption' } — fade applies Wyckoff
+// tag overrides. Breakout and absorption use the same base tag rule; absorption
+// passes the bar's *impulse* (close vs open) as dir1m for votes, not mean-reversion.
+// Defaults to 'breakout' so the existing single-arg call sites work unchanged.
 function buildAlignment(lastBar, dir1m, watchKind = 'breakout') {
   if (!lastBar || !dir1m) return null;
   const filterMode = state.biasFilterMode || 'soft';
@@ -127,6 +128,7 @@ function buildAlignment(lastBar, dir1m, watchKind = 'breakout') {
 
   const base = { score, vote_1h, vote_15m, tag, biasH1, bias15m };
   if (watchKind === 'fade') return _applyFadeOverrides(base, biasH1, dir1m);
+  // 'breakout' and 'absorption' share the base block (no extra tag overlay).
   return base;
 }
 
@@ -290,4 +292,104 @@ function evaluateFadeCanonical() {
   return { checks, passing, total: 6, fired, direction, stretchDir, alignment, tag };
 }
 
-export { evaluateBreakoutCanonical, evaluateFadeCanonical, vote, buildAlignment, BIAS_VOTE };
+/**
+ * Absorption Wall: [Climactic · Stacked] with stalled price, volume spike, and
+ * proximity to VAH/VAL/VWAP. Uses the last *settled* bar in `state.bars` (forming
+ * bars are not in this array). Returned `direction` is mean reversion: bull bar →
+ * 'down', bear bar → 'up' (for halos, event log, and fire record). HTF alignment
+ * uses the bar impulse (close vs open) passed to buildAlignment as 'absorption',
+ * not MR direction, so 1h votes test agreement with the push into the level.
+ */
+function evaluateAbsorptionWallCanonical() {
+  const checks = { cell: false, stall: false, volume: false, level: false, alignment: false };
+  let direction = null;
+
+  if (state.regimeWarmup) {
+    return { checks, passing: 0, total: 5, fired: false, direction: null, alignment: null, tag: null };
+  }
+
+  const t = getTunings();
+  const volM = t.absorptionWallVolMult ?? SYNTH_TUNINGS.absorptionWallVolMult ?? 1.15;
+  const stallTicks = t.absorptionWallStallTicks ?? SYNTH_TUNINGS.absorptionWallStallTicks ?? 4.5;
+  const bodyTicks = t.absorptionWallStallBodyTicks ?? SYNTH_TUNINGS.absorptionWallStallBodyTicks ?? 3.5;
+  const levelTicks = t.absorptionWallLevelTicks ?? SYNTH_TUNINGS.absorptionWallLevelTicks ?? 15;
+  const rangeMult = t.absorptionWallStallMinRangeMult ?? SYNTH_TUNINGS.absorptionWallStallMinRangeMult ?? 0.25;
+  const stallEps = stallTicks * ES_MIN_TICK;
+  const bodyEps = bodyTicks * ES_MIN_TICK;
+  const levelEps = levelTicks * ES_MIN_TICK;
+
+  // Deep or Stacked book + Active+ vol (see isAbsorptionWallRegime in constants).
+  checks.cell = isAbsorptionWallRegime(state.sim.volState, state.sim.depthState);
+
+  const n = state.bars.length;
+  const lastBar = n ? state.bars[n - 1] : null;
+  const prevBar = n >= 2 ? state.bars[n - 2] : null;
+  // Strict 10-bar window for range/stall when history is long enough.
+  const prior10 = n >= 11 ? state.bars.slice(-11, -1) : null;
+
+  if (lastBar && prevBar) {
+    // Stall = contested range, no net progress from the prior print OR a small
+    // open→close (indecision) — either OR with the same range gate when prior10 exists.
+    const closeStall = Math.abs(lastBar.close - prevBar.close) < stallEps;
+    const bodyStall = Math.abs(lastBar.close - lastBar.open) < bodyEps;
+    if (prior10) {
+      const avgRange = prior10.reduce((s, b) => s + (b.high - b.low), 0) / prior10.length;
+      const br = lastBar.high - lastBar.low;
+      if (avgRange > 0) {
+        const rangeStall = br > avgRange * rangeMult;
+        checks.stall = rangeStall && (closeStall || bodyStall);
+      } else {
+        checks.stall = false;
+      }
+    } else {
+      checks.stall = closeStall || bodyStall;
+    }
+  }
+
+  // Volume: same × prior-avg rule as precompute; use 1..10 prior bars when <11
+  // settled (session open / short seek) so the gate is not stuck false.
+  if (lastBar && n >= 2) {
+    const start = Math.max(0, n - 1 - 10);
+    const volPrior = state.bars.slice(start, -1);
+    if (volPrior.length > 0) {
+      const avgVol = volPrior.reduce((s, b) => s + b.volume, 0) / volPrior.length;
+      if (avgVol > 0) checks.volume = lastBar.volume > avgVol * volM;
+    }
+  }
+
+  if (lastBar) {
+    direction = lastBar.close >= lastBar.open ? 'down' : 'up';
+  }
+
+  const impulseDir = lastBar
+    ? (lastBar.close >= lastBar.open ? 'up' : 'down')
+    : null;
+
+  if (n >= 3 && lastBar) {
+    const profile = computeProfile(state.bars);
+    if (profile && profile.vahPrice != null && profile.valPrice != null) {
+      const vwapPts = computeAnchoredVWAP(state.bars, getVwapAnchors());
+      const lastVWAP = vwapPts.length > 0 ? vwapPts[vwapPts.length - 1].vwap : null;
+      const c = lastBar.close;
+      const dVah = Math.abs(c - profile.vahPrice);
+      const dVal = Math.abs(c - profile.valPrice);
+      const dPoc = profile.pocPrice != null ? Math.abs(c - profile.pocPrice) : Infinity;
+      const dVw = lastVWAP != null ? Math.abs(c - lastVWAP) : Infinity;
+      const d = Math.min(dVah, dVal, dPoc, dVw);
+      checks.level = d <= levelEps;
+    }
+  }
+
+  const alignment = lastBar && impulseDir
+    ? buildAlignment(lastBar, impulseDir, 'absorption')
+    : null;
+  const tag = alignment ? alignment.tag : null;
+  // Slightly looser than breakout: allow mild 1h disagreement (e.g. −1), veto strong (≤ −2).
+  checks.alignment = !!alignment && alignment.vote_1h >= -1;
+
+  const passing = Object.values(checks).filter(Boolean).length;
+  const fired = passing === 5;
+  return { checks, passing, total: 5, fired, direction, alignment, tag };
+}
+
+export { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, vote, buildAlignment, BIAS_VOTE };
