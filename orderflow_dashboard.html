@@ -163,7 +163,16 @@
       <label>Capital <input id="btInitialCapital" type="number" value="50000" step="1000"></label>
       <label>Commission/side <input id="btCommission" type="number" value="2" step="0.25"></label>
       <label>Slippage (ticks) <input id="btSlippage" type="number" value="1" step="0.25"></label>
-      <label class="bt-toggle-row"><input id="btShowMarkers" type="checkbox" checked> Show trade markers on chart</label>
+      <div class="bt-marker-split-row">
+        <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-teal">
+          <input id="btShowMarkersOn" type="checkbox" checked>
+          Show Regime ON markers
+        </label>
+        <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-orange">
+          <input id="btShowMarkersOff" type="checkbox" checked>
+          Show Regime OFF markers
+        </label>
+      </div>
       <button id="btRunBtn">Run Backtest</button>
     </div>
     <div class="backtest-metrics">

@@ -136,6 +136,8 @@ _SCHEMA_SQL: tuple[str, ...] = (
         price               DOUBLE    NOT NULL,
         outcome             VARCHAR,
         outcome_resolved_at TIMESTAMP,
+        diagnostic_version  VARCHAR,
+        diagnostics_json    VARCHAR,
         PRIMARY KEY (bar_time, timeframe, watch_id, direction)
     )
     """,
@@ -237,6 +239,10 @@ _PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("parent_1h_bias",  "VARCHAR"),
     ("parent_15m_bias", "VARCHAR"),
 )
+_FIRE_DIAGNOSTIC_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("diagnostic_version", "VARCHAR"),
+    ("diagnostics_json", "VARCHAR"),
+)
 
 
 def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
@@ -263,6 +269,8 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     # Phase 6 in-place upgrade for pre-existing databases.
     for col_name, col_type in _PHASE6_BAR_COLUMNS:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    for col_name, col_type in _FIRE_DIAGNOSTIC_COLUMNS:
+        con.execute(f"ALTER TABLE fires ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
 
 
 def write_session(
@@ -294,7 +302,7 @@ def write_session(
                     fill them after this write completes)
         events_df:  bar_time, timeframe, event_type, direction, price
         fires_df:   bar_time, timeframe, watch_id, direction, price,
-                    outcome, outcome_resolved_at
+                    outcome, outcome_resolved_at, diagnostic_version, diagnostics_json
         profile_df: bar_time, timeframe, price_tick, volume, delta
 
     `events_df` / `fires_df` / `profile_df` may be empty (no rows to
@@ -375,13 +383,16 @@ def write_session(
                 """
             )
         if len(fires_df) > 0:
+            for col in ("diagnostic_version", "diagnostics_json"):
+                if col not in fires_df.columns:
+                    fires_df[col] = None
             con.execute(
                 """
                 INSERT INTO fires
                     (bar_time, timeframe, watch_id, direction, price, outcome,
-                     outcome_resolved_at)
+                     outcome_resolved_at, diagnostic_version, diagnostics_json)
                 SELECT bar_time, timeframe, watch_id, direction, price, outcome,
-                       outcome_resolved_at
+                       outcome_resolved_at, diagnostic_version, diagnostics_json
                 FROM fires_df
                 """
             )

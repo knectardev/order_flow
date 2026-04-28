@@ -393,6 +393,21 @@
   .bt-toggle-row input[type="checkbox"] {
     accent-color: var(--accent);
   }
+  .bt-marker-split-row {
+    grid-column: span 2;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .bt-toggle-row-inline {
+    grid-column: auto;
+  }
+  .bt-toggle-teal {
+    color: #21a095;
+  }
+  .bt-toggle-orange {
+    color: #d39145;
+  }
   .backtest-metrics {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

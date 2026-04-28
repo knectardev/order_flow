@@ -25,3 +25,6 @@ Thumbs.db
 # --- Aggregated bars are CHECKED IN (small) so the dashboard works after clone. ---
 !data/bars/
 !data/bars/**
+
+# --- Local analytical DB artifact (large, machine-specific) ---
+data/orderflow.duckdb

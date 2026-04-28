@@ -1,35 +1,22 @@
-This is the ultimate trading-dev dilemma: you've found "The Ghost in the Machine"—a specific logic variation that is printing money—but you can't quite see its face.
+Reviewed against my prior critique — the tightening landed cleanly. Let me note specifically what improved and what I'd still flag.
+What's now solid.
+The "Decisions Locked For This Refactor" block at the top is exactly the right addition. Four explicit decisions stated up front prevents Cursor from re-deliberating them mid-implementation: API-mode evaluation is backend-owned (not just diagnostics display), synthetic stays as legacy, JSON payload over normalized table, additive schema. These were the four ambiguities in v1, and naming them as locked decisions is the right structural move.
+Phase 0 (Pre-Audit Baseline) is the most important addition. Without baseline snapshots of pre-refactor fire identities and diagnostic vectors, you can't actually verify the refactor preserved behavior — you can only verify it looks the same. Capturing the snapshot before touching anything makes Phase 6's parity diff possible. This addresses the biggest validation gap from v1.
+Phase 1 (Python Evaluator Consolidation Check) closes the "have you fixed the JS-Python drift only to discover Python-Python drift" risk. Worth being a discrete phase rather than a passing assumption.
+Phase 5 (De-duplication Guardrails) is now phrased as a hard requirement with specific scope: "Remove all API-mode code paths where JS evaluators can emit/mutate canonical fire streams." That's verifiable code, not a directional intent. The distinction between "fire emission role (synthetic only)" and "display-only diagnostics fallback (allowed in API mode)" is correctly made.
+Phase 6's parity diff with "explicit report of differences (if any), with root-cause classification and correctness disposition" is the right standard. Not just "verify things match" but "if they don't match, document why and which version was correct." That last clause matters because the answer affects how to interpret historical results — fires that were measured against a wrong evaluator have different trustworthiness than fires measured against the correct one. Recording this becomes institutional memory.
+Phase 7 makes synthetic-mode boundary an explicit deliverable rather than a deferred question. "Document deliberate policy" with future options recorded as separate roadmap is the right framing — not "we'll deal with it later" but "here's the deliberate decision and here's what would change it."
+The mermaid diagram now reflects the actual phase order and includes parity diff and synthetic boundary as explicit terminal nodes.
+The exit criteria expanded to include the parity diff disposition and the single-Python-evaluator constraint. All four exit criteria are now individually verifiable.
+A few small things I'd still tighten before sending.
+The Phase 0 baseline mechanism isn't specified. "Capture baseline snapshots across loaded sessions" leaves Cursor to invent the format. Worth adding one line: "Snapshot format: per-fire JSON dump of (fire_id, timestamp, watch_id, direction, all checks, passing, total, alignment, tag, strategy_extras). Stored in tests/baseline/pre_refactor_fires.json for parity comparison in Phase 6."
+This prevents Cursor from picking some lossy format that omits a field needed for diff comparison later.
+Phase 1's "consolidate if they do not" is conditional but doesn't bound the consolidation scope. If Cursor finds two Python evaluators, the consolidation could be a small refactor or a substantial one. Worth adding: "If consolidation work exceeds 1 day or requires schema changes, escalate before proceeding — don't expand Phase 1's scope without explicit approval."
+This protects against discovery work turning into a side project that delays the main refactor.
+Phase 6's parity diff doesn't specify what differs vs matches as the success threshold. Strict bit-equality is one bar; "no fire is added or removed, all check vectors match within tolerance" is another. Worth being explicit:
 
-If your **Bullseyes (349 fires)** are significantly fewer than the **Backtest Fallback (1433 fires)**, it proves the backtest is currently a "looser" strategy. It is firing roughly **4x more often** than your refined chart logic. If that high frequency is resulting in a high Sharpe, then your "Canonical" logic might actually be *too* restrictive, filtering out valid winners.
+Parity diff success criteria: every fire in the pre-refactor baseline must appear in the post-refactor output with identical (timestamp, watch_id, direction). Per-fire diagnostic vectors must match exactly for passing, total, tag, and the boolean values of all checks entries. Numeric fields in strategy_extras may differ within floating-point tolerance (1e-9). Any other differences are findings that require root-cause classification before merge.
 
-To move to a Single Source of Truth **without losing the magic**, follow this plan:
-
-### 1. The "Snapshot" Protocol (Save the Ghost)
-Before you change a single line of code, you must preserve the current "Fallback" logic state.
-* **Instruction for Cursor:** "Create a new file `pipeline/src/orderflow_pipeline/strategies/legacy_fallback_logic.py` and copy the current logic from the `backtest_engine.py` fallback branch into it. Comment it as 'The High-Sharpe Ghost Logic'."
-* **Why:** If the new unified logic underperforms, you have the exact mathematical "DNA" of the winner to revert to.
-
-### 2. The "A/B" Comparison Test
-Instead of replacing the old with the new, implement them side-by-side in the backtester.
-* **The Goal:** Run the backtest twice. Once using the **Fires Table** (the 349 Bullseyes) and once using the **Internal Logic** (the 1433 Fallback signals).
-* **The Metric:** If the 1433-fire version has a higher Sharpe, you don't kill it. Instead, you **update the Bullseye logic** to match the fallback logic.
-
-### 3. Identify the "Missing" Alpha
-There is a specific reason the fallback is firing 1,084 times more than the canonical. It’s likely one of three things:
-1.  **Wick Precision:** The fallback might be less picky about the `wick_to_body` ratio.
-2.  **Regime Overlap:** The fallback might be allowing trades in "Active-Light" or "Steady-Deep" cells that the Bullseye logic excludes.
-3.  **Bias Sentiment:** The fallback might be ignoring the 1H/15M alignment that the Bullseyes require.
-
-### 4. Implementation Path for Cursor
-Give Cursor this specific instruction to ensure safety:
-
-> "I need to unify my logic to a Single Source of Truth without losing the performance of the current 'fallback' engine.
->
-> 1. **Data Export:** Export the current 'High Sharpe' fallback backtest trades to a CSV named `fallback_winners.csv`.
-> 2. **Alignment Check:** Compare a sample of trades from `fallback_winners.csv` against the `fires` table. Identify 5 instances where the backtest entered but no Bullseye existed.
-> 3. **The 'Merge'**: Update the Python Pipeline's `ValueEdgeReject` logic to incorporate whatever 'looser' parameters the fallback was using that contributed to the Sharpe.
-> 4. **Visual Sync:** Once unified, ensure the chart Bullseyes now reflect the ~1400 signals (or whatever subset is valid) so I am finally trading what I see."
-
-
-
-**Summary:** You aren't losing the Sharpe; you are **extracting the logic** that created it and making it the new "Canonical" standard. You're effectively saying: *"The backtest found a better version of my strategy than I drew on the chart; I'm going to update my chart to match the backtest."*
+This gives Cursor a clear pass/fail criterion rather than "match current behavior" which is squishy.
+The "diagnosticVersion" mechanism isn't fully specified. It's mentioned as a versioning field but the plan doesn't say what to do when versions differ — fall back gracefully, refuse to render, log a warning, etc. Worth one sentence: "When the frontend encounters a diagnosticVersion it doesn't recognize, it logs a console warning and falls back to JS evaluator display. The current version is v1 for this refactor; later strategy evolutions increment."
+Phase 4's fallback condition is "diagnostics are absent" but doesn't define absent. Is null absent? Empty object? Missing field entirely? Worth specifying: "Fallback triggers when the backend diagnostics field is missing entirely from the API response (not when it's present but null or empty). Present-but-empty diagnostics indicate the backend evaluated and produced no diagnostics, which is itself a state to display."

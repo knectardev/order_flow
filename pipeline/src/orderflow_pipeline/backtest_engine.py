@@ -10,7 +10,7 @@ from uuid import uuid4
 import duckdb
 
 from . import db as db_module
-from .strategies.legacy_fallback_logic import LegacyFallbackConfig, derive_fires_from_bars
+from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
 
 
 def _safe_float(v: float | int | None, default: float = 0.0) -> float:
@@ -189,13 +189,14 @@ class BacktestEngine:
     @staticmethod
     def _derive_fires_from_bars(
         bars: list[dict],
+        timeframe: str,
         watch_ids: set[str] | None = None,
         use_regime_filter: bool = True,
     ) -> dict[datetime, list[dict]]:
         return derive_fires_from_bars(
             bars,
             watch_ids=watch_ids,
-            config=LegacyFallbackConfig(use_regime_filter=use_regime_filter),
+            config=config_for_timeframe(timeframe, use_regime_filter=use_regime_filter),
         )
 
     @staticmethod
@@ -270,6 +271,7 @@ class BacktestEngine:
             # fire streams while keeping the same bar inputs and broker logic.
             fires_by_time = self._derive_fires_from_bars(
                 bars,
+                timeframe,
                 watch_ids=watch_ids,
                 use_regime_filter=False,
             )

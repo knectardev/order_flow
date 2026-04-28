@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from orderflow_pipeline.backtest_engine import BacktestEngine
 from orderflow_pipeline.strategies.legacy_fallback_logic import (
     LegacyFallbackConfig,
+    config_for_timeframe,
     derive_fires_from_bars,
 )
 
@@ -44,6 +45,7 @@ def test_legacy_strategy_matches_existing_fallback_regime_on() -> None:
     )
     current = BacktestEngine._derive_fires_from_bars(
         bars,
+        "1m",
         watch_ids={"valueEdgeReject", "fade", "breakout", "absorptionWall"},
         use_regime_filter=True,
     )
@@ -59,8 +61,19 @@ def test_legacy_strategy_matches_existing_fallback_regime_off() -> None:
     )
     current = BacktestEngine._derive_fires_from_bars(
         bars,
+        "1m",
         watch_ids={"valueEdgeReject"},
         use_regime_filter=False,
     )
     assert legacy == current
+
+
+def test_timeframe_specific_config_generates_on_1h() -> None:
+    bars = _bars(40)
+    fires = derive_fires_from_bars(
+        bars,
+        watch_ids={"breakout", "fade", "absorptionWall", "valueEdgeReject"},
+        config=config_for_timeframe("1h", use_regime_filter=True),
+    )
+    assert len(fires) > 0
 

@@ -19,6 +19,27 @@ class LegacyFallbackConfig:
     warmup_start: int = 12
 
 
+def config_for_timeframe(timeframe: str, *, use_regime_filter: bool = True) -> LegacyFallbackConfig:
+    tf = (timeframe or "1m").strip()
+    if tf == "15m":
+        return LegacyFallbackConfig(
+            use_regime_filter=use_regime_filter,
+            cooldown_bars=2,
+            min_bars=12,
+            lookback_bars=6,
+            warmup_start=8,
+        )
+    if tf == "1h":
+        return LegacyFallbackConfig(
+            use_regime_filter=use_regime_filter,
+            cooldown_bars=1,
+            min_bars=4,
+            lookback_bars=3,
+            warmup_start=3,
+        )
+    return LegacyFallbackConfig(use_regime_filter=use_regime_filter)
+
+
 def derive_fires_from_bars(
     bars: list[dict],
     *,
@@ -38,7 +59,14 @@ def derive_fires_from_bars(
             return True
         return (idx - prev) >= cfg.cooldown_bars
 
-    def emit(watch_id: str, direction: str, price: float, idx: int) -> None:
+    def emit(
+        watch_id: str,
+        direction: str,
+        price: float,
+        idx: int,
+        *,
+        diagnostics: dict | None = None,
+    ) -> None:
         last_idx[(watch_id, direction)] = idx
         ts = bars[idx]["bar_time"]
         out.setdefault(ts, []).append(
@@ -47,6 +75,7 @@ def derive_fires_from_bars(
                 "watch_id": watch_id,
                 "direction": direction,
                 "price": round(float(price), 6),
+                "diagnostics": diagnostics,
             }
         )
 
@@ -68,10 +97,46 @@ def derive_fires_from_bars(
             vol_gate = vol > (avg_vol * (1.65 if cfg.use_regime_filter else 1.0))
             if high > recent_high:
                 if vol_gate and can_emit("breakout", "up", i):
-                    emit("breakout", "up", high, i)
+                    emit(
+                        "breakout",
+                        "up",
+                        high,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "rangeBreak": True,
+                                "volumeGate": bool(vol_gate),
+                                "cooldown": True,
+                            },
+                            "passing": 3,
+                            "total": 3,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"recentHigh": recent_high, "avgVol": avg_vol},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
             elif low < recent_low:
                 if vol_gate and can_emit("breakout", "down", i):
-                    emit("breakout", "down", low, i)
+                    emit(
+                        "breakout",
+                        "down",
+                        low,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "rangeBreak": True,
+                                "volumeGate": bool(vol_gate),
+                                "cooldown": True,
+                            },
+                            "passing": 3,
+                            "total": 3,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"recentLow": recent_low, "avgVol": avg_vol},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
 
         closes10 = [float(x["close"]) for x in prev10]
         mean_close = sum(closes10) / len(closes10)
@@ -85,10 +150,46 @@ def derive_fires_from_bars(
             stretch = 1.0 if cfg.use_regime_filter else 0.6
             if all(x > mean_close + (stretch * sigma) for x in last3) and close < prev_close:
                 if can_emit("fade", "down", i):
-                    emit("fade", "down", close, i)
+                    emit(
+                        "fade",
+                        "down",
+                        close,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "stretch": True,
+                                "meanRevertTurn": True,
+                                "cooldown": True,
+                            },
+                            "passing": 3,
+                            "total": 3,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"sigma": sigma, "meanClose": mean_close},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
             elif all(x < mean_close - (stretch * sigma) for x in last3) and close > prev_close:
                 if can_emit("fade", "up", i):
-                    emit("fade", "up", close, i)
+                    emit(
+                        "fade",
+                        "up",
+                        close,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "stretch": True,
+                                "meanRevertTurn": True,
+                                "cooldown": True,
+                            },
+                            "passing": 3,
+                            "total": 3,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"sigma": sigma, "meanClose": mean_close},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
 
         if (watch_ids is None) or ("absorptionWall" in watch_ids):
             body = abs(close - open_)
@@ -98,7 +199,26 @@ def derive_fires_from_bars(
             if vol_ok and body <= (0.40 * rng) and mean_ok:
                 direction = "down" if close >= open_ else "up"
                 if can_emit("absorptionWall", direction, i):
-                    emit("absorptionWall", direction, close, i)
+                    emit(
+                        "absorptionWall",
+                        direction,
+                        close,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "volumeGate": bool(vol_ok),
+                                "stallBody": bool(body <= (0.40 * rng)),
+                                "meanGate": bool(mean_ok),
+                                "cooldown": True,
+                            },
+                            "passing": 4,
+                            "total": 4,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"range": rng, "body": body},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
 
         if (watch_ids is None) or ("valueEdgeReject" in watch_ids):
             vol_ratio = vol / avg_vol if avg_vol > 0 else 1.0
@@ -117,10 +237,48 @@ def derive_fires_from_bars(
             vol_ok = normal_vol if cfg.use_regime_filter else True
             if vol_ok and upper_reject:
                 if can_emit("valueEdgeReject", "down", i):
-                    emit("valueEdgeReject", "down", close, i)
+                    emit(
+                        "valueEdgeReject",
+                        "down",
+                        close,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "failedAtEdge": True,
+                                "rejectionWick": True,
+                                "volumeGate": bool(vol_ok),
+                                "cooldown": True,
+                            },
+                            "passing": 4,
+                            "total": 4,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"edge": "vah", "volRatio": vol_ratio},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
             elif vol_ok and lower_reject:
                 if can_emit("valueEdgeReject", "up", i):
-                    emit("valueEdgeReject", "up", close, i)
+                    emit(
+                        "valueEdgeReject",
+                        "up",
+                        close,
+                        i,
+                        diagnostics={
+                            "checks": {
+                                "failedAtEdge": True,
+                                "rejectionWick": True,
+                                "volumeGate": bool(vol_ok),
+                                "cooldown": True,
+                            },
+                            "passing": 4,
+                            "total": 4,
+                            "alignment": None,
+                            "tag": "STANDARD",
+                            "strategyExtras": {"edge": "val", "volRatio": vol_ratio},
+                            "diagnosticVersion": "v1",
+                        },
+                    )
 
     return out
 

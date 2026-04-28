@@ -256,6 +256,7 @@ Event log (`src/render/eventLog.js`) must:
   - `STANDARD` → near-transparent green/red leaning in the direction of `score` sign.
 - Filter `SUPPRESSED` fires from the visible rows unless `state.showSuppressed === true`.
 - In API replay, chart markers **and** **`replay.allEvents`** for the inventory reflect **`loadEventsForActiveTypes()`** when glossary checkboxes are selected; otherwise **`replay.allEvents`** may be empty at rest. Fires still use **`replay.allFires`** after **`precomputeAllFires()`**. Synthetic mode continues to use **`state.events`** live + **`canonicalFires`** when not using the deferred primitive path.
+- In API replay with `apiBase` present, frontend canonical evaluators remain available for watch diagnostics, but they must not emit/append frontend canonical fire rows; plotted canonical fires are sourced from backend `/fires` only.
 - **No separate Type dropdown:** the log is filtered by the same **`activeEventTypes`** / **`activeCanonicalFireTypes`** sets as **Signals & glossary** (see `src/render/eventLog.js` `_checklistPassesRow`). API replay: if both sets are empty, the log stays empty with a hint to check types in the glossary. Synthetic: when both sets are empty, the full interleaved timeline shows (glossary panel isn’t populated for inventory).
 - **Column sort:** header buttons on **Time**, **Align** (canonical alignment score; primitive rows sort after fires), and **Price** toggle asc/desc. State: **`state.eventLogSort`** `{ column, dir }` (`src/state.js`).
 
@@ -518,7 +519,7 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
     - markers are offset from candle bodies with a dark halo for visual separation
     - teal markers = regime-filter ON run
     - orange markers = regime-filter OFF run
-    - overlay visibility is user-toggleable via `Show trade markers on chart`
+    - marker visibility is independently toggleable via `Show Regime ON markers` and `Show Regime OFF markers`
   - Backtest status line includes skipped-fire summaries (ON/OFF) to explain why chart fires did not become entries.
   - Inputs: capital, commission-per-side, slippage ticks.
   - Run action button.
@@ -530,3 +531,14 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 - `skipped_fires` stores one row per non-executed fire candidate keyed by `(run_id, bar_time, watch_id, direction, reason_code)`.
 - Required fields: `reason_code`; optional diagnostics include `price`, `position_side_before`, `position_size_before`, `reason_detail_json`.
 - `backtest_runs.metadata_json` includes a `skipped_fires` reason-count summary for fast run-level diagnostics.
+
+## 15. API-First SSoT Diagnostics Contract
+
+- In API/real mode, canonical fire emission is backend-owned. Frontend JS evaluators may still run for display fallback but must not emit or mutate API-mode fire streams.
+- Pipeline fire generation and backtest compare derivation both use the same Python strategy function (`derive_fires_from_bars`) with timeframe-specific config via `config_for_timeframe`.
+- Pipeline fire writes include additive diagnostics fields on `fires`: `diagnostic_version` and `diagnostics_json` (JSON payload, current version `v1`).
+- `GET /fires` remains backward compatible by default. Diagnostics are opt-in with `includeDiagnostics=1`; default response shape is unchanged.
+- API-mode UI diagnostics consume backend diagnostics when present. Fallback to JS evaluators is allowed only when diagnostics fields are missing from the response; present-but-null is treated as backend-owned state.
+- Unknown diagnostics versions in API responses must log a console warning and use display-only fallback behavior.
+- Aggregation/recompute must generate canonical fires for all supported timeframes (`1m`, `15m`, `1h`) when bars exist, and backtest smoke checks must succeed at those timeframes.
+- Synthetic mode is explicitly legacy and non-authoritative for API/backtest SSoT guarantees in this phase.

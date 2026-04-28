@@ -124,6 +124,8 @@ function openModal(modalId, openOpts) {
     hint.className = 'watch-snapshot-hint';
     if (fire.checks) {
       hint.textContent = 'Gates below are the snapshot from when this entry fired; they do not follow the current bar.';
+    } else if (fire.diagnosticsPresent) {
+      hint.textContent = 'Backend provided this fire without diagnostics payload; showing unavailable state for this snapshot.';
     } else {
       hint.textContent = 'This log entry has no stored gate snapshot; values below are live state.';
     }
@@ -167,6 +169,8 @@ function openModal(modalId, openOpts) {
         alignment: fire.alignment,
         tag: fire.tag,
       };
+    } else if (fire && fire.watchId === 'breakout' && fire.diagnosticsPresent) {
+      c = { checks: { cell: false, sweep: false, flow: false, clean: false, alignment: false }, passing: 0, total: 5, fired: false, direction: fire.direction, alignment: null, tag: null };
     } else {
       c = evaluateBreakoutCanonical();
     }
@@ -185,6 +189,8 @@ function openModal(modalId, openOpts) {
         alignment: fire.alignment,
         tag: fire.tag,
       };
+    } else if (fire && fire.watchId === 'fade' && fire.diagnosticsPresent) {
+      c = { checks: { balanced: false, cell: false, stretchPOC: false, stretchVWAP: false, noMomentum: false, alignment: false }, passing: 0, total: 6, fired: false, direction: fire.direction, stretchDir: null, alignment: null, tag: null };
     } else {
       c = evaluateFadeCanonical();
     }
@@ -202,6 +208,8 @@ function openModal(modalId, openOpts) {
         alignment: fire.alignment,
         tag: fire.tag,
       };
+    } else if (fire && fire.watchId === 'absorptionWall' && fire.diagnosticsPresent) {
+      c = { checks: { cell: false, stall: false, volume: false, level: false, alignment: false }, passing: 0, total: 5, fired: false, direction: fire.direction, alignment: null, tag: null };
     } else {
       c = evaluateAbsorptionWallCanonical();
     }
@@ -221,6 +229,8 @@ function openModal(modalId, openOpts) {
         alignment: fire.alignment,
         tag: fire.tag,
       };
+    } else if (fire && fire.watchId === 'valueEdgeReject' && fire.diagnosticsPresent) {
+      c = { checks: { regime: false, failedAtEdge: false, rejectionWick: false, volume: false, alignment: false }, passing: 0, total: 5, fired: false, direction: fire.direction, edge: fire.edge ?? null, anchorPrice: fire.anchorPrice ?? null, alignment: null, tag: null };
     } else {
       c = evaluateValueEdgeReject();
     }

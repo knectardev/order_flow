@@ -124,7 +124,8 @@ export const state = {
   backtest: {
     runParams: {
       scope: 'all',
-      showMarkers: true,
+      showMarkersOn: true,
+      showMarkersOff: true,
       initialCapital: 50000,
       commissionPerSide: 2,
       slippageTicks: 1,

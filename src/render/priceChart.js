@@ -749,8 +749,9 @@ function drawPriceChart() {
   // visual sanity-check between chart signals and executed trade points.
   const btFiltered = state.backtest?.compare?.filtered?.trades || [];
   const btUnfiltered = state.backtest?.compare?.unfiltered?.trades || [];
-  const showBtMarkers = state.backtest?.runParams?.showMarkers !== false;
-  if (showBtMarkers && (btFiltered.length || btUnfiltered.length) && allBars.length) {
+  const showBtMarkersOn = state.backtest?.runParams?.showMarkersOn !== false;
+  const showBtMarkersOff = state.backtest?.runParams?.showMarkersOff !== false;
+  if ((showBtMarkersOn || showBtMarkersOff) && (btFiltered.length || btUnfiltered.length) && allBars.length) {
     const idxByMs = new Map();
     for (let i = 0; i < allBars.length; i++) {
       idxByMs.set(_barTimeMs(allBars[i].time), i);
@@ -819,8 +820,8 @@ function drawPriceChart() {
         }
       }
     };
-    drawTradeMarkers(btFiltered, 'rgba(33, 160, 149, 0.95)');
-    drawTradeMarkers(btUnfiltered, 'rgba(211, 145, 69, 0.95)');
+    if (showBtMarkersOn) drawTradeMarkers(btFiltered, 'rgba(33, 160, 149, 0.95)');
+    if (showBtMarkersOff) drawTradeMarkers(btUnfiltered, 'rgba(211, 145, 69, 0.95)');
   }
 
   // Volume sub-band — bottom of the price canvas, color-matched to candle direction.

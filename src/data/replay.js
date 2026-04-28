@@ -28,6 +28,8 @@ const URL_PARAM_SELECTION_KIND = 'selection';
 const URL_PARAM_SELECTION_FIRE_TIME = 'selectionFireTime';
 const URL_PARAM_SELECTION_FIRE_WATCH = 'selectionFireWatch';
 const URL_PARAM_SELECTION_CELLS = 'selectionCells';
+const KNOWN_DIAGNOSTIC_VERSION = 'v1';
+const _unknownDiagVersionsWarned = new Set();
 
 function _clearSelectionParamsInUrl() {
   const url = new URL(window.location.href);
@@ -182,10 +184,18 @@ function _commitRealBar(idx) {
   const fadeCanonical = evaluateFadeCanonical();
   const absorptionWallCanonical = evaluateAbsorptionWallCanonical();
   const valueEdgeRejectCanonical = evaluateValueEdgeReject();
-  handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, sessionStartIdx);
-  handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, sessionStartIdx);
-  handleWatchFire('absorptionWall', absorptionWallCanonical, state.absorptionWallWatch, ABSORPTION_WALL_CELL, sessionStartIdx);
-  handleWatchFire('valueEdgeReject', valueEdgeRejectCanonical, state.valueEdgeRejectWatch, VALUE_EDGE_REJECT_LOCK_CELL, sessionStartIdx);
+
+  // API-mode consolidation: strategy fire generation is authoritative on the
+  // backend (DuckDB `fires` via /fires). Keep evaluator calls for watch-panel
+  // diagnostics, but do not emit frontend canonical fire rows in this mode.
+  // This avoids maintaining parallel fire-generation paths.
+  const emitFrontendCanonicalFires = !(state.replay.mode === 'real' && !!state.replay.apiBase);
+  if (emitFrontendCanonicalFires) {
+    handleWatchFire('breakout', breakoutCanonical, state.breakoutWatch, BREAKOUT_CELL, sessionStartIdx);
+    handleWatchFire('fade',     fadeCanonical,     state.fadeWatch,     FADE_CELL, sessionStartIdx);
+    handleWatchFire('absorptionWall', absorptionWallCanonical, state.absorptionWallWatch, ABSORPTION_WALL_CELL, sessionStartIdx);
+    handleWatchFire('valueEdgeReject', valueEdgeRejectCanonical, state.valueEdgeRejectWatch, VALUE_EDGE_REJECT_LOCK_CELL, sessionStartIdx);
+  }
   return { breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical };
 }
 
@@ -451,16 +461,37 @@ async function _loadAllFiresFromApi() {
   if (!dr?.min || !dr?.max) return;
   const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
   const url = `${state.replay.apiBase}/fires?timeframe=${encodeURIComponent(tf)}`
-    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`;
+    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`
+    + '&includeDiagnostics=1';
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     const rows = Array.isArray(data.fires) ? data.fires : [];
-    state.replay.allFires = rows.map(f => ({
-      ...f,
-      barTime: f.barTime || f.time || f.bar_time,
-    }));
+    state.replay.allFires = rows.map(f => {
+      const diagnosticsPresent = Object.prototype.hasOwnProperty.call(f, 'diagnostics');
+      const d = f.diagnostics || {};
+      const diagnosticVersion = f.diagnosticVersion || null;
+      if (diagnosticsPresent && diagnosticVersion && diagnosticVersion !== KNOWN_DIAGNOSTIC_VERSION) {
+        if (!_unknownDiagVersionsWarned.has(diagnosticVersion)) {
+          _unknownDiagVersionsWarned.add(diagnosticVersion);
+          console.warn(`[orderflow] Unknown diagnostics version '${diagnosticVersion}' from /fires; using display-only fallback.`);
+        }
+      }
+      return {
+        ...f,
+        barTime: f.barTime || f.time || f.bar_time,
+        checks: diagnosticsPresent ? (d.checks ?? null) : undefined,
+        passing: diagnosticsPresent ? (d.passing ?? null) : undefined,
+        total: diagnosticsPresent ? (d.total ?? null) : undefined,
+        alignment: diagnosticsPresent ? (d.alignment ?? null) : undefined,
+        tag: diagnosticsPresent ? (d.tag ?? null) : undefined,
+        edge: diagnosticsPresent ? (d.strategyExtras?.edge ?? null) : undefined,
+        anchorPrice: diagnosticsPresent ? (d.strategyExtras?.anchorPrice ?? null) : undefined,
+        diagnosticsPresent,
+        diagnosticVersion,
+      };
+    });
   } catch (e) {
     console.warn('[orderflow] _loadAllFiresFromApi failed:', e.message);
     state.replay.allFires = [];

@@ -57,6 +57,7 @@ Run:  uvicorn api.main:app --port 8001
 from __future__ import annotations
 
 import os
+import json
 import re
 import sys
 from datetime import date, datetime
@@ -613,6 +614,7 @@ def get_fires(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
     timeframe: str | None = Query(default=None),
+    include_diagnostics: int = Query(default=0, alias="includeDiagnostics"),
 ) -> dict:
     """Return fires in [from, to]. Mirrors the JS canonicalFires shape.
 
@@ -627,10 +629,12 @@ def get_fires(
         if lo is None or hi is None:
             raise HTTPException(status_code=400, detail="Provide ?from= and ?to=.")
         # Phase 6: LEFT JOIN bars for bias_state + parent_*_bias.
+        diag_select = ", f.diagnostic_version, f.diagnostics_json" if include_diagnostics else ""
         rows = _row_to_dict(con.execute(
             "SELECT f.bar_time, f.watch_id, f.direction, f.price, f.outcome, f.outcome_resolved_at, "
-            "       b.bias_state, b.parent_1h_bias, b.parent_15m_bias "
-            "FROM fires f "
+            "       b.bias_state, b.parent_1h_bias, b.parent_15m_bias"
+            + diag_select +
+            " FROM fires f "
             "LEFT JOIN bars b ON b.bar_time = f.bar_time AND b.timeframe = f.timeframe "
             "WHERE f.timeframe = ? AND f.bar_time BETWEEN ? AND ? ORDER BY f.bar_time",
             [tf, lo, hi],
@@ -640,7 +644,7 @@ def get_fires(
     return {
         "timeframe": tf,
         "fires": [
-            {
+            ({
                 "barTime":   r["bar_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "watchId":   r["watch_id"],
                 "direction": r["direction"],
@@ -652,7 +656,14 @@ def get_fires(
                 ),
                 "biasState": r.get("bias_state"),
                 **_attach_htf_bias(r, tf),
-            }
+            } | (
+                {
+                    "diagnosticVersion": r.get("diagnostic_version"),
+                    "diagnostics": (json.loads(r["diagnostics_json"]) if r.get("diagnostics_json") else None),
+                }
+                if include_diagnostics
+                else {}
+            ))
             for r in rows
         ]
     }

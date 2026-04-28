@@ -166,14 +166,23 @@ function bindBacktestUI() {
   const capInput = document.getElementById('btInitialCapital');
   const commInput = document.getElementById('btCommission');
   const slipInput = document.getElementById('btSlippage');
-  const markersInput = document.getElementById('btShowMarkers');
-  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !markersInput) return;
-  markersInput.checked = state.backtest.runParams.showMarkers !== false;
-
-  markersInput.addEventListener('change', () => {
+  const markersOnInput = document.getElementById('btShowMarkersOn');
+  const markersOffInput = document.getElementById('btShowMarkersOff');
+  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !markersOnInput || !markersOffInput) return;
+  markersOnInput.checked = state.backtest.runParams.showMarkersOn !== false;
+  markersOffInput.checked = state.backtest.runParams.showMarkersOff !== false;
+  markersOnInput.addEventListener('change', () => {
     state.backtest.runParams = {
       ...state.backtest.runParams,
-      showMarkers: !!markersInput.checked,
+      showMarkersOn: !!markersOnInput.checked,
+    };
+    drawPriceChart();
+    renderBacktestPanel();
+  });
+  markersOffInput.addEventListener('change', () => {
+    state.backtest.runParams = {
+      ...state.backtest.runParams,
+      showMarkersOff: !!markersOffInput.checked,
     };
     drawPriceChart();
     renderBacktestPanel();
@@ -185,7 +194,8 @@ function bindBacktestUI() {
     state.backtest.error = null;
     state.backtest.runParams = {
       scope: String(scopeInput.value || 'all'),
-      showMarkers: !!markersInput.checked,
+      showMarkersOn: !!markersOnInput.checked,
+      showMarkersOff: !!markersOffInput.checked,
       initialCapital: Number(capInput.value || 50000),
       commissionPerSide: Number(commInput.value || 2),
       slippageTicks: Number(slipInput.value || 1),

@@ -22,6 +22,7 @@ Phase 5 multi-timeframe layout:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from datetime import date, datetime
@@ -34,7 +35,7 @@ from .aggregate import (
 )
 from .decode import iter_trades
 from .serialize import DEFAULT_TUNINGS, write_index, write_session_json
-from .strategies.legacy_fallback_logic import LegacyFallbackConfig, derive_fires_from_bars
+from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
 from .symbology import resolve_front_month
 
 # Phase 6: timeframes are processed HTF-first within each session so the
@@ -352,7 +353,7 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
     derived = derive_fires_from_bars(
         bar_rows,
         watch_ids={"breakout", "fade", "absorptionWall", "valueEdgeReject"},
-        config=LegacyFallbackConfig(use_regime_filter=True),
+        config=config_for_timeframe(timeframe, use_regime_filter=True),
     )
     for bt, batch in sorted(derived.items(), key=lambda kv: kv[0]):
         for fire in batch:
@@ -365,8 +366,14 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
                     "price": fire["price"],
                     "outcome": None,
                     "outcome_resolved_at": None,
+                    "diagnostic_version": fire.get("diagnostics", {}).get("diagnosticVersion"),
+                    "diagnostics_json": json.dumps(fire.get("diagnostics")) if fire.get("diagnostics") is not None else None,
                 }
             )
+    if len(bar_rows) > 0 and len(fires_rows) == 0:
+        raise ValueError(
+            f"No canonical fires generated for timeframe={timeframe} with {len(bar_rows)} bars."
+        )
     fires_df = pd.DataFrame(
         fires_rows,
         columns=[
@@ -377,6 +384,8 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
             "price",
             "outcome",
             "outcome_resolved_at",
+            "diagnostic_version",
+            "diagnostics_json",
         ],
     )
 
@@ -531,7 +540,7 @@ def cmd_recompute_fires(args: argparse.Namespace) -> int:
         derived = derive_fires_from_bars(
             bar_rows,
             watch_ids=watch_ids,
-            config=LegacyFallbackConfig(use_regime_filter=bool(args.use_regime_filter)),
+            config=config_for_timeframe(tf, use_regime_filter=bool(args.use_regime_filter)),
         )
         fire_rows = []
         for bt, batch in sorted(derived.items(), key=lambda kv: kv[0]):
@@ -545,6 +554,8 @@ def cmd_recompute_fires(args: argparse.Namespace) -> int:
                         "price": f["price"],
                         "outcome": None,
                         "outcome_resolved_at": None,
+                        "diagnostic_version": f.get("diagnostics", {}).get("diagnosticVersion"),
+                        "diagnostics_json": json.dumps(f.get("diagnostics")) if f.get("diagnostics") is not None else None,
                     }
                 )
 
@@ -562,14 +573,16 @@ def cmd_recompute_fires(args: argparse.Namespace) -> int:
                 "price",
                 "outcome",
                 "outcome_resolved_at",
+                "diagnostic_version",
+                "diagnostics_json",
             ],
         )
         if len(fires_df) > 0:
             con.execute(
                 """
                 INSERT INTO fires
-                    (bar_time, timeframe, watch_id, direction, price, outcome, outcome_resolved_at)
-                SELECT bar_time, timeframe, watch_id, direction, price, outcome, outcome_resolved_at
+                    (bar_time, timeframe, watch_id, direction, price, outcome, outcome_resolved_at, diagnostic_version, diagnostics_json)
+                SELECT bar_time, timeframe, watch_id, direction, price, outcome, outcome_resolved_at, diagnostic_version, diagnostics_json
                 FROM fires_df
                 """
             )
