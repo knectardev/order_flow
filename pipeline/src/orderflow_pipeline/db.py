@@ -207,6 +207,15 @@ _SCHEMA_SQL: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS backtest_benchmarks (
+        run_id               VARCHAR    NOT NULL,
+        strategy             VARCHAR    NOT NULL,
+        bar_time             TIMESTAMP  NOT NULL,
+        equity               DOUBLE     NOT NULL,
+        PRIMARY KEY (run_id, strategy, bar_time)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS skipped_fires (
         run_id                VARCHAR    NOT NULL,
         bar_time              TIMESTAMP  NOT NULL,
@@ -224,6 +233,7 @@ _SCHEMA_SQL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_backtest_runs_tf_time ON backtest_runs(timeframe, from_time, to_time)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_trades_run ON backtest_trades(run_id, entry_time)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_equity_run ON backtest_equity(run_id, bar_time)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_bench_run ON backtest_benchmarks(run_id, strategy, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_skipped_fires_run ON skipped_fires(run_id, bar_time)",
 )
 
@@ -414,6 +424,7 @@ def write_backtest_results(
     run_row: dict[str, Any],
     trades: list[dict[str, Any]],
     equity_points: list[dict[str, Any]],
+    benchmark_points: list[dict[str, Any]] | None = None,
     skipped_fires: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist one backtest run plus its trades/equity timeline atomically."""
@@ -422,6 +433,7 @@ def write_backtest_results(
         con.execute("DELETE FROM backtest_runs WHERE run_id = ?", [run_row["run_id"]])
         con.execute("DELETE FROM backtest_trades WHERE run_id = ?", [run_row["run_id"]])
         con.execute("DELETE FROM backtest_equity WHERE run_id = ?", [run_row["run_id"]])
+        con.execute("DELETE FROM backtest_benchmarks WHERE run_id = ?", [run_row["run_id"]])
         con.execute("DELETE FROM skipped_fires WHERE run_id = ?", [run_row["run_id"]])
 
         con.execute(
@@ -503,6 +515,25 @@ def write_backtest_results(
                         p["realized_pnl"],
                     ]
                     for p in equity_points
+                ],
+            )
+
+        if benchmark_points:
+            con.executemany(
+                """
+                INSERT INTO backtest_benchmarks (
+                    run_id, strategy, bar_time, equity
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    [
+                        p["run_id"],
+                        p["strategy"],
+                        p["bar_time"],
+                        p["equity"],
+                    ]
+                    for p in benchmark_points
                 ],
             )
 

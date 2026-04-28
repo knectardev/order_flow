@@ -331,6 +331,19 @@ class BacktestEngine:
         net_pnl = end_equity - start_equity
         sharpe = self._simple_sharpe(broker.equity_curve)
         max_dd = self._max_drawdown(broker.equity_curve)
+        entry_px = _safe_float(bars[0].get("close"))
+        benchmark_points = [
+            {
+                "bar_time": b["bar_time"],
+                "strategy": "buy_hold",
+                "equity": round(
+                    config.initial_capital
+                    + ((float(b["close"]) - entry_px) * config.point_value * config.qty),
+                    6,
+                ),
+            }
+            for b in bars
+        ]
 
         run_id = str(uuid4())
         created_at = datetime.utcnow()
@@ -366,6 +379,7 @@ class BacktestEngine:
         }
         trade_rows = [{**t, "run_id": run_id} for t in closed]
         skipped_rows = [{**s, "run_id": run_id} for s in skipped_fires]
+        benchmark_rows = [{**p, "run_id": run_id} for p in benchmark_points]
         # Guard against duplicate timestamps (e.g. final flatten + mark in same bar).
         eq_by_time: dict[datetime, dict] = {}
         for p in broker.equity_curve:
@@ -376,6 +390,7 @@ class BacktestEngine:
             run_row,
             trade_rows,
             equity_rows,
+            benchmark_points=benchmark_rows,
             skipped_fires=skipped_rows,
         )
         return {

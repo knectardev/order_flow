@@ -131,6 +131,7 @@ async function refreshBacktestPanel(runId = null) {
       runId: stats.runId,
       stats,
       equity: equity.points || [],
+      benchmark: equity.benchmark?.points || [],
       trades: trades.trades || [],
       skipped: {
         summary: skipped.summary || {},
@@ -138,7 +139,7 @@ async function refreshBacktestPanel(runId = null) {
       },
     };
     state.backtest.compare.unfiltered = {
-      runId: null, stats: null, equity: [], trades: [], skipped: { summary: {}, rows: [] },
+      runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] },
     };
     state.backtest.error = null;
   } catch (_) {
@@ -234,6 +235,7 @@ function bindBacktestUI() {
         runId: filteredRun.runId,
         stats: filteredRun,
         equity: eqA.points || [],
+        benchmark: eqA.benchmark?.points || [],
         trades: trA.trades || [],
         skipped: { summary: skA.summary || {}, rows: skA.rows || [] },
       };
@@ -241,6 +243,7 @@ function bindBacktestUI() {
         runId: unfilteredRun.runId,
         stats: unfilteredRun,
         equity: eqB.points || [],
+        benchmark: eqB.benchmark?.points || [],
         trades: trB.trades || [],
         skipped: { summary: skB.summary || {}, rows: skB.rows || [] },
       };

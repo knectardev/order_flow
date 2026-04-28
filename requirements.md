@@ -491,7 +491,8 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 - `backtest_runs` stores one summary row per run (`run_id`, params, aggregate metrics, net P&L).
 - `backtest_trades` stores closed-trade records (`entry_time`, `exit_time`, direction, prices, gross/net P&L, bars held, source watch).
 - `backtest_equity` stores the mark-to-market equity series by bar timestamp.
-- Writes are transactional and keyed by `run_id`; re-writing an existing `run_id` replaces that run's rows in all three tables.
+- `backtest_benchmarks` stores per-run benchmark curves keyed by `(run_id, strategy, bar_time)`; MVP strategy is `buy_hold`.
+- Writes are transactional and keyed by `run_id`; re-writing an existing `run_id` replaces that run's rows in all backtest tables.
 
 ### 14.3 Broker / Accounting
 
@@ -506,12 +507,13 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 - `POST /api/backtest/run` runs synchronously for a requested timeframe/window and returns run summary (`runId`, `tradeCount`, `winRate`, `sharpe`, `maxDrawdown`, `netPnl`, `endingEquity`).
 - `POST /api/backtest/run` accepts optional `watch_ids` to scope execution to specific canonical watches (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`).
 - `GET /api/backtest/stats`, `/api/backtest/equity`, `/api/backtest/trades`, `/api/backtest/skipped-fires` return latest run by default, or a specific run via `runId`.
+- `GET /api/backtest/equity` includes strategy equity points plus a benchmark payload (`benchmark.strategy='buy_hold'`, `benchmark.points`).
 - Dashboard `Performance` panel includes:
   - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params).
   - On each run, a two-variant comparison:
     - **Regime filter ON** (teal): current strategy behavior.
     - **Regime filter OFF** (orange): same entry/exit logic with regime gating removed.
-  - Metrics cards render both variant values in matching colors, and the equity chart overlays both curves.
+  - Metrics cards render both variant values in matching colors, and the equity chart overlays both curves plus a persisted buy-and-hold benchmark line in pink.
   - Price chart overlays backtest executions for the visible window:
     - entry marker = triangle
     - exit marker = X

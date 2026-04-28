@@ -136,8 +136,8 @@ export const state = {
     equity: [],
     trades: [],
     compare: {
-      filtered: { runId: null, stats: null, equity: [], trades: [], skipped: { summary: {}, rows: [] } },
-      unfiltered: { runId: null, stats: null, equity: [], trades: [], skipped: { summary: {}, rows: [] } },
+      filtered: { runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] } },
+      unfiltered: { runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] } },
     },
     loading: false,
     error: null,

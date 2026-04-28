@@ -113,4 +113,9 @@ def test_backtest_persists_skip_reasons() -> None:
     assert "skipped_fires" in meta_json
     skipped = con.execute("SELECT reason_code FROM skipped_fires WHERE run_id = ?", [out["runId"]]).fetchall()
     assert any(r[0] == "already_in_position_same_side" for r in skipped)
+    bench = con.execute(
+        "SELECT COUNT(*) FROM backtest_benchmarks WHERE run_id = ? AND strategy = 'buy_hold'",
+        [out["runId"]],
+    ).fetchone()
+    assert bench and int(bench[0]) > 0
 

@@ -19,7 +19,7 @@ function _setDualStat(id, filtered, unfiltered, formatter) {
   el.innerHTML = `<span class="bt-val teal">${a}</span><span class="bt-val orange">${b}</span>`;
 }
 
-function _drawEquity(pointsA, pointsB) {
+function _drawEquity(pointsA, pointsB, benchmarkPoints) {
   const cv = document.getElementById('backtestEquityChart');
   if (!cv) return;
   const dpr = window.devicePixelRatio || 1;
@@ -41,16 +41,17 @@ function _drawEquity(pointsA, pointsB) {
 
   const pA = pointsA || [];
   const pB = pointsB || [];
-  if (pA.length < 2 && pB.length < 2) return;
-  const ys = [...pA, ...pB].map(p => Number(p.equity || 0));
+  const pBench = benchmarkPoints || [];
+  if (pA.length < 2 && pB.length < 2 && pBench.length < 2) return;
+  const ys = [...pA, ...pB, ...pBench].map(p => Number(p.equity || 0));
   const lo = Math.min(...ys);
   const hi = Math.max(...ys);
   const span = Math.max(1e-6, hi - lo);
 
-  const drawLine = (pts, color) => {
+  const drawLine = (pts, color, lineWidth = 1.8) => {
     if (!pts || pts.length < 2) return;
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = lineWidth;
     ctx.beginPath();
     pts.forEach((p, i) => {
       const x = (i / (pts.length - 1)) * (w - 1);
@@ -61,8 +62,9 @@ function _drawEquity(pointsA, pointsB) {
     ctx.stroke();
   };
 
-  drawLine(pA, '#21a095');
-  drawLine(pB, '#d39145');
+  drawLine(pA, '#21a095', 1.8);
+  drawLine(pB, '#d39145', 1.8);
+  drawLine(pBench, 'rgba(255, 79, 163, 0.35)', 0.7);
 }
 
 function renderBacktestPanel() {
@@ -92,7 +94,7 @@ function renderBacktestPanel() {
       statusEl.textContent = `Ready · ON ${summarize(f.skipped?.summary)} · OFF ${summarize(u.skipped?.summary)}`;
     }
   }
-  _drawEquity(f.equity || [], u.equity || []);
+  _drawEquity(f.equity || [], u.equity || [], f.benchmark || []);
 }
 
 export { renderBacktestPanel };

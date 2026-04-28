@@ -958,6 +958,15 @@ def get_backtest_equity(run_id: str | None = Query(default=None, alias="runId"))
             """,
             [rid],
         ).fetchall()
+        bench_rows = con.execute(
+            """
+            SELECT strategy, bar_time, equity
+            FROM backtest_benchmarks
+            WHERE run_id = ? AND strategy = 'buy_hold'
+            ORDER BY bar_time
+            """,
+            [rid],
+        ).fetchall()
     finally:
         con.close()
     return {
@@ -972,6 +981,16 @@ def get_backtest_equity(run_id: str | None = Query(default=None, alias="runId"))
             }
             for r in rows
         ],
+        "benchmark": {
+            "strategy": "buy_hold",
+            "points": [
+                {
+                    "time": r[1].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "equity": r[2],
+                }
+                for r in bench_rows
+            ],
+        },
     }
 
 
