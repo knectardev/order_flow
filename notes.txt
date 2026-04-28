@@ -1,22 +1,14 @@
-Reviewed against my prior critique — the tightening landed cleanly. Let me note specifically what improved and what I'd still flag.
-What's now solid.
-The "Decisions Locked For This Refactor" block at the top is exactly the right addition. Four explicit decisions stated up front prevents Cursor from re-deliberating them mid-implementation: API-mode evaluation is backend-owned (not just diagnostics display), synthetic stays as legacy, JSON payload over normalized table, additive schema. These were the four ambiguities in v1, and naming them as locked decisions is the right structural move.
-Phase 0 (Pre-Audit Baseline) is the most important addition. Without baseline snapshots of pre-refactor fire identities and diagnostic vectors, you can't actually verify the refactor preserved behavior — you can only verify it looks the same. Capturing the snapshot before touching anything makes Phase 6's parity diff possible. This addresses the biggest validation gap from v1.
-Phase 1 (Python Evaluator Consolidation Check) closes the "have you fixed the JS-Python drift only to discover Python-Python drift" risk. Worth being a discrete phase rather than a passing assumption.
-Phase 5 (De-duplication Guardrails) is now phrased as a hard requirement with specific scope: "Remove all API-mode code paths where JS evaluators can emit/mutate canonical fire streams." That's verifiable code, not a directional intent. The distinction between "fire emission role (synthetic only)" and "display-only diagnostics fallback (allowed in API mode)" is correctly made.
-Phase 6's parity diff with "explicit report of differences (if any), with root-cause classification and correctness disposition" is the right standard. Not just "verify things match" but "if they don't match, document why and which version was correct." That last clause matters because the answer affects how to interpret historical results — fires that were measured against a wrong evaluator have different trustworthiness than fires measured against the correct one. Recording this becomes institutional memory.
-Phase 7 makes synthetic-mode boundary an explicit deliverable rather than a deferred question. "Document deliberate policy" with future options recorded as separate roadmap is the right framing — not "we'll deal with it later" but "here's the deliberate decision and here's what would change it."
-The mermaid diagram now reflects the actual phase order and includes parity diff and synthetic boundary as explicit terminal nodes.
-The exit criteria expanded to include the parity diff disposition and the single-Python-evaluator constraint. All four exit criteria are now individually verifiable.
-A few small things I'd still tighten before sending.
-The Phase 0 baseline mechanism isn't specified. "Capture baseline snapshots across loaded sessions" leaves Cursor to invent the format. Worth adding one line: "Snapshot format: per-fire JSON dump of (fire_id, timestamp, watch_id, direction, all checks, passing, total, alignment, tag, strategy_extras). Stored in tests/baseline/pre_refactor_fires.json for parity comparison in Phase 6."
-This prevents Cursor from picking some lossy format that omits a field needed for diff comparison later.
-Phase 1's "consolidate if they do not" is conditional but doesn't bound the consolidation scope. If Cursor finds two Python evaluators, the consolidation could be a small refactor or a substantial one. Worth adding: "If consolidation work exceeds 1 day or requires schema changes, escalate before proceeding — don't expand Phase 1's scope without explicit approval."
-This protects against discovery work turning into a side project that delays the main refactor.
-Phase 6's parity diff doesn't specify what differs vs matches as the success threshold. Strict bit-equality is one bar; "no fire is added or removed, all check vectors match within tolerance" is another. Worth being explicit:
+"While we unify the signals, we need to fix the naive exit logic. The current 'flip-only' model is unrealistic.
 
-Parity diff success criteria: every fire in the pre-refactor baseline must appear in the post-refactor output with identical (timestamp, watch_id, direction). Per-fire diagnostic vectors must match exactly for passing, total, tag, and the boolean values of all checks entries. Numeric fields in strategy_extras may differ within floating-point tolerance (1e-9). Any other differences are findings that require root-cause classification before merge.
+Define Exit Params: Add support in the Python strategy module for stop_loss_ticks and take_profit_ticks.
 
-This gives Cursor a clear pass/fail criterion rather than "match current behavior" which is squishy.
-The "diagnosticVersion" mechanism isn't fully specified. It's mentioned as a versioning field but the plan doesn't say what to do when versions differ — fall back gracefully, refuse to render, log a warning, etc. Worth one sentence: "When the frontend encounters a diagnosticVersion it doesn't recognize, it logs a console warning and falls back to JS evaluator display. The current version is v1 for this refactor; later strategy evolutions increment."
-Phase 4's fallback condition is "diagnostics are absent" but doesn't define absent. Is null absent? Empty object? Missing field entirely? Worth specifying: "Fallback triggers when the backend diagnostics field is missing entirely from the API response (not when it's present but null or empty). Present-but-empty diagnostics indicate the backend evaluated and produced no diagnostics, which is itself a state to display."
+Update Backtest Engine: Modify the broker logic to monitor these levels on every 1m bar instead of just waiting for the next signal.
+
+Re-run Baseline: I want to see how the Sharpe holds up when every trade is forced to respect a hard stop loss."
+
+Add SL/TP Logic: Update backtest_engine.py to support stop_loss_ticks and take_profit_ticks.
+
+Intra-Bar Simulation: Since we use 1m bars, if a bar's High or Low hits our SL/TP, the trade must be closed at that price (with slippage).
+
+Validation: Re-run the Value Edge test. If the Sharpe is still high with a 4-tick stop loss, then we have a real strategy. If it collapses, we need to know now."
+

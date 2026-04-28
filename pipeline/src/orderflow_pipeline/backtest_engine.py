@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
@@ -11,6 +12,9 @@ import duckdb
 
 from . import db as db_module
 from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
+
+_BUY_HOLD_CACHE_MAX = 24
+_BUY_HOLD_CACHE: "OrderedDict[tuple, list[dict]]" = OrderedDict()
 
 
 def _safe_float(v: float | int | None, default: float = 0.0) -> float:
@@ -331,19 +335,42 @@ class BacktestEngine:
         net_pnl = end_equity - start_equity
         sharpe = self._simple_sharpe(broker.equity_curve)
         max_dd = self._max_drawdown(broker.equity_curve)
-        entry_px = _safe_float(bars[0].get("close"))
-        benchmark_points = [
-            {
-                "bar_time": b["bar_time"],
-                "strategy": "buy_hold",
-                "equity": round(
-                    config.initial_capital
-                    + ((float(b["close"]) - entry_px) * config.point_value * config.qty),
-                    6,
-                ),
-            }
-            for b in bars
-        ]
+        benchmark_points: list[dict] = []
+        benchmark_cached = False
+        # The benchmark is identical for ON/OFF runs with same window + params.
+        # Skip OFF-path benchmark generation to avoid duplicate work.
+        if use_regime_filter:
+            cache_key = (
+                timeframe,
+                from_time,
+                to_time,
+                round(config.initial_capital, 6),
+                int(config.qty),
+                round(config.point_value, 6),
+                len(bars),
+            )
+            cached = _BUY_HOLD_CACHE.get(cache_key)
+            if cached is not None:
+                benchmark_points = cached
+                benchmark_cached = True
+                _BUY_HOLD_CACHE.move_to_end(cache_key)
+            else:
+                entry_px = _safe_float(bars[0].get("close"))
+                benchmark_points = [
+                    {
+                        "bar_time": b["bar_time"],
+                        "strategy": "buy_hold",
+                        "equity": round(
+                            config.initial_capital
+                            + ((float(b["close"]) - entry_px) * config.point_value * config.qty),
+                            6,
+                        ),
+                    }
+                    for b in bars
+                ]
+                _BUY_HOLD_CACHE[cache_key] = benchmark_points
+                if len(_BUY_HOLD_CACHE) > _BUY_HOLD_CACHE_MAX:
+                    _BUY_HOLD_CACHE.popitem(last=False)
 
         run_id = str(uuid4())
         created_at = datetime.utcnow()
@@ -374,6 +401,7 @@ class BacktestEngine:
                     "fire_source": signal_source,
                     "use_regime_filter": bool(use_regime_filter),
                     "skipped_fires": dict(skip_counts),
+                    "buy_hold_cached": bool(benchmark_cached),
                 }
             ),
         }
