@@ -39,6 +39,7 @@ from typing import Iterable, Iterator
 from zoneinfo import ZoneInfo
 
 from .decode import Trade
+from .phat import compute_phat_features
 
 
 # Default cutoff for "large print" on ES (institutional/block-ish). The
@@ -82,6 +83,8 @@ class Bar:
     trade_count: int = 0
     large_print_count: int = 0
     bin_start_ns: int = 0   # nanoseconds since epoch, bin-aligned
+    high_first_ns: int = 0
+    low_first_ns: int = 0
     # Per-tick microstructure. Keyed on integer `round(price / TICK_SIZE)`;
     # not exposed to JSON (large + only meaningful in DB form), but
     # consumed by both `to_dict()` (for the bar-level vpt / concentration
@@ -100,6 +103,14 @@ class Bar:
     # using volume-weighted typical price. Empty bars carry forward the
     # previous bar's vwap; left None until the first non-zero-volume bar.
     vwap: float | None = None
+    # PHAT candle features (Phase 7): body CVD split + wick-tip liquidity.
+    top_cvd: float = 0.0
+    bottom_cvd: float = 0.0
+    top_body_volume_ratio: float = 0.5
+    bottom_body_volume_ratio: float = 0.5
+    upper_wick_liquidity: float = 0.0
+    lower_wick_liquidity: float = 0.0
+    high_before_low: bool = True
 
     @property
     def distinct_prices(self) -> int:
@@ -169,6 +180,13 @@ class Bar:
             "vRank":           self.v_rank,
             "dRank":           self.d_rank,
             "vwap":            self.vwap,
+            "topCvd":          self.top_cvd,
+            "bottomCvd":       self.bottom_cvd,
+            "topBodyVolumeRatio": self.top_body_volume_ratio,
+            "bottomBodyVolumeRatio": self.bottom_body_volume_ratio,
+            "upperWickLiquidity": self.upper_wick_liquidity,
+            "lowerWickLiquidity": self.lower_wick_liquidity,
+            "highBeforeLow":   self.high_before_low,
             "time":            self._iso_time(),
         }
 
@@ -203,6 +221,13 @@ class Bar:
             "v_rank":            self.v_rank,
             "d_rank":            self.d_rank,
             "vwap":              self.vwap,
+            "top_cvd":           self.top_cvd,
+            "bottom_cvd":        self.bottom_cvd,
+            "top_body_volume_ratio": self.top_body_volume_ratio,
+            "bottom_body_volume_ratio": self.bottom_body_volume_ratio,
+            "upper_wick_liquidity": self.upper_wick_liquidity,
+            "lower_wick_liquidity": self.lower_wick_liquidity,
+            "high_before_low":   self.high_before_low,
         }
 
     def iter_profile_rows(self, timeframe: str) -> Iterator[dict]:
@@ -303,6 +328,27 @@ def _stamp_session_vwap(bars: list[Bar]) -> None:
         b.vwap = last_vwap
 
 
+def _stamp_phat_features(bars: list[Bar]) -> None:
+    """Compute PHAT candle features for each bar in place."""
+    for b in bars:
+        feats = compute_phat_features(
+            open_price=b.open,
+            close_price=b.close,
+            high_price=b.high,
+            low_price=b.low,
+            tick_size=TICK_SIZE,
+            price_volume=b.price_volume,
+            price_delta=b.price_delta,
+        )
+        b.top_cvd = feats["top_cvd"]
+        b.bottom_cvd = feats["bottom_cvd"]
+        b.top_body_volume_ratio = feats["top_body_volume_ratio"]
+        b.bottom_body_volume_ratio = feats["bottom_body_volume_ratio"]
+        b.upper_wick_liquidity = feats["upper_wick_liquidity"]
+        b.lower_wick_liquidity = feats["lower_wick_liquidity"]
+        b.high_before_low = b.high_first_ns <= b.low_first_ns
+
+
 def aggregate_trades(
     trades: Iterable[Trade],
     *,
@@ -378,6 +424,8 @@ def aggregate_trades(
             cur = Bar(
                 open=t.price, high=t.price, low=t.price, close=t.price,
                 bin_start_ns=bin_ns_start,
+                high_first_ns=t.ts_event_ns,
+                low_first_ns=t.ts_event_ns,
             )
             cur_bin_ns = bin_ns_start
 
@@ -385,8 +433,10 @@ def aggregate_trades(
         cur.close = t.price
         if t.price > cur.high:
             cur.high = t.price
+            cur.high_first_ns = t.ts_event_ns
         if t.price < cur.low:
             cur.low = t.price
+            cur.low_first_ns = t.ts_event_ns
         cur.volume += t.size
         signed = _signed_size(t.side, t.size)
         cur.delta += signed
@@ -426,6 +476,7 @@ def aggregate_trades(
     # we only include in-session bars (otherwise leading partials would
     # bias the running average).
     _stamp_session_vwap(bars)
+    _stamp_phat_features(bars)
 
     return AggregateResult(
         bars=bars,

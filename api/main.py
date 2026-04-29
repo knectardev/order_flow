@@ -350,6 +350,13 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "vRank":           b["v_rank"],
         "dRank":           b["d_rank"],
         "vwap":            b.get("vwap"),
+        "topCvd":          b.get("top_cvd"),
+        "bottomCvd":       b.get("bottom_cvd"),
+        "topBodyVolumeRatio": b.get("top_body_volume_ratio"),
+        "bottomBodyVolumeRatio": b.get("bottom_body_volume_ratio"),
+        "upperWickLiquidity": b.get("upper_wick_liquidity"),
+        "lowerWickLiquidity": b.get("lower_wick_liquidity"),
+        "highBeforeLow":   b.get("high_before_low"),
         "biasState":       b.get("bias_state"),
         "time":            bt.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }

@@ -794,6 +794,15 @@ function _normalizeBarPayload(b) {
   };
 }
 
+function _barHasPhatFeatures(b) {
+  if (!b) return false;
+  return Number.isFinite(Number(b.topCvd))
+    || Number.isFinite(Number(b.bottomCvd))
+    || Number.isFinite(Number(b.topBodyVolumeRatio))
+    || Number.isFinite(Number(b.upperWickLiquidity))
+    || Number.isFinite(Number(b.lowerWickLiquidity));
+}
+
 async function _fetchIsoDateRange(apiBase, tf) {
   try {
     const r = await fetch(`${apiBase}/date-range?timeframe=${encodeURIComponent(tf)}`);
@@ -935,6 +944,7 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
   await _loadAllFiresFromApi();
   await loadEventsForActiveTypes();
   window.dispatchEvent(new CustomEvent('orderflow:replay-ready'));
+  _syncCandleModeSelectorUI();
 }
 
 // Phase 5: switch the active timeframe in API mode.
@@ -1010,6 +1020,7 @@ async function setActiveTimeframe(tf) {
   _renderModeBadge();
   _renderModeSubtitle();
   _syncTimeframeSelectorUI();
+  _syncCandleModeSelectorUI();
 }
 
 function _snapCursorToTimeframe(prevBarTimeMs, tf) {
@@ -1095,6 +1106,23 @@ function _syncTimeframeSelectorUI() {
   });
 }
 
+function _syncCandleModeSelectorUI() {
+  const sel = document.getElementById('candleModeSelect');
+  if (!sel) return;
+  const hasPhat = Array.isArray(state.replay.allBars) && state.replay.allBars.some(_barHasPhatFeatures);
+  sel.querySelectorAll('.tf-btn').forEach(btn => {
+    const mode = btn.dataset.candleMode;
+    const allowed = mode !== 'phat' || hasPhat;
+    btn.disabled = !allowed;
+    const isActive = mode === state.candleMode;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  if (!hasPhat && state.candleMode === 'phat') {
+    state.candleMode = 'standard';
+  }
+}
+
 function _renderModeBadge() {
   const badge = document.getElementById('modeBadge');
   if (!badge) return;
@@ -1134,6 +1162,7 @@ export {
   _renderModeSubtitle,
   setActiveTimeframe,
   _syncTimeframeSelectorUI,
+  _syncCandleModeSelectorUI,
   _renderModeBadge,
   loadEventsForActiveTypes,
   catalogKeyFromPrimitiveEvent,

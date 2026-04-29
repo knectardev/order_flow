@@ -255,6 +255,11 @@ export const state = {
   // to TIMEFRAMES (synthetic).
   activeTimeframe: DEFAULT_TIMEFRAME,
   availableTimeframes: TIMEFRAMES.slice(),
+  // Candle rendering mode for the price panel.
+  // 'phat' is only meaningful when bars carry PHAT features (API mode).
+  candleMode: 'standard',
+  // PHAT wick-tip ring fill threshold. Values >= threshold render solid.
+  phatRingFillThreshold: 0.55,
   // Saved matrix-range selection from the timeframe the user was on
   // before switching to '1h'. Used to restore the selection when they
   // switch back to 1m/15m. null ⇒ no saved selection (first paint).

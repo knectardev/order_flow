@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
-import { bootstrapReplay, setActiveTimeframe } from './data/replay.js';
+import { _syncCandleModeSelectorUI, bootstrapReplay, setActiveTimeframe } from './data/replay.js';
 import { fetchBacktestEquity, fetchBacktestSkippedFires, fetchBacktestStats, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
@@ -55,6 +55,14 @@ document.querySelectorAll('#timeframeSelect .tf-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (btn.disabled) return;
     setActiveTimeframe(btn.dataset.tf);
+  });
+});
+document.querySelectorAll('#candleModeSelect .tf-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    state.candleMode = btn.dataset.candleMode === 'phat' ? 'phat' : 'standard';
+    _syncCandleModeSelectorUI();
+    drawPriceChart();
   });
 });
 function onChartPanSliderInput() {

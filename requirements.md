@@ -17,6 +17,7 @@ Design intent remains unchanged:
 2. Event-typed sparse markers rather than per-bar verdicts.
 3. Contrasting canonical hypotheses (`★ Breakout`, `◆ Fade`, `🛡 Absorption Wall`) with explicit failure twins on the first two.
 4. Order-flow context from profile + VWAP + event structure.
+5. Optional PHAT candle rendering mode (asymmetric body shading + liquidity-tip wick markers) in API replay.
 
 ---
 
@@ -34,7 +35,7 @@ Design intent remains unchanged:
 - Pipeline: `pipeline/src/orderflow_pipeline/*` computes bars, events, fires, regime ranks (`v_rank`, `d_rank`), session VWAP, directional bias states, and DB writes.
   - Aggregation contract supports `1m` / `15m` / `1h` bins.
   - DuckDB schema keys rows by `(bar_time, timeframe)` and keeps per-timeframe isolation for bars/events/fires/profile rows.
-  - `bars` rows additionally carry `vwap`, `bias_state`, `parent_1h_bias`, `parent_15m_bias` columns (Phase 6 — see §13).
+  - `bars` rows additionally carry `vwap`, PHAT features (`top_cvd`, `bottom_cvd`, `top_body_volume_ratio`, `bottom_body_volume_ratio`, `upper_wick_liquidity`, `lower_wick_liquidity`, `high_before_low`), and bias columns (`bias_state`, `parent_1h_bias`, `parent_15m_bias`).
   - Aggregation order is `1h → 15m → 1m` so lower timeframes can denormalize parent biases via a half-open interval join in `_stamp_parent_bias`.
 - API: `api/main.py` exposes market-data read endpoints plus a backtest run endpoint:
   - `/timeframes`
@@ -51,7 +52,7 @@ Design intent remains unchanged:
   - `GET /api/backtest/trades`
   - `GET /api/backtest/skipped-fires`
 - API endpoints that return market rows are timeframe-aware (`timeframe` query parameter, default `1m`), and must not mix contexts across timeframes.
-- `/bars`, `/events`, `/fires` payloads include `vwap`, `biasState`, `biasH1`, `bias15m` (camelCase) projected from the persisted columns via `_attach_htf_bias`.
+- `/bars`, `/events`, `/fires` payloads include `vwap`, PHAT fields (`topCvd`, `bottomCvd`, `topBodyVolumeRatio`, `bottomBodyVolumeRatio`, `upperWickLiquidity`, `lowerWickLiquidity`, `highBeforeLow`), and bias fields (`biasState`, `biasH1`, `bias15m`) projected from persisted columns via `_attach_htf_bias`.
 - Storage: DuckDB (`data/orderflow.duckdb` by default).
 
 ### 2.3 Mode Loading
@@ -74,6 +75,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Glossary primitive selection:** **`state.activeEventTypes`** (`Set` of glossary keys such as **`sweep up`**, **`absorption`**). Default **empty** — no upfront full-timeline primitive scan/fetch for API replay; **`loadEventsForActiveTypes()`** runs **`GET /events?types=&from&to`** when keys are checked, or **`precomputeAllEvents()`** in synthetic mode when keys are checked. In **API replay**, **`drawPriceChart()`** filters **`viewedEvents`** to keys in this set **before** drawing primitive glyphs (`▲▼◉⚡⚠`) so live **`detectEvents`** output in **`state.events`** does not bypass the checklist. Synthetic mode draws all **`state.events`** from the simulator (no checklist filter on glyphs).
 - **Canonical fire halo selection (API replay):** **`state.activeCanonicalFireTypes`** (`Set` of **`watchId`** strings: **`breakout`**, **`fade`**, …). Default **empty** — canonical ★/◆/🛡/🎯 chart halos are **off until the user opts in**. **`priceChart.js`** filters merged fire draws in real mode by this set. **Synthetic mode** ignores this set and draws **`state.canonicalFires`** halos as before (no glossary panel).
 - **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
+- **Chart view mode state:** `candleMode` (`standard` | `phat`) with PHAT availability inferred from loaded API bars.
 - **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). **When `replay.cursor` already equals `replay.allBars.length` (tape end), `precomputeAllFires()` snapshots `replay.allFires` from `canonicalFires` with no `seek()` — no redundant full replay.** When `precomputeAllFires` is triggered from `_loadAllSessionsFromApi` after the initial `seekAsync(length)` (see below), `allFires` is filled that way without an extra `seek` pass. Chart halos for ★/◆/🛡/🎯 in **API replay** merge `allFires` and `canonicalFires` (when panned) and filter by **`activeCanonicalFireTypes`**. Matching uses `watchId|bar_time_ms`. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
 - **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds). A fire selection from the event log or chart (`selectFire`) also sets `chartViewEnd` so the fire bar and the 31-bar window sit in the current viewport, runs `_syncCurrentSession` and `_refreshMatrixForView` (so the panned path isn’t “all dim, marker off-screen”), and the price chart adds a teal focus ring on the active ◆/★/🛡.
 - **Selection deep-linking (URL):** selection state is mirrored into query params and restored after API replay load. Supported params are `selection=fire|cells`, `selectionFireTime` (epoch ms), `selectionFireWatch` (`watchId`), and `selectionCells` (`r.c,r.c,...`). This allows copy/paste refresh-safe links to reopen the same brushed event window (or matrix-cell brush set). Timeframe switches clear these selection params because rank-cell coordinates are timeframe-specific.
@@ -214,6 +216,8 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 
 - Candles + event markers + fire halos. When a **sweep** and **divergence** both fire on the same bar and the same side (e.g. both at the low), their glyphs are vertically separated: the sweep triangle stays farther from the candle body and the divergence warning is offset toward the body so the two do not overlap. Standalone sweeps/divergences keep their prior single-event offsets. Fire halos render the watch-type
   glyph: ★ above the bar high for breakout; ◆ above the high for fade; 🛡 for absorption wall at the **high** when `close >= open` and at the **low** otherwise. Fade and absorption-wall halos add a smaller (9px) directional arrow (`↑` / `↓`) to the *right* of the glyph. Breakout keeps no arrow (sweep direction is the primary read).
+- Candle rendering mode toggle in replay row (`Standard` / `PHAT`). PHAT mode is enabled only when loaded bars expose PHAT features and otherwise falls back to standard candles.
+- PHAT rendering contract: candle body width scales with per-bar volume (volume-candle behavior), split body shading darkens the top or bottom half from `topBodyVolumeRatio`/`bottomBodyVolumeRatio`, and wick geometry is asymmetric by `highBeforeLow` (upper/lower tip x-anchors swap based on which extreme printed first). Wick-tip circles use `upperWickLiquidity`/`lowerWickLiquidity` where filled ring = thick tip liquidity and hollow ring = thin tip liquidity (`state.phatRingFillThreshold` controls the cutoff).
 - Session-anchored VWAP with reset by session boundaries (real mode).
 - Profile overlays (POC/VAH/VAL).
 - RTH session open dividers with **session date** labels at **top** of the candle pane. **Canvas strip below the volume band** (the black band above HTML “Chart view”): **UTC-based clock ticks** on the x-axis in **12-hour** form (**`h:mm AM`** / **`h:mm PM`**, no `Z` suffix). If the viewport spans **multiple UTC calendar days**, ticks after each UTC midnight show **`Mon DD`** before the time (e.g. `Apr 28 9:05 AM`). Tick sampling uses denser spacing on **`1m` / `1h`** than on **`15m`**: **`15m`** yields fewer ticks, a larger minimum pixel gap between bounding boxes when panning dense multi-day spans, so labels do not overlap **Mirrored bottom-row session calendar dates** (viewport-aware thinning, at most ~10) appear only when **≥2** session-open dividers are visible **and** the timeframe is not **`15m`** (where that row would collide with wider date+time labels) **and** the viewport is **not** already multi-day (clock ticks carry day prefixes). Single-session **`1m`/`1h`** windows do not duplicate the bottom date strip unless multiple session opens satisfy the guards above.
@@ -359,6 +363,7 @@ Fallback behavior:
 - Runtime state contract: `src/state.js`
 - Replay and seek behavior: `src/data/replay.js`
 - Timeframe controls and mode chrome wiring: `src/main.js`, `src/ui/controls.js`, `src/data/replay.js`
+- PHAT feature extraction: `pipeline/src/orderflow_pipeline/phat.py`
 - Matrix rendering and occupancy integration: `src/render/matrix.js`, `src/ui/matrixRange.js`, `src/data/occupancyApi.js`
 - Price chart and profile integration: `src/render/priceChart.js`, `src/data/profileApi.js`
 - Bias ribbon rendering: `src/render/biasRibbon.js`

@@ -252,6 +252,38 @@ def test_bar_to_dict_carries_timeframe():
 
 
 # ───────────────────────────────────────────────────────────
+# 5b. PHAT path-order flag: whether high printed before low.
+# ───────────────────────────────────────────────────────────
+def test_phat_high_before_low_flag_tracks_extrema_order():
+    base_ns = _ts_ns_at(9, 30)
+    # Sequence A: high first, then low in same bar.
+    trades_a = [
+        _trade(base_ns + 1_000_000_000, price=100.0, size=1, side="A"),
+        _trade(base_ns + 2_000_000_000, price=101.0, size=1, side="A"),  # high first
+        _trade(base_ns + 3_000_000_000, price=99.0, size=1, side="B"),   # low second
+    ]
+    res_a = aggregate_trades(
+        trades_a, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    assert len(res_a.bars) == 1
+    assert res_a.bars[0].high_before_low is True
+
+    # Sequence B: low first, then high in same bar.
+    trades_b = [
+        _trade(base_ns + 1_000_000_000, price=100.0, size=1, side="A"),
+        _trade(base_ns + 2_000_000_000, price=99.0, size=1, side="B"),   # low first
+        _trade(base_ns + 3_000_000_000, price=101.0, size=1, side="A"),  # high second
+    ]
+    res_b = aggregate_trades(
+        trades_b, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    assert len(res_b.bars) == 1
+    assert res_b.bars[0].high_before_low is False
+
+
+# ───────────────────────────────────────────────────────────
 # 6. Phase 6: running session VWAP.
 # ───────────────────────────────────────────────────────────
 def test_session_vwap_first_bar_equals_typical_price():

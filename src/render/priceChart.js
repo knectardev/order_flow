@@ -219,6 +219,94 @@ function _eventMarkerYOffset(ev, fontSize, coPair) {
   return 0;
 }
 
+function _hasPhatFields(bar) {
+  return Number.isFinite(Number(bar?.topCvd))
+    || Number.isFinite(Number(bar?.bottomCvd))
+    || Number.isFinite(Number(bar?.topBodyVolumeRatio))
+    || Number.isFinite(Number(bar?.upperWickLiquidity))
+    || Number.isFinite(Number(bar?.lowerWickLiquidity));
+}
+
+function _phatHalfAlpha(share, isTopHalf) {
+  const s = Number.isFinite(Number(share)) ? Number(share) : 0.5;
+  const dominance = isTopHalf ? Math.max(0, s - 0.5) : Math.max(0, (1 - s) - 0.5);
+  return 0.34 + Math.min(0.52, dominance * 1.3);
+}
+
+function _drawPhatCandle(ctx, {
+  bar, xCenter, top, bodyH, candleW, wickStrokeColor, isUp, isForming, dim, highlighted, yScale,
+}) {
+  const upColor = [78, 166, 116];
+  const downColor = [201, 87, 96];
+  const [r, g, b] = isUp ? upColor : downColor;
+  const left = xCenter - candleW / 2;
+  const halfH = Math.max(1, Math.floor(bodyH / 2));
+  const lowerH = Math.max(1, bodyH - halfH);
+  const highBeforeLow = bar.highBeforeLow !== false;
+  const wickShift = Math.max(1, Math.min(candleW * 0.3, 3.2));
+  const xHigh = xCenter + (highBeforeLow ? -wickShift : wickShift);
+  const xLow = xCenter + (highBeforeLow ? wickShift : -wickShift);
+  const topY = yScale(bar.high);
+  const botY = yScale(bar.low);
+
+  // Asymmetric wick path: top and bottom extremes anchor to opposite sides
+  // based on whether the high printed before the low in the bar.
+  ctx.strokeStyle = wickStrokeColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(xHigh, topY);
+  ctx.lineTo(xCenter, top);
+  ctx.lineTo(xCenter, top + bodyH);
+  ctx.lineTo(xLow, botY);
+  ctx.stroke();
+
+  if (isForming) {
+    ctx.fillStyle = isUp ? 'rgba(78,166,116,0.18)' : 'rgba(201,87,96,0.18)';
+    ctx.fillRect(left, top, candleW, bodyH);
+    ctx.strokeStyle = isUp ? 'rgba(78,166,116,0.7)' : 'rgba(201,87,96,0.7)';
+    ctx.setLineDash([2, 2]);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(left, top, candleW, bodyH);
+    ctx.setLineDash([]);
+  } else {
+    const dimMul = dim ? 0.45 : 1.0;
+    const topAlpha = _phatHalfAlpha(bar.topBodyVolumeRatio, true) * dimMul;
+    const botAlpha = _phatHalfAlpha(bar.topBodyVolumeRatio, false) * dimMul;
+    ctx.fillStyle = `rgba(${r},${g},${b},${topAlpha.toFixed(3)})`;
+    ctx.fillRect(left, top, candleW, halfH);
+    ctx.fillStyle = `rgba(${r},${g},${b},${botAlpha.toFixed(3)})`;
+    ctx.fillRect(left, top + halfH, candleW, lowerH);
+    if (highlighted) {
+      ctx.strokeStyle = 'rgba(33, 160, 149, 0.85)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(left - 0.5, top - 0.5, candleW + 1, bodyH + 1);
+    }
+  }
+
+  const upperLiq = Number.isFinite(Number(bar.upperWickLiquidity)) ? Number(bar.upperWickLiquidity) : 0;
+  const lowerLiq = Number.isFinite(Number(bar.lowerWickLiquidity)) ? Number(bar.lowerWickLiquidity) : 0;
+  const ringR = Math.max(2.5, Math.min(candleW * 0.32, 4.8));
+  const ringCol = isUp ? 'rgba(78,166,116,0.90)' : 'rgba(201,87,96,0.90)';
+  const fillThreshold = Number.isFinite(Number(state.phatRingFillThreshold))
+    ? Number(state.phatRingFillThreshold)
+    : 0.55;
+  const drawRing = (x, y, liq) => {
+    ctx.strokeStyle = ringCol;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.arc(x, y, ringR, 0, Math.PI * 2);
+    ctx.stroke();
+    if (liq >= fillThreshold) {
+      ctx.fillStyle = ringCol;
+      ctx.beginPath();
+      ctx.arc(x, y, ringR - 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+  drawRing(xHigh, topY, upperLiq);
+  drawRing(xLow, botY, lowerLiq);
+}
+
 function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
   if (!apiProfile || !Number.isFinite(candleLo) || !Number.isFinite(candleHi)) return false;
   const pLo = apiProfile.priceLo;
@@ -608,7 +696,8 @@ function drawPriceChart() {
   // Candles
   const totalBars = allBars.length;
   const slotW = chartW / Math.max(totalBars, 12);
-  const candleW = Math.max(2, Math.min(slotW * 0.65, 14));
+  const baseCandleW = Math.max(2, Math.min(slotW * 0.65, 14));
+  const maxBarVol = allBars.reduce((m, b) => Math.max(m, Number(b.volume) || 0), 1);
 
   // Phase 6: directional-bias ribbon. Drawn first inside the reserved
   // [RIBBON_TOP, RIBBON_TOP + RIBBON_H] band above the candle pane so
@@ -709,18 +798,38 @@ function drawPriceChart() {
     const wickColor = isForming ? 'rgba(192,198,208,0.45)'
                     : dim         ? (isUp ? 'rgba(78,166,116,0.22)' : 'rgba(201,87,96,0.22)')
                                   : color;
-    pctx.strokeStyle = wickColor;
-    pctx.lineWidth = 1;
-    pctx.beginPath();
-    pctx.moveTo(xCenter, yScale(b.high));
-    pctx.lineTo(xCenter, yScale(b.low));
-    pctx.stroke();
+    const usePhat = state.candleMode === 'phat' && _hasPhatFields(b);
+    const volNorm = Math.max(0, Math.min(1, (Number(b.volume) || 0) / Math.max(maxBarVol, 1)));
+    const phatWidth = Math.max(2, Math.min(slotW * 0.92, baseCandleW * (0.45 + volNorm * 1.4)));
+    const candleW = usePhat ? phatWidth : baseCandleW;
+    if (!usePhat) {
+      pctx.strokeStyle = wickColor;
+      pctx.lineWidth = 1;
+      pctx.beginPath();
+      pctx.moveTo(xCenter, yScale(b.high));
+      pctx.lineTo(xCenter, yScale(b.low));
+      pctx.stroke();
+    }
 
     const yO = yScale(b.open), yC = yScale(b.close);
     const top = Math.min(yO, yC), bot = Math.max(yO, yC);
     const bodyH = Math.max(1, bot - top);
 
-    if (isForming) {
+    if (usePhat) {
+      _drawPhatCandle(pctx, {
+        bar: b,
+        xCenter,
+        top,
+        bodyH,
+        candleW,
+        wickStrokeColor: wickColor,
+        isUp,
+        isForming,
+        dim,
+        highlighted,
+        yScale,
+      });
+    } else if (isForming) {
       pctx.fillStyle = isUp ? 'rgba(78,166,116,0.18)' : 'rgba(201,87,96,0.18)';
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
       pctx.strokeStyle = isUp ? 'rgba(78,166,116,0.7)' : 'rgba(201,87,96,0.7)';
@@ -848,7 +957,8 @@ function drawPriceChart() {
     pctx.fillStyle = isForming
       ? (isUp ? 'rgba(78,166,116,0.30)' : 'rgba(201,87,96,0.30)')
       : (isUp ? 'rgba(78,166,116,0.55)' : 'rgba(201,87,96,0.55)');
-    pctx.fillRect(xCenter - candleW/2, volTop + volBandH - barH, candleW, barH);
+    const volW = Math.max(2, Math.min(slotW * 0.65, 14));
+    pctx.fillRect(xCenter - volW/2, volTop + volBandH - barH, volW, barH);
   }
   // Tiny "VOL" label — annotated with the units so the volume bar's scale is
   // self-evident (each bar = total contracts traded in that 1-minute slot).
