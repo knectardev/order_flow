@@ -113,11 +113,16 @@ _SCHEMA_SQL: tuple[str, ...] = (
         vwap              DOUBLE,
         top_cvd           DOUBLE,
         bottom_cvd        DOUBLE,
+        top_cvd_norm      DOUBLE,
+        bottom_cvd_norm   DOUBLE,
         top_body_volume_ratio DOUBLE,
         bottom_body_volume_ratio DOUBLE,
         upper_wick_liquidity DOUBLE,
         lower_wick_liquidity DOUBLE,
         high_before_low   BOOLEAN,
+        rejection_side    VARCHAR,
+        rejection_strength DOUBLE,
+        rejection_type    VARCHAR,
         bias_state        VARCHAR,
         parent_1h_bias    VARCHAR,
         parent_15m_bias   VARCHAR,
@@ -255,11 +260,16 @@ _PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("vwap",            "DOUBLE"),
     ("top_cvd",         "DOUBLE"),
     ("bottom_cvd",      "DOUBLE"),
+    ("top_cvd_norm", "DOUBLE"),
+    ("bottom_cvd_norm", "DOUBLE"),
     ("top_body_volume_ratio", "DOUBLE"),
     ("bottom_body_volume_ratio", "DOUBLE"),
     ("upper_wick_liquidity", "DOUBLE"),
     ("lower_wick_liquidity", "DOUBLE"),
     ("high_before_low", "BOOLEAN"),
+    ("rejection_side", "VARCHAR"),
+    ("rejection_strength", "DOUBLE"),
+    ("rejection_type", "VARCHAR"),
     ("bias_state",      "VARCHAR"),
     ("parent_1h_bias",  "VARCHAR"),
     ("parent_15m_bias", "VARCHAR"),
@@ -326,7 +336,7 @@ def write_session(
         bars_df:    session_date, bar_time, timeframe, open, high, low,
                     close, volume, delta, trade_count, large_print_count,
                     distinct_prices, range_pct, vpt, concentration, v_rank,
-                    d_rank, vwap, top_cvd, bottom_cvd, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, bias_state, parent_1h_bias,
+                    d_rank, vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type, bias_state, parent_1h_bias,
                     parent_15m_bias  (Phase 6 cols may be empty strings or
                     NULL during ingest; the bias-stamp pass + denorm pass
                     fill them after this write completes)
@@ -386,7 +396,7 @@ def write_session(
             # NULL so a partially-stamped frame still writes cleanly. The
             # cli.py rebuild always populates them, so this fallback is
             # only exercised by tests / direct API users.
-            for col in ("vwap", "top_cvd", "bottom_cvd", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "high_before_low", "bias_state", "parent_1h_bias", "parent_15m_bias"):
+            for col in ("vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias"):
                 if col not in bars_df.columns:
                     bars_df[col] = None
             con.execute(
@@ -396,13 +406,13 @@ def write_session(
                      volume, delta, trade_count, large_print_count,
                      distinct_prices, range_pct, vpt, concentration,
                      v_rank, d_rank,
-                     vwap, top_cvd, bottom_cvd, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low,
+                     vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type,
                      bias_state, parent_1h_bias, parent_15m_bias)
                 SELECT session_date, bar_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
                        v_rank, d_rank,
-                       vwap, top_cvd, bottom_cvd, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low,
+                       vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type,
                        bias_state, parent_1h_bias, parent_15m_bias
                 FROM bars_df
                 """

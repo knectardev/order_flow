@@ -42,6 +42,23 @@ def test_compute_phat_features_wick_liquidity_outer_half():
     # lower wick ticks: 99..96 => outer half = 97,96 => (5+5)/(5+5+5+5) = 0.5
     assert abs(feats["lower_wick_liquidity"] - 0.5) < 1e-9
     assert feats["top_body_volume_ratio"] > feats["bottom_body_volume_ratio"]
+    assert -1.0 <= feats["top_cvd_norm"] <= 1.0
+    assert -1.0 <= feats["bottom_cvd_norm"] <= 1.0
+
+
+def test_compute_phat_features_emits_rejection_fields():
+    feats = compute_phat_features(
+        open_price=100.0,
+        close_price=99.0,
+        high_price=103.0,
+        low_price=98.0,
+        tick_size=1.0,
+        price_volume={98: 30, 99: 10, 100: 10, 101: 10, 102: 10, 103: 45},
+        price_delta={98: -20, 99: -6, 100: -5, 101: 3, 102: 4, 103: 24},
+    )
+    assert feats["rejection_side"] in ("none", "high", "low")
+    assert 0.0 <= feats["rejection_strength"] <= 1.0
+    assert feats["rejection_type"] in ("none", "absorption", "exhaustion")
 
 
 def test_compute_phat_features_handles_no_wicks():

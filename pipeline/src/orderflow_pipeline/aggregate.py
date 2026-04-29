@@ -106,11 +106,16 @@ class Bar:
     # PHAT candle features (Phase 7): body CVD split + wick-tip liquidity.
     top_cvd: float = 0.0
     bottom_cvd: float = 0.0
+    top_cvd_norm: float = 0.0
+    bottom_cvd_norm: float = 0.0
     top_body_volume_ratio: float = 0.5
     bottom_body_volume_ratio: float = 0.5
     upper_wick_liquidity: float = 0.0
     lower_wick_liquidity: float = 0.0
     high_before_low: bool = True
+    rejection_side: str = "none"
+    rejection_strength: float = 0.0
+    rejection_type: str = "none"
 
     @property
     def distinct_prices(self) -> int:
@@ -182,11 +187,16 @@ class Bar:
             "vwap":            self.vwap,
             "topCvd":          self.top_cvd,
             "bottomCvd":       self.bottom_cvd,
+            "topCvdNorm":      self.top_cvd_norm,
+            "bottomCvdNorm":   self.bottom_cvd_norm,
             "topBodyVolumeRatio": self.top_body_volume_ratio,
             "bottomBodyVolumeRatio": self.bottom_body_volume_ratio,
             "upperWickLiquidity": self.upper_wick_liquidity,
             "lowerWickLiquidity": self.lower_wick_liquidity,
             "highBeforeLow":   self.high_before_low,
+            "rejectionSide":   self.rejection_side,
+            "rejectionStrength": self.rejection_strength,
+            "rejectionType":   self.rejection_type,
             "time":            self._iso_time(),
         }
 
@@ -223,11 +233,16 @@ class Bar:
             "vwap":              self.vwap,
             "top_cvd":           self.top_cvd,
             "bottom_cvd":        self.bottom_cvd,
+            "top_cvd_norm":      self.top_cvd_norm,
+            "bottom_cvd_norm":   self.bottom_cvd_norm,
             "top_body_volume_ratio": self.top_body_volume_ratio,
             "bottom_body_volume_ratio": self.bottom_body_volume_ratio,
             "upper_wick_liquidity": self.upper_wick_liquidity,
             "lower_wick_liquidity": self.lower_wick_liquidity,
             "high_before_low":   self.high_before_low,
+            "rejection_side":    self.rejection_side,
+            "rejection_strength": self.rejection_strength,
+            "rejection_type":    self.rejection_type,
         }
 
     def iter_profile_rows(self, timeframe: str) -> Iterator[dict]:
@@ -342,11 +357,16 @@ def _stamp_phat_features(bars: list[Bar]) -> None:
         )
         b.top_cvd = feats["top_cvd"]
         b.bottom_cvd = feats["bottom_cvd"]
+        b.top_cvd_norm = feats["top_cvd_norm"]
+        b.bottom_cvd_norm = feats["bottom_cvd_norm"]
         b.top_body_volume_ratio = feats["top_body_volume_ratio"]
         b.bottom_body_volume_ratio = feats["bottom_body_volume_ratio"]
         b.upper_wick_liquidity = feats["upper_wick_liquidity"]
         b.lower_wick_liquidity = feats["lower_wick_liquidity"]
         b.high_before_low = b.high_first_ns <= b.low_first_ns
+        b.rejection_side = feats["rejection_side"]
+        b.rejection_strength = feats["rejection_strength"]
+        b.rejection_type = feats["rejection_type"]
 
 
 def aggregate_trades(

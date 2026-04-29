@@ -81,14 +81,18 @@ def compute_phat_features(
 
     top_cvd = 0
     bottom_cvd = 0
+    top_abs_delta = 0.0
+    bottom_abs_delta = 0.0
     top_body_vol = 0
     bottom_body_vol = 0
     for tick, signed in price_delta.items():
         px = tick * tick_size
         if px >= body_mid:
             top_cvd += int(signed)
+            top_abs_delta += abs(float(signed))
         else:
             bottom_cvd += int(signed)
+            bottom_abs_delta += abs(float(signed))
     for tick, vol in price_volume.items():
         px = tick * tick_size
         if px >= body_mid:
@@ -119,11 +123,59 @@ def compute_phat_features(
         top_body_ratio = _clamp01(top_body_vol / body_total)
     bottom_body_ratio = 1.0 - top_body_ratio
 
+    top_cvd_norm = float(top_cvd) / top_abs_delta if top_abs_delta > 0 else 0.0
+    bottom_cvd_norm = float(bottom_cvd) / bottom_abs_delta if bottom_abs_delta > 0 else 0.0
+
+    rng = max(high_price - low_price, 0.0)
+    retreat_from_high = ((high_price - close_price) / rng) if rng > 0 else 0.0
+    retreat_from_low = ((close_price - low_price) / rng) if rng > 0 else 0.0
+
+    near_high_ticks = [t for t, v in price_volume.items() if v > 0 and t >= high_tick - 2]
+    near_low_ticks = [t for t, v in price_volume.items() if v > 0 and t <= low_tick + 2]
+
+    reject_threshold = 0.5
+    min_ticks_near = 3
+
+    high_score = (
+        (len(near_high_ticks) / 6.0) * retreat_from_high
+        if len(near_high_ticks) >= min_ticks_near and retreat_from_high >= reject_threshold
+        else 0.0
+    )
+    low_score = (
+        (len(near_low_ticks) / 6.0) * retreat_from_low
+        if len(near_low_ticks) >= min_ticks_near and retreat_from_low >= reject_threshold
+        else 0.0
+    )
+
+    rejection_side = "none"
+    rejection_strength = 0.0
+    if high_score > low_score:
+        rejection_side = "high"
+        rejection_strength = min(1.0, high_score * 1.3)
+    elif low_score > high_score:
+        rejection_side = "low"
+        rejection_strength = min(1.0, low_score * 1.3)
+
+    rejection_type = "none"
+    if rejection_side != "none":
+        zone_ticks = near_high_ticks if rejection_side == "high" else near_low_ticks
+        extreme_vol = [float(price_volume.get(t, 0)) for t in zone_ticks]
+        all_nonzero_vol = [float(v) for v in price_volume.values() if v > 0]
+        extreme_avg = (sum(extreme_vol) / len(extreme_vol)) if extreme_vol else 0.0
+        overall_avg = (sum(all_nonzero_vol) / len(all_nonzero_vol)) if all_nonzero_vol else 0.0
+        vol_ratio = (extreme_avg / overall_avg) if overall_avg > 0 else 1.0
+        rejection_type = "absorption" if vol_ratio > 1.1 else "exhaustion"
+
     return {
         "top_cvd": float(top_cvd),
         "bottom_cvd": float(bottom_cvd),
+        "top_cvd_norm": round(float(top_cvd_norm), 6),
+        "bottom_cvd_norm": round(float(bottom_cvd_norm), 6),
         "top_body_volume_ratio": round(float(top_body_ratio), 6),
         "bottom_body_volume_ratio": round(float(bottom_body_ratio), 6),
         "upper_wick_liquidity": round(float(upper_wick_liq), 6),
         "lower_wick_liquidity": round(float(lower_wick_liq), 6),
+        "rejection_side": rejection_side,
+        "rejection_strength": round(float(rejection_strength), 6),
+        "rejection_type": rejection_type,
     }

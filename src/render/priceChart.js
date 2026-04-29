@@ -227,12 +227,6 @@ function _hasPhatFields(bar) {
     || Number.isFinite(Number(bar?.lowerWickLiquidity));
 }
 
-function _phatHalfAlpha(share, isTopHalf) {
-  const s = Number.isFinite(Number(share)) ? Number(share) : 0.5;
-  const dominance = isTopHalf ? Math.max(0, s - 0.5) : Math.max(0, (1 - s) - 0.5);
-  return 0.34 + Math.min(0.52, dominance * 1.3);
-}
-
 function _drawPhatCandle(ctx, {
   bar, xCenter, top, bodyH, candleW, wickStrokeColor, isUp, isForming, dim, highlighted, yScale,
 }) {
@@ -243,20 +237,22 @@ function _drawPhatCandle(ctx, {
   const halfH = Math.max(1, Math.floor(bodyH / 2));
   const lowerH = Math.max(1, bodyH - halfH);
   const highBeforeLow = bar.highBeforeLow !== false;
-  const wickShift = Math.max(1, Math.min(candleW * 0.3, 3.2));
-  const xHigh = xCenter + (highBeforeLow ? -wickShift : wickShift);
-  const xLow = xCenter + (highBeforeLow ? wickShift : -wickShift);
+  const xHigh = highBeforeLow ? (left) : (left + candleW);
+  const xLow = highBeforeLow ? (left + candleW) : (left);
   const topY = yScale(bar.high);
   const botY = yScale(bar.low);
 
-  // Asymmetric wick path: top and bottom extremes anchor to opposite sides
-  // based on whether the high printed before the low in the bar.
+  // Prototype-aligned wick anchoring:
+  // high-first -> upper wick on left edge, lower on right edge.
+  // low-first  -> upper wick on right edge, lower on left edge.
   ctx.strokeStyle = wickStrokeColor;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(xHigh, topY);
-  ctx.lineTo(xCenter, top);
-  ctx.lineTo(xCenter, top + bodyH);
+  ctx.lineTo(xHigh, top);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(xLow, top + bodyH);
   ctx.lineTo(xLow, botY);
   ctx.stroke();
 
@@ -270,8 +266,14 @@ function _drawPhatCandle(ctx, {
     ctx.setLineDash([]);
   } else {
     const dimMul = dim ? 0.45 : 1.0;
-    const topAlpha = _phatHalfAlpha(bar.topBodyVolumeRatio, true) * dimMul;
-    const botAlpha = _phatHalfAlpha(bar.topBodyVolumeRatio, false) * dimMul;
+    const topSignal = isUp
+      ? Number.isFinite(Number(bar.topCvdNorm)) ? Number(bar.topCvdNorm) : 0
+      : -(Number.isFinite(Number(bar.topCvdNorm)) ? Number(bar.topCvdNorm) : 0);
+    const botSignal = isUp
+      ? Number.isFinite(Number(bar.bottomCvdNorm)) ? Number(bar.bottomCvdNorm) : 0
+      : -(Number.isFinite(Number(bar.bottomCvdNorm)) ? Number(bar.bottomCvdNorm) : 0);
+    const topAlpha = (0.25 + ((topSignal + 1) / 2) * 0.7) * dimMul;
+    const botAlpha = (0.25 + ((botSignal + 1) / 2) * 0.7) * dimMul;
     ctx.fillStyle = `rgba(${r},${g},${b},${topAlpha.toFixed(3)})`;
     ctx.fillRect(left, top, candleW, halfH);
     ctx.fillStyle = `rgba(${r},${g},${b},${botAlpha.toFixed(3)})`;
@@ -283,28 +285,32 @@ function _drawPhatCandle(ctx, {
     }
   }
 
-  const upperLiq = Number.isFinite(Number(bar.upperWickLiquidity)) ? Number(bar.upperWickLiquidity) : 0;
-  const lowerLiq = Number.isFinite(Number(bar.lowerWickLiquidity)) ? Number(bar.lowerWickLiquidity) : 0;
-  const ringR = Math.max(2.5, Math.min(candleW * 0.32, 4.8));
+  // Rejection marker: at most one circle, at the wick tip (high/low price). Radius 2–5px encodes strength.
+  // Wicks stay uniform 1px above; diameter must not imply signal via line thickness.
+  const rejectionSide = String(bar.rejectionSide || 'none');
+  const rejectionStrength = Number.isFinite(Number(bar.rejectionStrength)) ? Number(bar.rejectionStrength) : 0;
+  const rejectionType = String(bar.rejectionType || 'none');
   const ringCol = isUp ? 'rgba(78,166,116,0.90)' : 'rgba(201,87,96,0.90)';
-  const fillThreshold = Number.isFinite(Number(state.phatRingFillThreshold))
-    ? Number(state.phatRingFillThreshold)
-    : 0.55;
-  const drawRing = (x, y, liq) => {
-    ctx.strokeStyle = ringCol;
-    ctx.lineWidth = 1.1;
+  const chartBg = '#0d1218';
+  const drawRing = (x, y) => {
+    const ringR = 2 + Math.max(0, Math.min(1, rejectionStrength)) * 3;
     ctx.beginPath();
     ctx.arc(x, y, ringR, 0, Math.PI * 2);
-    ctx.stroke();
-    if (liq >= fillThreshold) {
+    if (rejectionType === 'absorption') {
       ctx.fillStyle = ringCol;
-      ctx.beginPath();
-      ctx.arc(x, y, ringR - 1.2, 0, Math.PI * 2);
       ctx.fill();
+    } else {
+      ctx.fillStyle = chartBg;
+      ctx.fill();
+      ctx.strokeStyle = ringCol;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
   };
-  drawRing(xHigh, topY, upperLiq);
-  drawRing(xLow, botY, lowerLiq);
+  if (rejectionStrength > 0) {
+    if (rejectionSide === 'high') drawRing(xHigh, topY);
+    else if (rejectionSide === 'low') drawRing(xLow, botY);
+  }
 }
 
 function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
