@@ -1,6 +1,7 @@
 {
+  "$schema": "strategy_defaults.schema.json",
   "version": 1,
-  "_doc": "Optional overrides on top of code defaults in pipeline/src/orderflow_pipeline/strategies/config.py. Omitted keys keep code defaults. Nullable SL/TP => flip-only for that scope unless BrokerConfig sets run-wide ticks.",
+  "_doc": "Optional overrides on top of code defaults (see docs/strategy-config.md). Omitted keys keep code defaults. Nullable SL/TP => flip-only for that scope unless BrokerConfig sets run-wide ticks. Profiles: config/profiles/*.json + ORDERFLOW_STRATEGY_CONFIG.",
   "timeframes": {
     "1m": {
       "cooldown_bars": 4,

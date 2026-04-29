@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_doc": "Profile: no JSON SL/TP. Mechanical exits are flip + end-of-window unless POST /api/backtest/run sets broker stop_loss_ticks / take_profit_ticks.",
+  "timeframes": {}
+}

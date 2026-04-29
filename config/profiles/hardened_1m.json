@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "_doc": "Example research profile: tighter 1m exits. Point ORDERFLOW_STRATEGY_CONFIG at this file (from repo cwd or absolute path) and restart the API.",
+  "timeframes": {
+    "1m": {
+      "stop_loss_ticks": 4,
+      "take_profit_ticks": 8,
+      "watch_exit_ticks": {
+        "valueEdgeReject": {
+          "stop_loss_ticks": 4,
+          "take_profit_ticks": 12
+        }
+      }
+    }
+  }
+}

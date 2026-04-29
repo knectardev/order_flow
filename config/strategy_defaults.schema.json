@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/orderflow/strategy_defaults.schema.json",
+  "title": "Order flow strategy defaults",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "_doc": { "type": "string" },
+    "_comment": { "type": "string" },
+    "timeframes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "1m": { "$ref": "#/$defs/timeframeBlock" },
+        "15m": { "$ref": "#/$defs/timeframeBlock" },
+        "1h": { "$ref": "#/$defs/timeframeBlock" }
+      }
+    }
+  },
+  "required": ["version", "timeframes"],
+  "$defs": {
+    "watchExitTicks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stop_loss_ticks": { "type": ["number", "null"] },
+        "take_profit_ticks": { "type": ["number", "null"] }
+      }
+    },
+    "timeframeBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cooldown_bars": { "type": "integer" },
+        "min_bars": { "type": "integer" },
+        "lookback_bars": { "type": "integer" },
+        "warmup_start": { "type": "integer" },
+        "stop_loss_ticks": { "type": ["number", "null"] },
+        "take_profit_ticks": { "type": ["number", "null"] },
+        "watch_exit_ticks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "breakout": { "$ref": "#/$defs/watchExitTicks" },
+            "fade": { "$ref": "#/$defs/watchExitTicks" },
+            "absorptionWall": { "$ref": "#/$defs/watchExitTicks" },
+            "valueEdgeReject": { "$ref": "#/$defs/watchExitTicks" }
+          }
+        }
+      }
+    }
+  }
+}
