@@ -1,7 +1,10 @@
 """Shared configuration for locked legacy fallback strategies."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
+
+from ..strategy_json import get_timeframe_overlay
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +28,50 @@ class LegacyFallbackConfig:
     watch_exit_ticks: tuple[tuple[str, WatchExitTicks], ...] = ()
 
 
-def config_for_timeframe(timeframe: str, *, use_regime_filter: bool = True) -> LegacyFallbackConfig:
+def _opt_float(v: Any) -> float | None:
+    if v is None:
+        return None
+    return float(v)
+
+
+def _parse_watch_exit_ticks(obj: Any) -> tuple[tuple[str, WatchExitTicks], ...]:
+    if not obj or not isinstance(obj, dict):
+        return ()
+    out: list[tuple[str, WatchExitTicks]] = []
+    for wid, body in obj.items():
+        if not isinstance(body, dict):
+            continue
+        out.append(
+            (
+                str(wid),
+                WatchExitTicks(
+                    stop_loss_ticks=_opt_float(body.get("stop_loss_ticks")),
+                    take_profit_ticks=_opt_float(body.get("take_profit_ticks")),
+                ),
+            )
+        )
+    return tuple(out)
+
+
+def _apply_timeframe_json_overlay(cfg: LegacyFallbackConfig, timeframe: str) -> LegacyFallbackConfig:
+    """Merge ``config/strategy_defaults.json`` (or ``ORDERFLOW_STRATEGY_CONFIG``) per timeframe."""
+    o = get_timeframe_overlay(timeframe)
+    if not o:
+        return cfg
+    kwargs: dict[str, Any] = {}
+    for k in ("cooldown_bars", "min_bars", "lookback_bars", "warmup_start"):
+        if k in o:
+            kwargs[k] = int(o[k])
+    for k in ("stop_loss_ticks", "take_profit_ticks"):
+        if k in o:
+            v = o[k]
+            kwargs[k] = None if v is None else float(v)
+    if "watch_exit_ticks" in o:
+        kwargs["watch_exit_ticks"] = _parse_watch_exit_ticks(o["watch_exit_ticks"])
+    return replace(cfg, **kwargs) if kwargs else cfg
+
+
+def _base_legacy_config(timeframe: str, *, use_regime_filter: bool) -> LegacyFallbackConfig:
     tf = (timeframe or "1m").strip()
     if tf == "15m":
         return LegacyFallbackConfig(
@@ -50,3 +96,9 @@ def config_for_timeframe(timeframe: str, *, use_regime_filter: bool = True) -> L
             watch_exit_ticks=(),
         )
     return LegacyFallbackConfig(use_regime_filter=use_regime_filter)
+
+
+def config_for_timeframe(timeframe: str, *, use_regime_filter: bool = True) -> LegacyFallbackConfig:
+    tf = (timeframe or "1m").strip()
+    base = _base_legacy_config(tf, use_regime_filter=use_regime_filter)
+    return _apply_timeframe_json_overlay(base, tf)

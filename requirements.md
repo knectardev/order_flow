@@ -477,6 +477,7 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 
 ### 14.1 Scope
 
+- **Strategy defaults JSON:** Optional overrides live in [`config/strategy_defaults.json`](config/strategy_defaults.json). Values merge on top of code defaults in [`pipeline/src/orderflow_pipeline/strategies/config.py`](pipeline/src/orderflow_pipeline/strategies/config.py) per timeframe (`cooldown_bars`, `min_bars`, `lookback_bars`, `warmup_start`, `stop_loss_ticks`, `take_profit_ticks`, `watch_exit_ticks`). Missing JSON keys keep code defaults. Set environment variable **`ORDERFLOW_STRATEGY_CONFIG`** to an absolute or cwd-relative path to use a different file. Loader: [`pipeline/src/orderflow_pipeline/strategy_json.py`](pipeline/src/orderflow_pipeline/strategy_json.py); tests should call `clear_strategy_config_cache()` after swapping files or env.
 - The MVP backtester reuses persisted `fires` as strategy triggers (no new signal model).
 - Backtest execution is DB-fire only in production mode; if scoped `fires` are absent in-window, the run fails fast with a clear error.
 - Recovery path: `python -m orderflow_pipeline.cli recompute-fires --db-path <duckdb> --timeframe <tf>` regenerates canonical `fires` from persisted `bars` for the selected window/timeframe without requiring a raw-data rebuild.

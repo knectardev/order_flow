@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "_doc": "Optional overrides on top of code defaults in pipeline/src/orderflow_pipeline/strategies/config.py. Omitted keys keep code defaults. Nullable SL/TP => flip-only for that scope unless BrokerConfig sets run-wide ticks.",
+  "timeframes": {
+    "1m": {
+      "cooldown_bars": 4,
+      "min_bars": 20,
+      "lookback_bars": 10,
+      "warmup_start": 12,
+      "stop_loss_ticks": null,
+      "take_profit_ticks": null,
+      "watch_exit_ticks": {}
+    },
+    "15m": {
+      "cooldown_bars": 2,
+      "min_bars": 12,
+      "lookback_bars": 6,
+      "warmup_start": 8,
+      "stop_loss_ticks": null,
+      "take_profit_ticks": null,
+      "watch_exit_ticks": {}
+    },
+    "1h": {
+      "cooldown_bars": 1,
+      "min_bars": 4,
+      "lookback_bars": 3,
+      "warmup_start": 3,
+      "stop_loss_ticks": null,
+      "take_profit_ticks": null,
+      "watch_exit_ticks": {}
+    }
+  }
+}
