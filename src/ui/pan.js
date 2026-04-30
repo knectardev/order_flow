@@ -1,8 +1,9 @@
-import { MAX_BARS, TRAIL_LEN } from '../config/constants.js';
+import { MAX_BARS, MIN_CHART_VISIBLE_BARS, MAX_CHART_VISIBLE_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { _syncCurrentSession, _renderReplayChrome, precomputeAllFires } from '../data/replay.js';
+import { drawFlowChart } from '../render/flowChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { _hideTooltip } from './tooltip.js';
@@ -13,13 +14,34 @@ function _panAvailable() {
   return state.replay.mode === 'real' && state.replay.allBars.length > MAX_BARS;
 }
 
+function _chartWheelZoomAvailable() {
+  if (state.replay.mode === 'real') return state.replay.allBars.length > 0;
+  return state.bars.length > 0 || !!state.formingBar;
+}
+
+function _maxChartVisibleBarsCap() {
+  if (state.replay.mode !== 'real') {
+    return Math.min(MAX_CHART_VISIBLE_BARS, state.bars.length + (state.formingBar ? 1 : 0));
+  }
+  const forming = state.formingBar ? 1 : 0;
+  if (state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor) {
+    return Math.min(MAX_CHART_VISIBLE_BARS, state.chartViewEnd);
+  }
+  return Math.min(MAX_CHART_VISIBLE_BARS, state.replay.cursor + forming);
+}
+
+function _clampChartVisibleBars() {
+  const hi = _maxChartVisibleBarsCap();
+  state.chartVisibleBars = clamp(state.chartVisibleBars, MIN_CHART_VISIBLE_BARS, Math.max(hi, MIN_CHART_VISIBLE_BARS));
+}
+
 function _currentViewEnd() {
   // Effective right-edge index when state.chartViewEnd is null (live tracking).
   return state.chartViewEnd !== null ? state.chartViewEnd : state.replay.cursor;
 }
 
 function _setViewEnd(idx) {
-  const minEnd = Math.min(MAX_BARS, state.replay.allBars.length);
+  const minEnd = Math.min(state.chartVisibleBars, state.replay.allBars.length);
   const maxEnd = state.replay.allBars.length;
   const clamped = clamp(Math.round(idx), minEnd, maxEnd);
   // Snap back to live-edge tracking when the user pans all the way to the
@@ -168,13 +190,17 @@ function consumePanMoved() {
 //     state.replay/streaming pipeline.
 
 priceCanvas.addEventListener('wheel', (e) => {
-  if (!_panAvailable()) return;
+  if (!_chartWheelZoomAvailable()) return;
   e.preventDefault();
-  // Normalize: deltaX (horizontal trackpads) takes precedence; otherwise use
-  // deltaY so a normal mouse wheel pans horizontally over history.
+  // Normalize: deltaX (horizontal trackpads) takes precedence; otherwise deltaY.
   const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-  const step = delta > 0 ? 3 : -3;   // 3 state.bars per wheel notch
-  _setViewEnd(_currentViewEnd() + step);
+  const step = 3;
+  // Positive delta (scroll down): zoom out → more bars; negative: zoom in → fewer bars.
+  state.chartVisibleBars += delta > 0 ? step : -step;
+  _clampChartVisibleBars();
+  drawPriceChart();
+  drawFlowChart();
+  if (state.replay.mode === 'real') _renderReplayChrome();
 }, { passive: false });
 
 priceCanvas.addEventListener('mousedown', (e) => {
@@ -188,7 +214,7 @@ priceCanvas.addEventListener('mousedown', (e) => {
   // Estimate slot width once at drag-start (matches drawPriceChart logic).
   const PROFILE_W = Math.min(110, rect.width * 0.22);
   const chartW = rect.width - PROFILE_W - 6 - 8 - 8;
-  _panSlotW = chartW / Math.max(MAX_BARS, 12);
+  _panSlotW = chartW / Math.max(state.chartVisibleBars, 12);
   priceCanvas.classList.add('panning');
   _hideTooltip();
 });

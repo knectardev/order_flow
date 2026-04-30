@@ -10,7 +10,7 @@
 // constants live in `./config/constants.js`. DOM canvas refs are owned by
 // the modules that draw to them (they're acquired once, never reassigned).
 // ───────────────────────────────────────────────────────────
-import { MATRIX_ROWS, MATRIX_COLS, BASE_TICK_MS, DEFAULT_TIMEFRAME, SYNTH_TUNINGS, SYNTH_TUNINGS_BY_TF, TIMEFRAMES, getSynthTunings } from './config/constants.js';
+import { MATRIX_ROWS, MATRIX_COLS, BASE_TICK_MS, DEFAULT_TIMEFRAME, MAX_BARS, SYNTH_TUNINGS, SYNTH_TUNINGS_BY_TF, TIMEFRAMES, getSynthTunings } from './config/constants.js';
 
 export const state = {
   // Bars + events on the rolling window
@@ -153,6 +153,8 @@ export const state = {
   // When the user pans, chartViewEnd is locked to a specific value and a "↺ Live"
   // button appears to return to live edge.
   chartViewEnd: null,
+  /** How many candles to fit horizontally (wheel zoom); rolling buffer size remains MAX_BARS. */
+  chartVisibleBars: MAX_BARS,
 
   // Hit-test list rebuilt every drawPriceChart() call, used by the hover tooltip.
   // Each entry: {x, y, r, kind: 'event'|'fire', payload}

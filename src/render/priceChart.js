@@ -1,4 +1,4 @@
-import { MAX_BARS, DEFAULT_TIMEFRAME } from '../config/constants.js';
+import { DEFAULT_TIMEFRAME, MAX_CHART_VISIBLE_BARS, MIN_CHART_VISIBLE_BARS } from '../config/constants.js';
 import { state } from '../state.js';
 import { computeProfile } from '../analytics/profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from '../analytics/vwap.js';
@@ -335,17 +335,43 @@ function _isApiProfileCompatibleWith(apiProfile, candleLo, candleHi) {
 }
 
 function _getViewedBars() {
-  if (state.replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor) {
-    const end = clamp(state.chartViewEnd, 1, state.replay.allBars.length);
-    const panViewStart = Math.max(0, end - MAX_BARS);
+  const vbReq = clamp(state.chartVisibleBars, MIN_CHART_VISIBLE_BARS, MAX_CHART_VISIBLE_BARS);
+  const replay = state.replay;
+
+  if (replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== replay.cursor) {
+    const end = clamp(state.chartViewEnd, 1, replay.allBars.length);
+    const effVb = Math.min(vbReq, end, MAX_CHART_VISIBLE_BARS);
+    const panViewStart = Math.max(0, end - effVb);
     return {
-      viewedBars: state.replay.allBars.slice(panViewStart, end),
+      viewedBars: replay.allBars.slice(panViewStart, end),
       isPanned: true,
       panViewStart,
     };
   }
+
+  if (replay.mode === 'real') {
+    const cursor = replay.cursor;
+    const forming = state.formingBar;
+    const settleWant = Math.max(0, vbReq - (forming ? 1 : 0));
+    const nSettle = Math.min(settleWant, cursor);
+    const start = Math.max(0, cursor - nSettle);
+    const settledSlice = replay.allBars.slice(start, cursor);
+    const viewedBars = forming ? [...settledSlice, forming] : settledSlice;
+    return {
+      viewedBars,
+      isPanned: false,
+      panViewStart: start,
+    };
+  }
+
+  const forming = state.formingBar;
+  const maxAvail = state.bars.length + (forming ? 1 : 0);
+  const effVb = Math.min(vbReq, Math.max(maxAvail, 1));
+  const nBase = Math.min(effVb - (forming ? 1 : 0), state.bars.length);
+  const base = nBase > 0 ? state.bars.slice(-nBase) : [];
+  const viewedBars = forming ? [...base, forming] : base;
   return {
-    viewedBars: state.formingBar ? [...state.bars, state.formingBar] : state.bars,
+    viewedBars,
     isPanned: false,
     panViewStart: 0,
   };
@@ -362,24 +388,22 @@ function drawPriceChart() {
   pctx.fillRect(0, 0, w, h);
 
   // ── Viewport selection ───────────────────────────────────────────────
-  // Synthetic mode: render the live `state.bars` rolling window (+ state.formingBar).
-  // Real mode @ live edge: same — `state.bars` is the last MAX_BARS, state.formingBar is
-  //    the in-progress real bar.
-  // Real mode panned: render state.replay.allBars[viewStart..viewEnd], no forming
-  //    bar (we're looking at history). Events are filtered from
-  //    state.replay.allEvents by bar.time.
+  // Synthetic: rolling `state.bars` (+ forming), clipped by chartVisibleBars.
+  // Real @ live edge: slice replay.allBars ending at cursor (+ forming), width from chartVisibleBars.
+  // Real panned: allBars[viewStart..viewEnd]; events from allEvents by bar-time window when loaded.
   const view = _getViewedBars();
   const viewedBars = view.viewedBars;
   const isPanned = view.isPanned;
   const panViewStart = view.panViewStart;
-  // Events: when panned, filter from the full session log by bar-time window;
-  // at live edge use the in-memory rolling `state.events` array (same semantics as
-  // before — kept inline because the flow chart doesn't render state.events).
   let viewedEvents;
-  if (isPanned && viewedBars.length) {
-    const winStart = viewedBars[0].time;
-    const winEnd   = viewedBars[viewedBars.length - 1].time;
-    viewedEvents = state.replay.allEvents.filter(ev => ev.time >= winStart && ev.time <= winEnd);
+  if (state.replay.mode === 'real' && viewedBars.length) {
+    if (state.replay.allEvents?.length) {
+      const winStart = viewedBars[0].time;
+      const winEnd = viewedBars[viewedBars.length - 1].time;
+      viewedEvents = state.replay.allEvents.filter(ev => ev.time >= winStart && ev.time <= winEnd);
+    } else {
+      viewedEvents = state.events;
+    }
   } else {
     viewedEvents = state.events;
   }

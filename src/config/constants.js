@@ -2,6 +2,9 @@
 // Numeric / structural constants
 // ───────────────────────────────────────────────────────────
 export const MAX_BARS     = 60;
+/** Horizontal zoom: visible candle count on the price chart (wheel); ring buffer stays MAX_BARS. */
+export const MIN_CHART_VISIBLE_BARS = 12;
+export const MAX_CHART_VISIBLE_BARS = 240;
 /** Bars committed per slice in API `seekAsync` (yield between slices for UI). */
 export const SEEK_ASYNC_BATCH_BARS = 1000;
 export const PROFILE_BINS = 36;

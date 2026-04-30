@@ -84,6 +84,7 @@ function _resetReplayAccumulators() {
   state.valueEdgeRejectWatch.lastCanonical = null;
   state.valueEdgeRejectWatch.firedThisCycle = false;
   state.valueEdgeRejectWatch.flipTicks = { regime: null, failedAtEdge: null, rejectionWick: null, volume: null, alignment: null };
+  state.chartVisibleBars = MAX_BARS;
   state.sim.formingProgress = 0;
   state.sim.tick = 0;
   state.sim.volState = 2;
@@ -332,7 +333,7 @@ function _syncChartPanSliderDOM() {
   const pan = document.getElementById('chartPanSlider');
   if (!pan || state.replay.mode !== 'real') return;
   const len = state.replay.allBars.length;
-  const minEnd = len ? Math.min(MAX_BARS, len) : 0;
+  const minEnd = len ? Math.min(state.chartVisibleBars, len) : 0;
   pan.min = String(len ? minEnd : 0);
   pan.max = String(Math.max(len, 1));
   const edge = state.chartViewEnd !== null ? state.chartViewEnd : state.replay.cursor;

@@ -61,7 +61,7 @@ Design intent remains unchanged:
 - Real mode is explicitly selected via query string (`?source=api`).
 - Synthetic remains supported and is the fallback when API replay is unavailable.
 
-In **API replay**, after the windowed **`/bars`** load completes, **`seek(allBars.length)`** runs so **`replay.cursor`** sits at the **end of the loaded timeline**. The chart shows the **most recent** **`MAX_BARS`** (subject to **`chartPanSlider`** / **`chartViewEnd`**) with default timeframe **`1m`** — not bar 0 at session start unless the user pans there.
+In **API replay**, after the windowed **`/bars`** load completes, **`seek(allBars.length)`** runs so **`replay.cursor`** sits at the **end of the loaded timeline**. The chart shows the **most recent** bars up to **`chartVisibleBars`** (horizontal zoom), while committed streaming/history handling still uses the **`MAX_BARS`** ring buffer (subject to **`chartPanSlider`** / **`chartViewEnd`**) with default timeframe **`1m`** — not bar 0 at session start unless the user pans there.
 
 ### 2.4 Collapsible dashboard sections
 
@@ -82,7 +82,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Canonical fire halo selection (API replay):** **`state.activeCanonicalFireTypes`** (`Set` of **`watchId`** strings: **`breakout`**, **`fade`**, …). Default **empty** — canonical ★/◆/🛡/🎯 chart halos are **off until the user opts in**. **`priceChart.js`** filters merged fire draws in real mode by this set. **Synthetic mode** ignores this set and draws **`state.canonicalFires`** halos as before (no glossary panel).
 - **Timeframe state:** `activeTimeframe`, `availableTimeframes`, and timeframe-switch memory (`savedMatrixRangeBeforeTf1h`).
 - **Chart view mode state:** `candleMode` (`standard` | `phat`) with PHAT availability inferred from loaded API bars.
-- **Viewport state:** `chartViewEnd` for panned history vs live edge. The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). **When `replay.cursor` already equals `replay.allBars.length` (tape end), `precomputeAllFires()` snapshots `replay.allFires` from `canonicalFires` with no `seek()` — no redundant full replay.** When `precomputeAllFires` is triggered from `_loadAllSessionsFromApi` after the initial `seekAsync(length)` (see below), `allFires` is filled that way without an extra `seek` pass. Chart halos for ★/◆/🛡/🎯 in **API replay** merge `allFires` and `canonicalFires` (when panned) and filter by **`activeCanonicalFireTypes`**. Matching uses `watchId|bar_time_ms`. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
+- **Viewport state:** `chartViewEnd` for panned history vs live edge; **`chartVisibleBars`** (wheel-driven horizontal zoom — how many candles are mapped across the chart width, clamped per loaded/cursor bounds). The first time the user pans off the live edge while `replay.allFires` is still empty, `precomputeAllFires()` runs (saving and restoring `chartViewEnd` so the viewport is not reset). **When `replay.cursor` already equals `replay.allBars.length` (tape end), `precomputeAllFires()` snapshots `replay.allFires` from `canonicalFires` with no `seek()` — no redundant full replay.** When `precomputeAllFires` is triggered from `_loadAllSessionsFromApi` after the initial `seekAsync(length)` (see below), `allFires` is filled that way without an extra `seek` pass. Chart halos for ★/◆/🛡/🎯 in **API replay** merge `allFires` and `canonicalFires` (when panned) and filter by **`activeCanonicalFireTypes`**. Matching uses `watchId|bar_time_ms`. In real mode, anchored VWAP is drawn from the same cumulative `allBars[0..cursor)` series for both live and panned views (visible slice is windowed from that), avoiding a false straight↔curved change at pan boundaries.
 - **Brushing/linking state:** `selection` (`kind`, selected cells, selected bar times, fire window bounds). A fire selection from the event log or chart (`selectFire`) also sets `chartViewEnd` so the fire bar and the 31-bar window sit in the current viewport, runs `_syncCurrentSession` and `_refreshMatrixForView` (so the panned path isn’t “all dim, marker off-screen”), and the price chart adds a teal focus ring on the active ◆/★/🛡.
 - **Selection deep-linking (URL):** selection state is mirrored into query params and restored after API replay load. Supported params are `selection=fire|cells`, `selectionFireTime` (epoch ms), `selectionFireWatch` (`watchId`), and `selectionCells` (`r.c,r.c,...`). This allows copy/paste refresh-safe links to reopen the same brushed event window (or matrix-cell brush set). Timeframe switches clear these selection params because rank-cell coordinates are timeframe-specific.
 - **Display-state deep-linking (URL):** glossary checkbox state is mirrored into `displayFires` (canonical `watchId` CSV) and `displayEvents` (primitive glossary-key CSV). On replay-ready bootstrap, these sets restore before selection replay so halos/markers are visible when a deep-linked fire/cell selection is applied.
@@ -241,7 +241,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 
 ### 7.2 Interaction
 
-- Mouse wheel and drag pan/scrub through loaded history.
+- **Mouse wheel** over the price canvas adjusts **`chartVisibleBars`** (horizontal zoom — wider vs narrower candles). **Drag** (real mode, enough loaded history) pans along time via **`chartViewEnd`** / **`_setViewEnd`** (same as **chart pan** slider scrub).
 - Brushing-and-linking:
   - Matrix cell click filters/tints matching bars.
   - Fire click highlights a fire-centered fixed window (fire bar + next 30 bars).
@@ -292,7 +292,7 @@ When real data is loaded, show:
 
 - **`seek` vs `seekAsync`:** **`seek()`** remains synchronous for step/jump, **`precomputeAllFires`** slow path, post-load timeframe snap, etc. Initial full-timeline commit after **`/bars`** fetch uses **`seekAsync()`** (`src/data/replay.js`) only from **`_loadAllSessionsFromApi`**, with **`#chartSeekLoading`** progress overlay; another load or TF switch **`await`s** the in-flight **`seekAsync`** before replacing **`replay.allBars`**.
 - **Timeframe row:** **`#replayRow`** — **Timeframe** label + segmented control only (`1m` / `15m` / `1h`). Placed **under the price chart profile legend** (right-aligned), not in the page header. There is **no** seek scrubber, step buttons, or playback time readout — **`replay.cursor`** is advanced by **stream** / **Reset** / internal **`seek()`** (e.g. jump-to-fire, resume-stream snap), not by a header timeline control.
-- **Chart pan row:** full-width **`chartPanSlider`** below the price canvas — adjusts **`chartViewEnd`** (viewport right edge via **`_setViewEnd`**), **not** the underlying cursor index for history inspection. Bounds follow **`replay.dateRange`** / bar count (**`MAX_BARS`** window semantics unchanged).
+- **Chart pan row:** full-width **`chartPanSlider`** below the price canvas — adjusts **`chartViewEnd`** (viewport right edge via **`_setViewEnd`**), **not** the underlying cursor index for history inspection. Slider minimum/maximum follow **`replay.dateRange`** / bar count and **`chartVisibleBars`** (how many bars fit in the viewport width). **`MAX_BARS`** remains the rolling-buffer size for streaming commits, distinct from **`chartVisibleBars`**.
 
 **Pan vs playback:** dragging the chart pan slider scrolls the visible window along the loaded bars. **Start Stream** / **Resume** drives **`replay.cursor`** forward. **`↺ Live`** clears **`chartViewEnd`** lock.
 
@@ -302,6 +302,7 @@ Mode subtitle summarizes the calendar span and states that chart pan previews hi
 
 ### 9.2 Layout (`orderflow_dashboard.html`)
 
+- **Shell:** The main **`container`** uses the full browser width (no centered **`max-width`** gutters). From **`1100px`** viewport width up, **`grid-main`** is **`minmax(0, 1fr)`** for **`col-left`** and a fixed **`col-right`** width (**`--dashboard-sidebar-width`**, default **400px** in **`styles/dashboard.css`**). Below **`1100px`**, columns stack in one column as before.
 - **`col-left`:** Header, stream controls, **Price · Volume Profile** block (canvas, chart pan, legend, **`#replayRow`** timeframe strip), **Delta Distribution**, **Signals & glossary**.
 - **`col-right`:** **Regime Matrix** stack, then **Event Log** (scroll list + sync hint; glossary drives row filter) beneath it.
 
