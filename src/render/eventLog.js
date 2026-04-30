@@ -26,6 +26,8 @@ function _selectionBannerHtml() {
   if (sel.kind === 'cells') {
     const n = sel.cells.length;
     label = `SELECTION · ${n} cell${n === 1 ? '' : 's'} brushed · click ✕ or press Esc to clear`;
+  } else if (sel.kind === 'bar') {
+    label = 'SELECTION · single candle linked to matrix point · click ✕ or press Esc to clear';
   } else {
     label = 'SELECTION · fire window (fire bar + next 30) · click ✕ or press Esc to clear';
   }

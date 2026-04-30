@@ -79,6 +79,8 @@ function selectCell(r, c, opts = {}) {
     barTimes: null,        // will populate when fetch resolves
     fireBarTime: null,
     fireWindowEndMs: null,
+    barTime: null,
+    hoverBarTime: null,
   };
   _syncSelectionToUrl();
   _repaint();
@@ -130,6 +132,8 @@ function selectFire(fire) {
     barTimes,
     fireBarTime: fireMs,
     fireWindowEndMs: lastMs,
+    barTime: null,
+    hoverBarTime: null,
   };
   _syncSelectionToUrl(fire);
 
@@ -149,16 +153,51 @@ function selectFire(fire) {
 }
 
 function clearSelection() {
-  if (state.selection.kind === null) return;
+  const sel = state.selection;
+  if (sel.kind === null && sel.hoverBarTime == null) return;
   state.selection = {
     kind: null,
     cells: [],
     barTimes: null,
     fireBarTime: null,
     fireWindowEndMs: null,
+    barTime: null,
+    hoverBarTime: null,
   };
   _syncSelectionToUrl();
   _repaint();
+}
+
+function selectBar(barTimeMs, source = 'unknown') {
+  if (!Number.isFinite(barTimeMs)) return;
+  const ms = Number(barTimeMs);
+  const live = state.selection;
+  // Same-bar click toggles off, mirroring cell/fire behavior.
+  if (live.kind === 'bar' && live.barTime === ms) {
+    clearSelection();
+    return;
+  }
+  state.selection = {
+    kind: 'bar',
+    cells: [],
+    barTimes: new Set([ms]),
+    fireBarTime: null,
+    fireWindowEndMs: null,
+    barTime: ms,
+    hoverBarTime: ms,
+  };
+  void source;
+  _syncSelectionToUrl();
+  _repaint();
+}
+
+function hoverBar(barTimeMs, source = 'unknown') {
+  const next = Number.isFinite(barTimeMs) ? Number(barTimeMs) : null;
+  const sel = state.selection;
+  if (sel.hoverBarTime === next) return;
+  state.selection = { ...sel, hoverBarTime: next };
+  void source;
+  _repaintLinked();
 }
 
 // ───────────────────────────────────────────────────────────
@@ -218,6 +257,11 @@ function _sameCellSet(a, b) {
 function _repaint() {
   drawPriceChart();
   renderEventLog();
+  repaintMatrix();
+}
+
+function _repaintLinked() {
+  drawPriceChart();
   repaintMatrix();
 }
 
@@ -284,6 +328,8 @@ function restoreSelectionFromUrl() {
       barTimes: null,
       fireBarTime: null,
       fireWindowEndMs: null,
+      barTime: null,
+      hoverBarTime: null,
     };
     _syncSelectionToUrl();
     _repaint();
@@ -308,8 +354,32 @@ function restoreSelectionFromUrl() {
 // ───────────────────────────────────────────────────────────
 function bindSelectionUI() {
   const grid = document.getElementById('matrixGrid');
+  const pointLayer = document.getElementById('matrixPointLayer');
+  if (pointLayer) {
+    pointLayer.addEventListener('mousemove', (e) => {
+      const target = e.target.closest('.matrix-point');
+      if (!target) {
+        hoverBar(null, 'matrix-point-layer');
+        return;
+      }
+      const ms = Number(target.dataset.barTime);
+      hoverBar(Number.isFinite(ms) ? ms : null, 'matrix-point-layer');
+    });
+    pointLayer.addEventListener('mouseleave', () => {
+      hoverBar(null, 'matrix-point-layer-leave');
+    });
+    pointLayer.addEventListener('click', (e) => {
+      const target = e.target.closest('.matrix-point');
+      if (!target) return;
+      e.stopPropagation();
+      const ms = Number(target.dataset.barTime);
+      if (!Number.isFinite(ms)) return;
+      selectBar(ms, 'matrix-point-click');
+    });
+  }
   if (grid) {
     grid.addEventListener('click', (e) => {
+      if (e.target.closest('.matrix-point')) return;
       const cell = e.target.closest('.matrix-cell');
       if (!cell) {
         // Click in the matrix area but outside any cell → clear.
@@ -332,4 +402,4 @@ function bindSelectionUI() {
   });
 }
 
-export { selectCell, selectFire, clearSelection, isBarSelected, bindSelectionUI, restoreSelectionFromUrl };
+export { selectCell, selectFire, selectBar, hoverBar, clearSelection, isBarSelected, bindSelectionUI, restoreSelectionFromUrl };

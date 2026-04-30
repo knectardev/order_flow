@@ -187,6 +187,7 @@ let _lastApiProfileFromMs = NaN;
 let _lastApiProfileToMs = NaN;
 let _lastApiProfileSessionStartMs = NaN;
 let _lastApiProfileSessionEndMs = NaN;
+let _lastVpDebugSig = null;
 
 const _profileDebug = (() => {
   try {
@@ -206,6 +207,15 @@ function _windowOverlapMs(aLo, aHi, bLo, bHi) {
   const lo = Math.max(aLo, bLo);
   const hi = Math.min(aHi, bHi);
   return Math.max(0, hi - lo);
+}
+
+function _logVpNormOnce(payload) {
+  if (!_profileDebug) return;
+  const sig = JSON.stringify(payload);
+  if (sig === _lastVpDebugSig) return;
+  _lastVpDebugSig = sig;
+  // eslint-disable-next-line no-console
+  console.debug('[orderflow][vp-norm]', payload);
 }
 
 // Profile-fold hysteresis state. The y-range fitter (in drawPriceChart)
@@ -292,6 +302,68 @@ function _hasPhatFields(bar) {
     || Number.isFinite(Number(bar?.lowerWickLiquidity));
 }
 
+function _classifyPhatBody(bar, isUp) {
+  const topNorm = Number(bar?.topCvdNorm);
+  const botNorm = Number(bar?.bottomCvdNorm);
+  const threshold = Math.max(0, Math.min(2, Number(state.phatBodyImbalanceThreshold) || 0.30));
+  const hasNorms = Number.isFinite(topNorm) && Number.isFinite(botNorm);
+  const imbalance = hasNorms ? Math.abs(topNorm - botNorm) : 0;
+  // Option A lock: disagreement bars stay neutral.
+  let shape = 'neutral';
+  if (hasNorms && imbalance >= threshold) {
+    if (isUp && topNorm > botNorm) shape = 'P';
+    else if (!isUp && botNorm > topNorm) shape = 'b';
+  }
+  return {
+    shape,
+    topNorm,
+    botNorm,
+    hasNorms,
+    imbalance,
+  };
+}
+
+function _classifyPhatRejection(bar) {
+  const rejectionSide = String(bar?.rejectionSide || 'none');
+  const rejectionType = String(bar?.rejectionType || 'none');
+  const rejectionStrength = Number.isFinite(Number(bar?.rejectionStrength)) ? Number(bar.rejectionStrength) : 0;
+  const sideLiquidity = rejectionSide === 'high'
+    ? Number(bar?.upperWickLiquidity)
+    : rejectionSide === 'low'
+      ? Number(bar?.lowerWickLiquidity)
+      : NaN;
+  const hasRejection = rejectionStrength > 0 && (rejectionSide === 'high' || rejectionSide === 'low');
+  let strengthLabel = null;
+  if (hasRejection) {
+    if (rejectionStrength < 0.34) strengthLabel = 'weak';
+    else if (rejectionStrength < 0.67) strengthLabel = 'moderate';
+    else strengthLabel = 'strong';
+  }
+  return {
+    hasRejection,
+    rejectionSide,
+    rejectionType,
+    rejectionStrength,
+    sideLiquidity,
+    strengthLabel,
+  };
+}
+
+function _buildPhatHoverPayload(bar, isUp) {
+  const body = _classifyPhatBody(bar, isUp);
+  const rejection = _classifyPhatRejection(bar);
+  const shapeLabel = body.shape === 'P' ? 'P-shape' : (body.shape === 'b' ? 'b-shape' : 'Neutral body');
+  return {
+    shape: body.shape,
+    shapeLabel,
+    imbalance: body.hasNorms ? body.imbalance : null,
+    topNorm: body.hasNorms ? body.topNorm : null,
+    bottomNorm: body.hasNorms ? body.botNorm : null,
+    hasNorms: body.hasNorms,
+    rejection,
+  };
+}
+
 function _drawPhatCandle(ctx, {
   bar, xCenter, top, bodyH, candleW, wickStrokeColor, isUp, isForming, dim, highlighted, yScale,
 }) {
@@ -335,18 +407,9 @@ function _drawPhatCandle(ctx, {
     ctx.setLineDash([]);
   } else {
     const dimMul = dim ? 0.45 : 1.0;
-    const topNorm = Number(bar.topCvdNorm);
-    const botNorm = Number(bar.bottomCvdNorm);
-    const imbalanceThreshold = Math.max(0, Math.min(2, Number(state.phatBodyImbalanceThreshold) || 0.30));
-    const hasNorms = Number.isFinite(topNorm) && Number.isFinite(botNorm);
-    const imbalance = hasNorms ? Math.abs(topNorm - botNorm) : 0;
+    const bodyClass = _classifyPhatBody(bar, isUp);
     const neutralAlpha = (0.22 * dimMul);
-    // Option A (locked): disagreement bars render neutral.
-    let shape = 'neutral';
-    if (hasNorms && imbalance >= imbalanceThreshold) {
-      if (isUp && topNorm > botNorm) shape = 'P';
-      else if (!isUp && botNorm > topNorm) shape = 'b';
-    }
+    const shape = bodyClass.shape;
     if (shape === 'neutral') {
       ctx.fillStyle = `rgba(${r},${g},${b},${neutralAlpha.toFixed(3)})`;
       ctx.fillRect(left, top, candleW, bodyH);
@@ -375,9 +438,10 @@ function _drawPhatCandle(ctx, {
 
   // Rejection marker: at most one circle, at the wick tip (high/low price). Radius 2–5px encodes strength.
   // Fill: absorption → solid; exhaustion → solid if wick liquidity crosses configured threshold.
-  const rejectionSide = String(bar.rejectionSide || 'none');
-  const rejectionStrength = Number.isFinite(Number(bar.rejectionStrength)) ? Number(bar.rejectionStrength) : 0;
-  const rejectionType = String(bar.rejectionType || 'none');
+  const rejection = _classifyPhatRejection(bar);
+  const rejectionSide = rejection.rejectionSide;
+  const rejectionStrength = rejection.rejectionStrength;
+  const rejectionType = rejection.rejectionType;
   const ringCol = isUp ? _candleUpRgba(0.9) : _candleDownRgba(0.9);
   const chartBg = CHART_CANVAS_BG;
   const _wickLiqAtSide = () => {
@@ -603,6 +667,7 @@ function drawPriceChart() {
   // showing an approximation always beats showing nothing, and the real
   // profile pops in seamlessly once the fetch resolves.
   let profile = null;
+  let profileSource = 'none';
   if (profileBars.length > 2) {
     if (state.replay.dataDriven && state.replay.apiBase) {
       const fromIso = _isoZ(profileBars[0].time);
@@ -620,6 +685,7 @@ function drawPriceChart() {
         && cached.valPrice != null;
       if (cachedUsable) {
         profile = cached;
+        profileSource = 'api-cache';
         _lastApiProfile = cached;
         _lastApiProfileTf = activeTf;
         _lastApiProfileFromMs = fromMs;
@@ -628,7 +694,7 @@ function drawPriceChart() {
         _lastApiProfileSessionEndMs = scopedSession?.sessionEndMs ?? NaN;
         _logProfileDecision({
           isPanned,
-          source: 'api-cache',
+          source: profileSource,
           timeframe: activeTf,
           fromIso,
           toIso,
@@ -657,27 +723,49 @@ function drawPriceChart() {
           if (b.low  < candleLo) candleLo = b.low;
           if (b.high > candleHi) candleHi = b.high;
         }
-        let canReuseLastApi = !!_lastApiProfile
-          && _lastApiProfileTf === activeTf
-          && _isApiProfileCompatibleWith(_lastApiProfile, candleLo, candleHi);
-        if (canReuseLastApi
-            && Number.isFinite(fromMs)
-            && Number.isFinite(toMs)
-            && Number.isFinite(_lastApiProfileFromMs)
-            && Number.isFinite(_lastApiProfileToMs)) {
-          canReuseLastApi = _windowOverlapMs(fromMs, toMs, _lastApiProfileFromMs, _lastApiProfileToMs) > 0;
-        }
-        if (canReuseLastApi && scopedSession
-            && Number.isFinite(_lastApiProfileSessionStartMs)
-            && Number.isFinite(_lastApiProfileSessionEndMs)) {
-          canReuseLastApi = _lastApiProfileSessionStartMs === scopedSession.sessionStartMs
-            && _lastApiProfileSessionEndMs === scopedSession.sessionEndMs;
+        // Panned-mode policy: avoid proxy swaps, but never show an obviously
+        // stale profile. Reuse carry-over only when it is still compatible with
+        // the current candle range and session/window context.
+        let canReuseLastApi = !!_lastApiProfile && _lastApiProfileTf === activeTf;
+        if (canReuseLastApi && isPanned) {
+          canReuseLastApi = _isApiProfileCompatibleWith(_lastApiProfile, candleLo, candleHi);
+          // Prefer same-session reuse when session metadata is available.
+          if (scopedSession
+              && Number.isFinite(_lastApiProfileSessionStartMs)
+              && Number.isFinite(_lastApiProfileSessionEndMs)) {
+            canReuseLastApi = _lastApiProfileSessionStartMs === scopedSession.sessionStartMs
+              && _lastApiProfileSessionEndMs === scopedSession.sessionEndMs;
+          }
+          // If we cannot verify session stamps, require at least window overlap.
+          if (canReuseLastApi
+              && Number.isFinite(fromMs)
+              && Number.isFinite(toMs)
+              && Number.isFinite(_lastApiProfileFromMs)
+              && Number.isFinite(_lastApiProfileToMs)) {
+            canReuseLastApi = _windowOverlapMs(fromMs, toMs, _lastApiProfileFromMs, _lastApiProfileToMs) > 0;
+          }
+        } else if (canReuseLastApi) {
+          canReuseLastApi = _isApiProfileCompatibleWith(_lastApiProfile, candleLo, candleHi);
+          if (canReuseLastApi
+              && Number.isFinite(fromMs)
+              && Number.isFinite(toMs)
+              && Number.isFinite(_lastApiProfileFromMs)
+              && Number.isFinite(_lastApiProfileToMs)) {
+            canReuseLastApi = _windowOverlapMs(fromMs, toMs, _lastApiProfileFromMs, _lastApiProfileToMs) > 0;
+          }
+          if (canReuseLastApi && scopedSession
+              && Number.isFinite(_lastApiProfileSessionStartMs)
+              && Number.isFinite(_lastApiProfileSessionEndMs)) {
+            canReuseLastApi = _lastApiProfileSessionStartMs === scopedSession.sessionStartMs
+              && _lastApiProfileSessionEndMs === scopedSession.sessionEndMs;
+          }
         }
         if (canReuseLastApi) {
           profile = _lastApiProfile;
+          profileSource = 'api-carryover';
           _logProfileDecision({
             isPanned,
-            source: 'api-carryover',
+            source: profileSource,
             timeframe: activeTf,
             fromIso,
             toIso,
@@ -687,10 +775,14 @@ function drawPriceChart() {
             maxBin: _lastApiProfile.maxBin,
           });
         } else {
+          // Keep the sidebar present at all times. If no compatible API
+          // carry-over is available for this unresolved key, fall back to the
+          // deterministic proxy until the API response lands.
           profile = computeProfile(profileBars);
+          profileSource = isPanned ? 'proxy-panned' : 'proxy';
           _logProfileDecision({
             isPanned,
-            source: 'proxy',
+            source: profileSource,
             timeframe: activeTf,
             fromIso,
             toIso,
@@ -711,6 +803,7 @@ function drawPriceChart() {
       }
     } else {
       profile = computeProfile(profileBars);
+      profileSource = 'proxy-nonapi';
     }
   }
 
@@ -976,6 +1069,7 @@ function drawPriceChart() {
     const b = allBars[i];
     const xCenter = PAD.l + (i + 0.5) * slotW;
     const isForming = (b === state.formingBar);
+    const barTimeMs = _barTimeMs(b.time);
     const isUp = b.close >= b.open;
     const upColor = CHART_CANDLE_UP;
     const downColor = CHART_CANDLE_DOWN;
@@ -986,13 +1080,19 @@ function drawPriceChart() {
     // affordance for that one bar).
     let dim = false;
     let highlighted = false;
+    let hoverPreview = false;
     if (selectionActive && !isForming) {
-      const ms = b.time instanceof Date ? b.time.getTime() : Date.parse(b.time);
-      if (isBarSelected(ms)) {
+      if (isBarSelected(barTimeMs)) {
         highlighted = true;
       } else {
         dim = true;
       }
+    }
+    if (selectionActive && isForming && isBarSelected(barTimeMs)) {
+      highlighted = true;
+    }
+    if (state.selection.hoverBarTime != null && state.selection.hoverBarTime === barTimeMs) {
+      hoverPreview = true;
     }
 
     const wickColor = isForming ? 'rgba(192,198,208,0.45)'
@@ -1033,6 +1133,21 @@ function drawPriceChart() {
         highlighted,
         yScale,
       });
+      {
+        const left = xCenter - candleW / 2;
+        state.chartHits.push({
+          x: xCenter,
+          y: top + bodyH / 2,
+          r: Math.max(8, candleW * 0.7),
+          hitShape: 'rect',
+          x0: left,
+          x1: left + candleW,
+          y0: top,
+          y1: top + bodyH,
+          kind: 'phatCandle',
+          payload: { ..._buildPhatHoverPayload(b, isUp), barTimeMs },
+        });
+      }
     } else if (isForming) {
       pctx.fillStyle = isUp ? _candleUpRgba(0.18) : _candleDownRgba(0.18);
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
@@ -1054,6 +1169,26 @@ function drawPriceChart() {
         pctx.lineWidth = 1;
         pctx.strokeRect(xCenter - candleW/2 - 0.5, top - 0.5, candleW + 1, bodyH + 1);
       }
+    }
+    if (hoverPreview && !highlighted) {
+      pctx.strokeStyle = isUp ? 'rgba(198, 230, 225, 0.85)' : 'rgba(255, 59, 48, 0.9)';
+      pctx.lineWidth = 1;
+      pctx.strokeRect(xCenter - candleW/2 - 0.5, top - 0.5, candleW + 1, bodyH + 1);
+    }
+    if (!usePhat) {
+      const left = xCenter - candleW / 2;
+      state.chartHits.push({
+        x: xCenter,
+        y: top + bodyH / 2,
+        r: Math.max(8, candleW * 0.7),
+        hitShape: 'rect',
+        x0: left,
+        x1: left + candleW,
+        y0: top,
+        y1: top + bodyH,
+        kind: 'candle',
+        payload: { barTimeMs, isUp, open: b.open, high: b.high, low: b.low, close: b.close },
+      });
     }
   }
 
@@ -1347,7 +1482,9 @@ function drawPriceChart() {
     const paneTop = PAD.t;
     const paneBot = PAD.t + chartH;
     let pixelVisibleMaxBin = 0;
+    const pixelVisibleBins = [];
     let vaMaxBin = 0;
+    const vaBins = [];
     for (let i = 0; i < profile.bins.length; i++) {
       const v = profile.bins[i];
       const yTop = yScale(profile.priceLo + (i + 1) * profile.binStep);
@@ -1355,27 +1492,60 @@ function drawPriceChart() {
       const yLo = Math.min(yTop, yBot);
       const yHi = Math.max(yTop, yBot);
       const overlapsPane = yHi >= paneTop && yLo <= paneBot;
-      if (overlapsPane && v > pixelVisibleMaxBin) pixelVisibleMaxBin = v;
+      if (overlapsPane) {
+        pixelVisibleBins.push(v);
+        if (v > pixelVisibleMaxBin) pixelVisibleMaxBin = v;
+      }
 
       const binPrice = profile.priceLo + (i + 0.5) * profile.binStep;
       const inVA = binPrice >= profile.valPrice && binPrice <= profile.vahPrice;
-      if (inVA && v > vaMaxBin) vaMaxBin = v;
+      if (inVA) {
+        vaBins.push(v);
+        if (v > vaMaxBin) vaMaxBin = v;
+      }
     }
-    const widthMaxBin = pixelVisibleMaxBin > 0
-      ? pixelVisibleMaxBin
-      : (vaMaxBin > 0 ? vaMaxBin : Math.max(profile.maxBin || 0, 1));
-    _logProfileDecision({
-      isPanned,
-      source: 'vp-width-norm',
-      widthMaxBin,
-      pixelVisibleMaxBin,
-      vaMaxBin,
-      profileMaxBin: profile.maxBin,
-      pocPrice: profile.pocPrice,
-    });
+    // Robust normalization: visible-bin MAX is extremely sensitive to one-bin
+    // spikes (often introduced/removed by a 1-bar pan), which reads as
+    // "everything compressed" between adjacent viewport positions. Use a high
+    // percentile of visible bins instead of strict max to stabilize geometry.
+    let pixelVisibleP97 = 0;
+    if (pixelVisibleBins.length > 0) {
+      const sorted = pixelVisibleBins.slice().sort((a, b) => a - b);
+      const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * 0.97)));
+      pixelVisibleP97 = sorted[idx];
+    }
+    let vaP97 = 0;
+    if (vaBins.length > 0) {
+      const sortedVa = vaBins.slice().sort((a, b) => a - b);
+      const idxVa = Math.max(0, Math.min(sortedVa.length - 1, Math.floor((sortedVa.length - 1) * 0.97)));
+      vaP97 = sortedVa[idxVa];
+    }
+    // Proxy-panned windows are the unstable path in debug captures; force
+    // normalization to value-area distribution in that case.
+    const useVaOnlyNorm = isPanned && String(profileSource).startsWith('proxy');
+    const widthMaxBin = useVaOnlyNorm
+      ? (vaP97 > 0 ? vaP97 : (vaMaxBin > 0 ? vaMaxBin : Math.max(profile.maxBin || 0, 1)))
+      : (pixelVisibleP97 > 0 ? pixelVisibleP97 : (vaP97 > 0 ? vaP97 : Math.max(profile.maxBin || 0, 1)));
+    if (isPanned) {
+      _logVpNormOnce({
+        chartViewEnd: state.chartViewEnd,
+        profileSource,
+        useVaOnlyNorm,
+        widthMaxBin,
+        pixelVisibleMaxBin,
+        pixelVisibleP97,
+        vaMaxBin,
+        vaP97,
+        profileMaxBin: profile.maxBin,
+        binsLength: profile.bins.length,
+        pocPrice: profile.pocPrice,
+        valPrice: profile.valPrice,
+        vahPrice: profile.vahPrice,
+      });
+    }
     for (let i = 0; i < profile.bins.length; i++) {
       const v = profile.bins[i];
-      const bw = (v / widthMaxBin) * (PROFILE_W - 8);
+      const bw = Math.min(PROFILE_W - 8, (v / widthMaxBin) * (PROFILE_W - 8));
       const yTop = yScale(profile.priceLo + (i + 1) * profile.binStep);
       const yBot = yScale(profile.priceLo + i * profile.binStep);
       const binH = Math.max(1, Math.abs(yBot - yTop) - 1);

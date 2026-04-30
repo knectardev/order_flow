@@ -1515,9 +1515,61 @@
     font-size: 12px;
     letter-spacing: 0.15em;
     text-shadow: 0 0 12px rgba(212, 160, 74, 0.45);
-    z-index: 2;
+    z-index: 6;
   }
   .matrix-inner.warmup .matrix-warmup { display: flex; }
+
+  /* Regime point cloud overlay: one point per visible settled candle with
+     rank-valid vRank/dRank, rendered above cell fills. */
+  .matrix-point-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 4;
+  }
+  .matrix-point {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    pointer-events: auto;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+    outline: none;
+  }
+  .matrix-point:focus {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
+  }
+
+  /* Bearish candle: pulse matrix dot in chart-link red (hover, selection, or live forming). */
+  @keyframes matrix-point-bear-pulse {
+    0%, 100% {
+      background: rgba(255, 59, 48, 0.45);
+      box-shadow: 0 0 0 1px rgba(255, 59, 48, 0.35);
+    }
+    50% {
+      background: rgba(255, 59, 48, 0.95);
+      box-shadow: 0 0 0 4px rgba(255, 59, 48, 0.5);
+    }
+  }
+  .matrix-point.matrix-point--bear-flash {
+    animation: matrix-point-bear-pulse 0.85s ease-in-out infinite;
+  }
+
+  /* Bullish candle: same pulse/halo language as bear-flash, chart-up green. */
+  @keyframes matrix-point-bull-pulse {
+    0%, 100% {
+      background: rgba(0, 192, 135, 0.45);
+      box-shadow: 0 0 0 1px rgba(0, 192, 135, 0.4);
+    }
+    50% {
+      background: rgba(0, 192, 135, 0.95);
+      box-shadow: 0 0 0 4px rgba(0, 192, 135, 0.55);
+    }
+  }
+  .matrix-point.matrix-point--bull-flash {
+    animation: matrix-point-bull-pulse 0.85s ease-in-out infinite;
+  }
 
   /* Heatmap layer (regime-DB plan §3c). Sits beneath all other cell
      layers; its opacity is driven inline from renderMatrix() based on

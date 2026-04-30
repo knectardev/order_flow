@@ -212,6 +212,20 @@ Watched cells: breakout (amber stripe), fade (blue), absorption wall (indigo `--
 
 Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect the active range window.
 
+### 6.1 Regime Matrix Point Cloud (Candle Overlay)
+
+- The matrix renders a point-cloud overlay (`.matrix-point-layer`) with **one point per visible candle** (including the **live forming** bar when present) whose `vRank` and `dRank` are valid integers in `1..5`.
+- **Warmup/null-rank bars** are excluded from point rendering (no placeholder points).
+- Opacity anchoring uses chronological order within the visible window; the rightmost rank-valid bar is typically brightest at the live edge.
+- Coordinates map to the 5×5 matrix using rank centers with deterministic per-bar jitter (stable by `bar_time_ms`) to prevent stacked center dots:
+  - `xCenter = (dRank - 0.5) / 5`
+  - `yCenter = (5 - vRank + 0.5) / 5`
+  - Jittered coordinates clamp to `[0,1]` matrix bounds.
+- Opacity is viewport-relative (not wall clock): oldest visible point trends to `POINT_MIN_OPACITY`, newest visible settled point uses `POINT_MAX_OPACITY`.
+- Default visual tokens are centralized in `src/render/matrix.js` constants (`POINT_MIN_OPACITY`, `POINT_MAX_OPACITY`, `POINT_RADIUS_PX`, hover/selected radii, stroke/fill colors, jitter radius, stroke width) to allow fast post-deploy tuning.
+- **Directional link highlight (same visual language as chart candles):** when `close < open`, the matrix dot uses **`matrix-point--bear-flash`** (red core + halo pulse) while **hover-linked**, **selected**, or **live forming** bear (pulse pauses when the pointer hovers another bar’s link). When `close >= open`, **`matrix-point--bull-flash`** applies the same pulse structure in **chart-up green** (`#00c087` family).
+- Morphology colorization is a hook only: point style resolution is routed through `resolvePointStyle(bar, state)` and can later map `bar.morphologyClass` to colors without changing point-cloud data flow.
+
 ---
 
 ## 7) Charting Requirements
@@ -229,6 +243,12 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 - **Blocking data check (all chart timeframes):** run `python scripts/diagnose_phat_fields.py --timeframe 1m --api-base ... --session-date ...`, `--timeframe 15m`, and `--timeframe 1h` before PHAT UI validation. PHAT work is blocked until DB + `/bars` checks pass on all three.
 - **PHAT rendering contract:** Body shading is threshold-gated, not continuous gradient. Compute `imbalance = abs(topCvdNorm - bottomCvdNorm)` and compare to `state.phatBodyImbalanceThreshold` (default **0.30**). If below threshold, render a neutral flat body. If above threshold and **directionally agreeing**, render **P** shading for up bars (top-heavy) and **b** shading for down bars (bottom-heavy). **Disagreement is locked to neutral-only** (Option A). Wick geometry is asymmetric by `highBeforeLow`; each wick segment’s stroke width scales from **1px** to **~1.85px** with `upperWickLiquidity` / `lowerWickLiquidity`. Non-forming PHAT bodies draw a thin outline in the wick/candle color so wick segments visually connect to the body edge (prototype-style continuity). Body width uses the prototype two-tier scale: `maxBodyW = min(slotWidth × 0.6, 30px)` then **`× 0.7`** when the body is **≤ 1 tick** (`|close − open| / ES_MIN_TICK`), else **`× 1.0`**.
 - At most one rejection ring when `rejectionStrength > 0` (`rejectionSide`, `rejectionStrength`, `rejectionType`); radius 2–5px from strength. **Ring fill:** `rejectionType === 'absorption'` → filled; `exhaustion` → filled only if wick liquidity on the rejection side is **`>= state.phatExhaustionRingLiquidityThreshold`** (default **0.55**), otherwise hollow (chart-background fill + colored stroke).
+- **PHAT hover classification tooltip:** in PHAT mode, hovering a candle body emits a `phatCandle` hit and shows trader-readable 3-line copy using existing PHAT render heuristics (shape from imbalance gate + direction agreement, rejection from side/type/strength/liquidity context). Contract:
+  - line 1: pattern read (`Neutral body` / `P-shape` / `b-shape` + plain-language side-pressure phrase),
+  - line 2: compact context (`Imbalance: xx.xx · Rejection: None|Absorption (weak|moderate|strong)|Exhaustion (weak|moderate|strong)`),
+  - line 3: interpretive but non-predictive read.
+  - Strength copy buckets are descriptive only: `weak` (`0 < rejectionStrength < 0.34`), `moderate` (`0.34 <= ... < 0.67`), `strong` (`0.67 <= ... <= 1.0`).
+  - Hover conflict rule: `event` / `fire` / `bias` hits have higher priority than `phatCandle` when regions overlap; nearest-hit applies within a priority tier.
 - **PHAT rejection detection (`pipeline/src/orderflow_pipeline/phat.py`):** Uses looser numeric gates than the prototype’s simulated step-count + 50% retreat so real bars still get sparse markers; there is no alternate strict mode in code.
 - **Timeframe-computation constraint:** 15m/1h PHAT fields must not be rolled up from 1m PHAT columns. They must be computed from each timeframe bin’s own trade/tick window during that timeframe aggregation pass.
 - Session-anchored VWAP with reset by session boundaries (real mode).
@@ -253,6 +273,10 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 - Brushing-and-linking:
   - Matrix cell click filters/tints matching bars.
   - Fire click highlights a fire-centered fixed window (fire bar + next 30 bars).
+  - Candle click (standard or PHAT) selects that exact bar and highlights its matrix point.
+  - Matrix point click selects that exact candle and highlights it on the chart.
+  - Hovering either a candle body (or PHAT body) or matrix point previews linked highlighting via transient shared hover state.
+  - `Escape` or clicking empty chart/matrix areas clears active selection as before.
 
 ---
 
@@ -332,9 +356,10 @@ In API mode:
 
 - Profile should come from true tick-level data via `/profile`.
 - Returned structure feeds POC/VAH/VAL and histogram rendering.
-- In `src/render/priceChart.js`, right-sidebar profile-bin widths are normalized by precedence: (1) max bin volume whose bin rectangle overlaps the visible chart pane in pixels, (2) max bin volume inside `[VAL, VAH]`, (3) profile `maxBin` fallback. This prevents off-screen tail spikes from collapsing visible histogram widths during small pans.
+- In `src/render/priceChart.js`, right-sidebar profile-bin widths are normalized by precedence: (1) 97th percentile of bin volumes whose rectangles overlap the visible chart pane in pixels, (2) max bin volume inside `[VAL, VAH]`, (3) profile `maxBin` fallback. Bar widths are clamped to sidebar width. This prevents one-bin spikes from collapsing visible histogram widths during small pans.
+- In panned windows where profile source is proxy fallback, width normalization is VA-centric (`[VAL, VAH]` percentile/max) to avoid proxy-driven visible-range spikes flattening the histogram on one-key moves.
 - API ISO-window parsing in `api/main.py` must interpret `Z`/offset timestamps as UTC before stripping tzinfo for DuckDB TIMESTAMP comparison. Converting to local time before stripping tzinfo is a regression: it shifts `/profile` (and other windowed endpoints) by machine offset, can return empty/null profile payloads, and forces the chart into proxy fallback while panned.
-- In panned mode, when the exact `(from,to)` profile key is unresolved, chart profile selection may reuse the last **compatible** API profile (same timeframe + overlapping window/session) as a stale placeholder before falling back to the OHLC proxy; this prevents abrupt API↔proxy jumps while preserving stale-profile guards.
+- In panned mode, when the exact `(from,to)` profile key is unresolved, chart profile selection reuses API carry-over only when compatibility/session/window guards pass; otherwise it falls back to deterministic OHLC proxy for continuity until the API window resolves.
 
 Fallback behavior:
 

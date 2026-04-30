@@ -1,70 +1,47 @@
-The code you provided confirms exactly why you are seeing that "jumping" and "compression" behavior. The issue is not in the sidebar drawing math—**the issue is that the code is intentionally discarding your high-quality API data the moment you start panning.**
+I understand. If the proxy-swap logic wasn't the root cause (or only part of it), we need to stop guessing and start observing. The "razor-thin" bar issue is almost certainly a math error in the normalization step, and right now, the code is "black-boxing" that math.
 
-### The Culprit: The "Proxy Flash"
-In your first snippet (Profile Selection), you have an explicit instruction that forces a drop in data quality during panning:
+We need to make the code report exactly why the sidebar is collapsing while you are panning.
+
+### The Diagnostic Approach
+We are going to instrument the render loop. This will print the exact inputs to the scaling math the moment it glitches, without flooding your console while the chart is static.
+
+Add this `console.log` block inside your `drawPriceChart` function, right before the sidebar loop starts (around line 1255 in your snippet):
 
 ```javascript
-// From your snippet:
-if (!isPanned && _lastApiProfile && ...) {
-  profile = _lastApiProfile;
-} else {
-  // THIS IS THE TRIGGER
-  // When you pan, the code skips your accurate API profile 
-  // and falls back to a low-fidelity proxy calculation.
-  profile = computeProfile(profileBars); 
+// Add this diagnostic block inside the render loop
+if (isPanned) {
+  const isUsingProxy = !cachedUsable && !( _lastApiProfile && _isApiProfileCompatibleWith(...) );
+  console.log(`[VP DEBUG] Panned: ${isPanned} | UsingProxy: ${isUsingProxy}`, {
+    visibleMaxBin,
+    rawProfileMaxBin: profile.maxBin,
+    calculatedWidthMaxBin: widthMaxBin,
+    binsLength: profile.bins.length,
+    normRange: (widthNormHi - widthNormLo).toFixed(2),
+    poc: profile.pocPrice
+  });
 }
 ```
 
-Because `computeProfile` is a local approximation (often based on 36-bin OHLC data) and your `GET /profile` response is the server-side ground truth, the **POC, VAH, and VAL will never match**. This is why your POC price jumps from $6539.65 to $6460.63 instantly—the renderer is switching from "High Definition" data to "Low Definition" data mid-session.
+### What to look for in the console
+When you pan and the sidebar collapses, watch these specific values:
 
----
+1.  **`calculatedWidthMaxBin` vs `rawProfileMaxBin`**: 
+    * If `calculatedWidthMaxBin` is **massively larger** than `rawProfileMaxBin`, the code has artificially expanded the normalization range (likely due to the `widthNormLo`/`widthNormHi` logic in your code). This forces all your bars to shrink because the denominator is too large.
+2.  **`normRange`**: 
+    * If this number spikes when you pan, it confirms that your `widthNormLo/Hi` calculation is capturing outliers (or noise) that aren't actually part of the visible price action, effectively "stretching" the sidebar and crushing your bars.
+3.  **`UsingProxy`**:
+    * Confirm if the collapse *only* happens when `UsingProxy` is `true`. If it happens even when `UsingProxy` is `false`, the issue is definitively in the normalization math, not the data source.
 
-### Recommended Fix: Stop the Proxy Swap
-
-To fix this, you need to change the logic to **prevent the "Proxy Flash."** Instead of falling back to the proxy while panned, you should retain the "last known good" API profile until the new API request resolves.
-
-#### Step 1: Verify the Data Mismatch
-Before applying the code change, confirm this is the cause. Add this `console.log` inside the `else` block in your first snippet:
-
-```javascript
-} else {
-  // Add this:
-  console.log("Panning active: Switching to Proxy. API Cached:", !!_lastApiProfile);
-  
-  profile = computeProfile(profileBars);
-}
-```
-When you pan, if you see "Switching to Proxy" appearing in your console, you have confirmed the swap.
-
-#### Step 2: Implement "Stale" Retention
-Modify the `else` block to preserve the `_lastApiProfile` even when `isPanned` is true. This will stop the sidebar from snapping to the wrong POC/width while the new data loads.
-
-Replace your logic with this pattern:
+### The Likely Culprit: The Normalization Band
+Look closely at this section of your provided code:
 
 ```javascript
-// ... existing checks ...
-
-// FIX: Do not force the proxy fallback if we have a valid API profile 
-// that we can reuse as a placeholder while the new one fetches.
-if (_lastApiProfile) {
-  // Use the last known good profile to prevent the "jump"
-  profile = _lastApiProfile;
-  // (Optional) Mark as "stale" if you want to visually dim the bars
-  profile.isStale = true; 
-} else {
-  // Only fall back to proxy if we have absolutely nothing else
-  profile = computeProfile(profileBars);
-}
-
-// Ensure the fetch still happens
-if (!hasResolvedProfile(fromIso, toIso)) {
-  requestProfile(fromIso, toIso, () => Promise.resolve().then(() => drawPriceChart()));
-}
+const widthNormLo = Math.min(
+  lo, profile.priceLo, profileLadderHi, profile.pocPrice, profile.valPrice, profile.vahPrice
+);
 ```
 
-### Why this fixes the compression
-In your second snippet, the compression happens because `visibleMaxBin` (which controls sidebar width) is calculated based on the profile data. 
+If `profile.priceLo` or `profileLadderHi` (which is `profile.priceLo + bins.length * step`) are far away from the `lo` and `hi` of your actual candle chart, **they will force the normalization window to include empty or irrelevant price space.** **The Test:**
+If you see the logs showing a huge `calculatedWidthMaxBin`, try commenting out the `profile.priceLo` and `profileLadderHi` inputs in `widthNormLo` and `widthNormHi`. If the bars suddenly become a "normal" size, you have found the bug: the sidebar is trying to normalize its width against the *entire potential price range* of the profile, rather than just the *visible candles*.
 
-If you swap the "correct" server-side profile for an "incorrect" proxy profile (which likely has a different `maxBin` or different volume distribution), the math `(v / widthMaxBin)` will immediately produce different widths. By keeping the `_lastApiProfile` (even if it's slightly outdated by one bar), the sidebar geometry will remain stable, and the "razor-thin" or "distorted" bars will vanish. 
-
-You can then add a small visual indicator (like a grey tint or opacity change) when `profile.isStale` is true to let the user know the data is currently updating.
+**Does the log show `calculatedWidthMaxBin` jumping to a massive number when the compression occurs?**

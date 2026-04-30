@@ -4,6 +4,23 @@ import { computeConfidence, topCells } from '../analytics/regime.js';
 import { getCachedOccupancy, requestOccupancy } from '../data/occupancyApi.js';
 import { resolveOccupancyWindow } from '../ui/matrixRange.js';
 
+const POINT_MIN_OPACITY = 0.18;
+const POINT_MAX_OPACITY = 0.95;
+const POINT_RADIUS_PX = 2.5;
+const POINT_HOVER_RADIUS_PX = 3.5;
+const POINT_SELECTED_RADIUS_PX = 4.0;
+const JITTER_RADIUS_NORM = 0.075;
+const POINT_STROKE_WIDTH_PX = 1;
+const POINT_FILL_COLOR = 'rgba(33,160,149,1)';
+const POINT_STROKE_COLOR = 'rgba(8,12,20,0.55)';
+const POINT_HOVER_STROKE_COLOR = 'rgba(255,255,255,0.9)';
+const POINT_SELECTED_STROKE_COLOR = 'rgba(255,255,255,1)';
+
+function _isBearBar(bar) {
+  if (!bar || bar.open == null || bar.close == null) return false;
+  return bar.close < bar.open;
+}
+
 function buildMatrix() {
   const grid = document.getElementById('matrixGrid');
   grid.innerHTML = '';
@@ -54,6 +71,12 @@ function buildMatrix() {
     overlay.textContent = 'WARMING UP';
     inner.appendChild(overlay);
   }
+  if (inner && !inner.querySelector('.matrix-point-layer')) {
+    const pointLayer = document.createElement('div');
+    pointLayer.className = 'matrix-point-layer';
+    pointLayer.id = 'matrixPointLayer';
+    inner.appendChild(pointLayer);
+  }
 }
 
 function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical) {
@@ -100,6 +123,7 @@ function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical,
     document.getElementById('altCellScore').textContent = '';
     _renderOccupancyDiagnostic(null);
     _renderRangeLabel();
+    _renderPointCloud();
     return;
   }
 
@@ -150,6 +174,7 @@ function renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical,
   document.getElementById('altCellScore').textContent = `score ${top[1].s.toFixed(3)} · cell [${5-top[1].r},${top[1].c+1}]`;
   _renderOccupancyDiagnostic(top[0]);
   _renderRangeLabel();
+  _renderPointCloud();
 }
 
 // Kick off / refresh the /occupancy fetch. Synchronous read populates
@@ -241,6 +266,193 @@ function _renderOccupancyDiagnostic(topCell) {
   const pct = (v / occ.totalBars) * 100;
   const cellName = `${VOL_LABELS[topCell.r]} · ${DEPTH_LABELS[topCell.c]}`;
   el.textContent = `[${cellName}] occupied ${pct.toFixed(1)}% of selected window (${v.toLocaleString()} / ${occ.totalBars.toLocaleString()} bars)`;
+}
+
+function _hashJitter(ms) {
+  let h = (Number(ms) >>> 0) || 1;
+  h ^= h << 13;
+  h ^= h >>> 17;
+  h ^= h << 5;
+  const x = ((h & 0xffff) / 0xffff) * 2 - 1;
+  const y = (((h >>> 16) & 0xffff) / 0xffff) * 2 - 1;
+  return { x, y };
+}
+
+function _clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function _getViewedBarsForMatrix() {
+  const replay = state.replay;
+  const vbReqRaw = Number(state.chartVisibleBars);
+  const vbReq = Number.isFinite(vbReqRaw) ? Math.max(10, Math.min(vbReqRaw, 240)) : 60;
+  if (replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== replay.cursor) {
+    const end = Math.max(1, Math.min(state.chartViewEnd, replay.allBars.length));
+    const eff = Math.min(vbReq, end, 240);
+    const start = Math.max(0, end - eff);
+    return replay.allBars.slice(start, end);
+  }
+  if (replay.mode === 'real') {
+    const forming = state.formingBar;
+    const settleWant = Math.max(0, vbReq - (forming ? 1 : 0));
+    const nSettle = Math.min(settleWant, replay.cursor);
+    const start = Math.max(0, replay.cursor - nSettle);
+    const settledSlice = replay.allBars.slice(start, replay.cursor);
+    return forming ? [...settledSlice, forming] : settledSlice;
+  }
+  const forming = state.formingBar;
+  const maxAvail = state.bars.length + (forming ? 1 : 0);
+  const eff = Math.min(vbReq, Math.max(maxAvail, 1));
+  const nBase = Math.min(eff - (forming ? 1 : 0), state.bars.length);
+  const base = nBase > 0 ? state.bars.slice(-nBase) : [];
+  return forming ? [...base, forming] : base;
+}
+
+function _resolvePointFrame(inner) {
+  const cells = Array.from(document.querySelectorAll('.matrix-cell'));
+  if (!cells.length) return null;
+  const innerRect = inner.getBoundingClientRect();
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const cell of cells) {
+    const r = cell.getBoundingClientRect();
+    minX = Math.min(minX, r.left - innerRect.left);
+    minY = Math.min(minY, r.top - innerRect.top);
+    maxX = Math.max(maxX, r.right - innerRect.left);
+    maxY = Math.max(maxY, r.bottom - innerRect.top);
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return null;
+  return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+}
+
+function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pulseBull }) {
+  const radius = isSelected
+    ? POINT_SELECTED_RADIUS_PX
+    : (isHovered ? POINT_HOVER_RADIUS_PX : POINT_RADIUS_PX);
+  const zIndex = isSelected ? 4 : (isHovered ? 3 : 2);
+  if (pulseBear && _isBearBar(bar)) {
+    return {
+      radius,
+      fill: null,
+      stroke: null,
+      strokeWidth: 0,
+      opacity,
+      zIndex,
+      pulseKind: 'bear',
+    };
+  }
+  if (pulseBull && !_isBearBar(bar)) {
+    return {
+      radius,
+      fill: null,
+      stroke: null,
+      strokeWidth: 0,
+      opacity,
+      zIndex,
+      pulseKind: 'bull',
+    };
+  }
+  const stroke = isSelected
+    ? POINT_SELECTED_STROKE_COLOR
+    : (isHovered ? POINT_HOVER_STROKE_COLOR : POINT_STROKE_COLOR);
+  return {
+    radius,
+    fill: POINT_FILL_COLOR,
+    stroke,
+    strokeWidth: POINT_STROKE_WIDTH_PX,
+    opacity,
+    zIndex,
+    pulseKind: null,
+  };
+}
+
+function _renderPointCloud() {
+  const inner = document.querySelector('.matrix-inner');
+  if (!inner) return;
+  const layer = inner.querySelector('#matrixPointLayer');
+  if (!layer) return;
+  const frame = _resolvePointFrame(inner);
+  if (!frame) {
+    layer.innerHTML = '';
+    return;
+  }
+
+  const viewedBars = _getViewedBarsForMatrix();
+  const eligible = [];
+  let formingMs = null;
+  if (state.formingBar?.time != null) {
+    const ft = state.formingBar.time instanceof Date
+      ? state.formingBar.time.getTime()
+      : Date.parse(state.formingBar.time);
+    if (Number.isFinite(ft)) formingMs = ft;
+  }
+  for (const bar of viewedBars) {
+    const vRank = Number(bar?.vRank);
+    const dRank = Number(bar?.dRank);
+    if (!Number.isInteger(vRank) || !Number.isInteger(dRank)) continue;
+    if (vRank < 1 || vRank > 5 || dRank < 1 || dRank > 5) continue;
+    const t = bar.time instanceof Date ? bar.time.getTime() : Date.parse(bar.time);
+    if (!Number.isFinite(t)) continue;
+    eligible.push({ bar, barTimeMs: t, vRank, dRank });
+  }
+
+  layer.innerHTML = '';
+  const count = eligible.length;
+  if (!count) return;
+  for (let i = 0; i < count; i++) {
+    const point = eligible[i];
+    const age = (count - 1) - i;
+    const t = age / Math.max(count - 1, 1);
+    const opacity = POINT_MAX_OPACITY - t * (POINT_MAX_OPACITY - POINT_MIN_OPACITY);
+    const xCenter = (point.dRank - 0.5) / 5;
+    const yCenter = (5 - point.vRank + 0.5) / 5;
+    const jitter = _hashJitter(point.barTimeMs);
+    const xNorm = _clamp01(xCenter + jitter.x * JITTER_RADIUS_NORM);
+    const yNorm = _clamp01(yCenter + jitter.y * JITTER_RADIUS_NORM);
+    const x = frame.x + xNorm * frame.w;
+    const y = frame.y + yNorm * frame.h;
+    const isSelected = state.selection.barTimes?.has(point.barTimeMs) || false;
+    const isHovered = state.selection.hoverBarTime != null && state.selection.hoverBarTime === point.barTimeMs;
+    const isFormingBar = state.formingBar != null && point.bar === state.formingBar;
+    const ambientLiveBear = isFormingBar
+      && _isBearBar(point.bar)
+      && formingMs != null
+      && (state.selection.hoverBarTime == null || state.selection.hoverBarTime === formingMs);
+    const ambientLiveBull = isFormingBar
+      && !_isBearBar(point.bar)
+      && formingMs != null
+      && (state.selection.hoverBarTime == null || state.selection.hoverBarTime === formingMs);
+    const pulseBear = _isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBear);
+    const pulseBull = !_isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBull);
+    const style = resolvePointStyle(point.bar, { isSelected, isHovered, opacity, pulseBear, pulseBull });
+
+    const el = document.createElement('button');
+    el.type = 'button';
+    let pulseClass = '';
+    if (style.pulseKind === 'bear') pulseClass = ' matrix-point--bear-flash';
+    else if (style.pulseKind === 'bull') pulseClass = ' matrix-point--bull-flash';
+    el.className = 'matrix-point' + pulseClass;
+    el.tabIndex = -1;
+    el.dataset.barTime = String(point.barTimeMs);
+    el.dataset.isBear = _isBearBar(point.bar) ? '1' : '0';
+    el.setAttribute('aria-label', `Candle ${new Date(point.barTimeMs).toISOString()}`);
+    el.style.left = `${x.toFixed(2)}px`;
+    el.style.top = `${y.toFixed(2)}px`;
+    el.style.width = `${(style.radius * 2).toFixed(2)}px`;
+    el.style.height = `${(style.radius * 2).toFixed(2)}px`;
+    el.style.opacity = style.opacity.toFixed(3);
+    el.style.zIndex = String(style.zIndex);
+    if (style.pulseKind) {
+      el.style.background = 'transparent';
+      el.style.border = 'none';
+    } else {
+      el.style.background = style.fill;
+      el.style.border = `${style.strokeWidth}px solid ${style.stroke}`;
+    }
+    layer.appendChild(el);
+  }
 }
 
 export { buildMatrix, renderMatrix };

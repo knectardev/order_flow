@@ -1,7 +1,7 @@
 import { state } from '../state.js';
 import { _continuePan, consumePanMoved } from './pan.js';
 import { openModal } from './modal.js';
-import { selectFire, clearSelection } from './selection.js';
+import { selectFire, selectBar, hoverBar, clearSelection } from './selection.js';
 import { priceCanvas } from '../util/dom.js';
 
 const TOOLTIP_INFO = {
@@ -24,12 +24,32 @@ const TOOLTIP_INFO = {
 };
 
 function _hitTestChart(x, y) {
-  let best = null, bestD2 = Infinity;
+  const _contains = (hit) => {
+    if (hit.hitShape === 'rect') {
+      return x >= hit.x0 && x <= hit.x1 && y >= hit.y0 && y <= hit.y1;
+    }
+    const dx = x - hit.x;
+    const dy = y - hit.y;
+    return (dx * dx + dy * dy) <= hit.r * hit.r;
+  };
+  const _priority = (hit) => {
+    if (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias') return 2;
+    if (hit.kind === 'phatCandle' || hit.kind === 'candle') return 1;
+    return 0;
+  };
+  let best = null;
+  let bestD2 = Infinity;
+  let bestPriority = -1;
   for (const hit of state.chartHits) {
-    const dx = x - hit.x, dy = y - hit.y;
-    const d2 = dx*dx + dy*dy;
-    if (d2 <= hit.r * hit.r && d2 < bestD2) {
-      best = hit; bestD2 = d2;
+    if (!_contains(hit)) continue;
+    const dx = x - hit.x;
+    const dy = y - hit.y;
+    const d2 = dx * dx + dy * dy;
+    const pri = _priority(hit);
+    if (pri > bestPriority || (pri === bestPriority && d2 < bestD2)) {
+      best = hit;
+      bestD2 = d2;
+      bestPriority = pri;
     }
   }
   return best;
@@ -47,6 +67,47 @@ function _hideTooltip() {
 function _showTooltipForHit(hit, mouseX, mouseY) {
   const tt = document.getElementById('chartTooltip');
   if (!tt) return;
+  const _phatRejectionLabel = (r) => {
+    if (!r?.hasRejection) return 'None';
+    const typeLabel = r.rejectionType === 'absorption'
+      ? 'Absorption'
+      : (r.rejectionType === 'exhaustion' ? 'Exhaustion' : 'Rejection');
+    const strengthLabel = r.strengthLabel || 'weak';
+    return `${typeLabel} (${strengthLabel})`;
+  };
+  const _phatTemplate = (shape, hasRejection) => {
+    if (shape === 'P') {
+      return hasRejection
+        ? {
+          line1: 'P-shape · Buyers pressed the upper half',
+          line3: 'Buy pressure held through a wick test at the extreme',
+        }
+        : {
+          line1: 'P-shape · Buyers pressed the upper half',
+          line3: 'Buy pressure dominated the body, but no wick-level rejection printed',
+        };
+    }
+    if (shape === 'b') {
+      return hasRejection
+        ? {
+          line1: 'b-shape · Sellers pressed the lower half',
+          line3: 'Sell pressure held through a wick test at the extreme',
+        }
+        : {
+          line1: 'b-shape · Sellers pressed the lower half',
+          line3: 'Sell pressure dominated the body, but no wick-level rejection printed',
+        };
+    }
+    return hasRejection
+      ? {
+        line1: 'Neutral body · Inside flow is balanced, wick shows response',
+        line3: 'Auction tested one side and met liquidity at the wick',
+      }
+      : {
+        line1: 'Neutral body · Flow is balanced across the bar',
+        line3: 'No strong side showed control inside this candle',
+      };
+  };
   let info, meta;
   if (hit.kind === 'event') {
     info = TOOLTIP_INFO[hit.payload.type];
@@ -69,6 +130,29 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
       desc:    `${biasLabel.replace(/_/g, ' ')} — Wyckoffian regime read on the higher timeframe.`,
     };
     meta = biasLabel;
+  } else if (hit.kind === 'phatCandle') {
+    const p = hit.payload || {};
+    const imbalanceText = Number.isFinite(p.imbalance) ? p.imbalance.toFixed(2) : 'n/a';
+    const rejectionText = _phatRejectionLabel(p.rejection);
+    const tpl = _phatTemplate(p.shape, !!p.rejection?.hasRejection);
+    info = {
+      variant: 'breakout',
+      glyph: '▌',
+      name: tpl.line1,
+      desc: `Imbalance: ${imbalanceText} · Rejection: ${rejectionText}`,
+      detail: tpl.line3,
+    };
+    meta = p.shapeLabel || 'PHAT';
+  } else if (hit.kind === 'candle') {
+    const p = hit.payload || {};
+    const up = p.isUp !== false;
+    info = {
+      variant: up ? 'sweep' : 'stop',
+      glyph: up ? '▲' : '▼',
+      name: up ? 'Bull bar (close ≥ open)' : 'Bear bar (close < open)',
+      desc: `O ${Number(p.open).toFixed(2)} · H ${Number(p.high).toFixed(2)} · L ${Number(p.low).toFixed(2)} · C ${Number(p.close).toFixed(2)}`,
+    };
+    meta = 'OHLC';
   } else {
     return;
   }
@@ -76,6 +160,11 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
   // Reset variant classes, then apply the matching one.
   tt.className = 'chart-tooltip visible variant-' + info.variant;
   tt.setAttribute('aria-hidden', 'false');
+  const hint = hit.kind === 'phatCandle'
+    ? 'PHAT read is descriptive, not predictive'
+    : hit.kind === 'candle'
+      ? 'Click to highlight on regime matrix'
+      : 'Shift+click for at-fire criteria · click to select bar range';
   tt.innerHTML =
     `<div class="tt-head">` +
       `<span class="tt-glyph">${info.glyph}</span>` +
@@ -83,7 +172,8 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
       `<span class="tt-meta">${meta}</span>` +
     `</div>` +
     `<div class="tt-desc">${info.desc}</div>` +
-    `<div class="tt-hint">Shift+click for at-fire criteria · click to select bar range</div>`;
+    `${info.detail ? `<div class="tt-desc">${info.detail}</div>` : ''}` +
+    `<div class="tt-hint">${hint}</div>`;
 
   // Position: prefer right-of-cursor; flip if it would clip the chart.
   const wrap = priceCanvas.parentElement.getBoundingClientRect();
@@ -120,15 +210,24 @@ priceCanvas.addEventListener('mousemove', (e) => {
   // If we're actively click-dragging a pan, suppress the tooltip — pan UX wins.
   if (state.isPanningChart) {
     _continuePan(e);
+    hoverBar(null, 'chart-pan');
     _hideTooltip();
     return;
   }
   const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
-  if (hit) _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
-  else     _hideTooltip();
+  const hoverMs = (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle'))
+    ? Number(hit.payload?.barTimeMs)
+    : null;
+  hoverBar(hoverMs, 'chart-hover');
+  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle')) {
+    _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
+  } else {
+    _hideTooltip();
+  }
 });
 priceCanvas.addEventListener('mouseleave', () => {
   _lastMouse = null;
+  hoverBar(null, 'chart-leave');
   _hideTooltip();
 });
 priceCanvas.addEventListener('click', (e) => {
@@ -175,6 +274,11 @@ priceCanvas.addEventListener('click', (e) => {
       clearSelection();
     } else {
       selectFire(hit.payload);
+    }
+  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle') {
+    const barMs = Number(hit.payload?.barTimeMs);
+    if (Number.isFinite(barMs)) {
+      selectBar(barMs, 'chart-click');
     }
   }
   // hit.kind === 'bias' falls through intentionally — bias-ribbon hovers

@@ -185,8 +185,8 @@ export const state = {
   // fire. Cleared when the modal closes.
   modalFireContext: null,
 
-  // Brushing-and-linking selection (regime-DB plan §4b / §4c-d).
-  //   kind                — null | 'cells' | 'fire'
+  // Brushing-and-linking selection.
+  //   kind                — null | 'cells' | 'fire' | 'bar'
   //                         null  ⇒ no selection, full chart visible
   //                         cells ⇒ user clicked one or more matrix cells
   //                         fire  ⇒ user clicked a fire halo on the chart
@@ -204,6 +204,8 @@ export const state = {
   //                         vertical anchor line at the fire bar.
   //   fireWindowEndMs     — ms, only when kind='fire'. Inclusive end of the
   //                         fire+30 window (matches barTimes membership).
+  //   barTime             — ms, only when kind='bar'. Exact selected candle.
+  //   hoverBarTime        — ms|null transient hover preview from chart/matrix.
   // Reducer: src/ui/selection.js owns mutations + drives the
   // /bars?cell=… and /events?bar_times= fetches when kind='cells'.
   selection: {
@@ -212,6 +214,8 @@ export const state = {
     barTimes: null,
     fireBarTime: null,
     fireWindowEndMs: null,
+    barTime: null,
+    hoverBarTime: null,
   },
 
   // Matrix occupancy heatmap state (regime-DB plan §3a-d).
