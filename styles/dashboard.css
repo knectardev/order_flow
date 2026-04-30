@@ -314,6 +314,68 @@
     align-items: baseline;
     margin-bottom: 10px;
   }
+  /* Title flush left (same inset as non-collapsible sections); meta fills middle;
+     collapse control sits in a fixed-width rail on the right so titles align. */
+  .section-head--collapsible {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) 28px;
+    align-items: start;
+    gap: 10px 12px;
+  }
+  .section-head--collapsible .section-title {
+    grid-column: 1;
+    padding-top: 2px;
+  }
+  .section-head--collapsible .section-meta {
+    grid-column: 2;
+    justify-self: end;
+    text-align: right;
+    min-width: 0;
+  }
+  .section-head--collapsible .section-collapse-btn {
+    grid-column: 3;
+    justify-self: end;
+    align-self: start;
+  }
+  .section-collapse-btn {
+    box-sizing: border-box;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--muted-2);
+    cursor: pointer;
+    line-height: 1;
+    border-radius: 3px;
+  }
+  .section-collapse-btn:hover {
+    color: var(--accent);
+    background: rgba(33, 160, 149, 0.08);
+  }
+  .section-collapse-btn:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .section-collapse-chevron {
+    display: inline-block;
+    font-size: 9px;
+    transition: transform 0.15s ease;
+    vertical-align: middle;
+  }
+  .section.is-collapsed .section-collapse-chevron {
+    transform: rotate(-90deg);
+  }
+  .section.section--collapsible.is-collapsed .section-body {
+    display: none;
+  }
+  .section.section--collapsible.is-collapsed {
+    padding-bottom: 13px;
+  }
   .section-title {
     font-size: 9.5px;
     color: var(--accent);

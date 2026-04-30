@@ -63,6 +63,12 @@ Design intent remains unchanged:
 
 In **API replay**, after the windowed **`/bars`** load completes, **`seek(allBars.length)`** runs so **`replay.cursor`** sits at the **end of the loaded timeline**. The chart shows the **most recent** **`MAX_BARS`** (subject to **`chartPanSlider`** / **`chartViewEnd`**) with default timeframe **`1m`** — not bar 0 at session start unless the user pans there.
 
+### 2.4 Collapsible dashboard sections
+
+- Every main-grid **`section`** under **`grid-main`** is collapsible **except** **`#mainChartSection`** (price · volume profile · events — the primary chart stays fully visible with no collapse control).
+- Sections **`delta`**, **`glossary`**, **`performance`**, **`matrix`**, and **`eventLog`** default to **expanded**. Each header uses a fixed-width **collapse control on the right** (`src/ui/sectionCollapse.js`) so **section titles stay left-aligned** consistently; **`section-meta`** (counts, toggles, status) sits between title and collapse.
+- Expanded/collapsed preference is persisted in the browser via **`localStorage`** key **`orderflow_dashboard_section_collapsed`** (JSON map of section keys to boolean **`true`** when collapsed).
+
 ---
 
 ## 3) State Model (Single Source of Truth)
@@ -83,7 +89,7 @@ All mutable runtime state is centralized in `src/state.js`:
 - **Matrix UI state:** `matrixState` (`range`, `displayMode`, cached occupancy payload).
 - **Warmup state:** `regimeWarmup` gate for rank-unavailable startup bars.
 - **Bias filter state:** `biasFilterMode` (`'soft'` | `'hard'` | `'off'`, default `'soft'`) and `showSuppressed` (`boolean`, default `false`). Bootstrapped from `?biasFilter=` and `?showSuppressed=` URL params (Phase 6 — see §13).
-- **Backtest state:** `backtest` stores run params (`compareRegimeOff`, `initialCapital`, `commissionPerSide`, `slippageTicks`, `qty`, marker toggles), latest `runId`, latest `stats`, and fetched `equity` / `trades` payloads plus loading/error UI flags.
+- **Backtest state:** `backtest` stores run params (`scope`, `compareRegimeOff`, `initialCapital`, `commissionPerSide`, `slippageTicks`, `qty`, marker toggles), `lastRunScope` (scope string stamped after each successful run for the metrics row while results are shown), latest `runId`, latest `stats`, and fetched `equity` / `trades` payloads plus loading/error UI flags. After API replay load, the dashboard does **not** query or render the latest persisted DuckDB run; metrics, equity, and chart overlays stay empty until the user selects a **Backtest scope** and clicks **Run Backtest**.
 
 ---
 
@@ -217,7 +223,7 @@ Heatmap rendering is backed by `/occupancy`; occupancy diagnostics must reflect 
 - Candles + event markers + fire halos. When a **sweep** and **divergence** both fire on the same bar and the same side (e.g. both at the low), their glyphs are vertically separated: the sweep triangle stays farther from the candle body and the divergence warning is offset toward the body so the two do not overlap. Standalone sweeps/divergences keep their prior single-event offsets. Fire halos render the watch-type
   glyph: ★ above the bar high for breakout; ◆ above the high for fade; 🛡 for absorption wall at the **high** when `close >= open` and at the **low** otherwise. Fade and absorption-wall halos add a smaller (9px) directional arrow (`↑` / `↓`) to the *right* of the glyph. Breakout keeps no arrow (sweep direction is the primary read).
 - Candle rendering mode toggle in replay row (`Standard` / `PHAT`). PHAT mode is enabled only when loaded bars expose PHAT features and otherwise falls back to standard candles.
-- PHAT rendering contract follows the prototype: body half opacity is driven by `topCvdNorm`/`bottomCvdNorm` (reinforcing aggression darker), wick geometry is asymmetric by `highBeforeLow` with uniform thin wicks anchored to opposite body edges, and at most one rejection circle per candle when `rejectionStrength > 0` (`rejectionSide`, `rejectionStrength`, `rejectionType`). The marker is centered on the wick tip at the extreme price; radius scales from 2px to 5px with strength. `absorption` renders filled circles, `exhaustion` renders hollow circles (chart-background fill plus colored stroke).
+- PHAT rendering contract follows the prototype: body half opacity is driven by `topCvdNorm`/`bottomCvdNorm` (reinforcing aggression darker), wick geometry is asymmetric by `highBeforeLow` with uniform thin wicks anchored to opposite body edges, and at most one rejection circle per candle when `rejectionStrength > 0` (`rejectionSide`, `rejectionStrength`, `rejectionType`). The marker is centered on the wick tip at the extreme price; radius scales from 2px to 5px with strength. `absorption` renders filled circles, `exhaustion` renders hollow circles (chart-background fill plus colored stroke). Pipeline rejection scoring (`phat.py`) uses slightly looser gates than the literal prototype step-count + 50% retreat because ingest counts distinct tick levels with volume, not per-trade steps; bars must be re-aggregated into DuckDB for updated rejection fields to appear in `/bars`.
 - Session-anchored VWAP with reset by session boundaries (real mode).
 - Profile overlays (POC/VAH/VAL).
 - RTH session open dividers with **session date** labels at **top** of the candle pane. **Canvas strip below the volume band** (the black band above HTML “Chart view”): **UTC-based clock ticks** on the x-axis in **12-hour** form (**`h:mm AM`** / **`h:mm PM`**, no `Z` suffix). If the viewport spans **multiple UTC calendar days**, ticks after each UTC midnight show **`Mon DD`** before the time (e.g. `Apr 28 9:05 AM`). Tick sampling uses denser spacing on **`1m` / `1h`** than on **`15m`**: **`15m`** yields fewer ticks, a larger minimum pixel gap between bounding boxes when panning dense multi-day spans, so labels do not overlap **Mirrored bottom-row session calendar dates** (viewport-aware thinning, at most ~10) appear only when **≥2** session-open dividers are visible **and** the timeframe is not **`15m`** (where that row would collide with wider date+time labels) **and** the viewport is **not** already multi-day (clock ticks carry day prefixes). Single-session **`1m`/`1h`** windows do not duplicate the bottom date strip unless multiple session opens satisfy the guards above.
@@ -522,7 +528,7 @@ The current model is binary: `fired = passing === total` (5 for breakout, 6 for 
 - `GET /api/backtest/trades` trade objects include **`exitReason`** (`flip`, `stop_loss`, `take_profit`, `end_of_window`, or null for legacy rows).
 - `GET /api/backtest/equity` includes strategy equity points plus a benchmark payload (`benchmark.strategy='buy_hold'`, `benchmark.points`).
 - Dashboard `Performance` panel includes:
-  - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params).
+  - Explicit **Backtest scope** dropdown (run scope is user-selected, not inferred from glossary checkbox visibility or URL display params). The dropdown defaults to an unset placeholder; **Run Backtest** stays disabled until the user chooses a scope (including **All canonical watches** when explicitly selected).
   - Optional **two-variant comparison:** checkbox **Compare regime filter OFF (second run)** (default off). When unchecked, only **Regime filter ON** runs (single API call); orange equity curve, OFF legend, OFF trade markers, and OFF skipped-fire summary are omitted. When checked, each click runs ON and OFF in parallel as before:
     - **Regime filter ON** (teal): current strategy behavior.
     - **Regime filter OFF** (orange): same entry/exit logic with regime gating removed.

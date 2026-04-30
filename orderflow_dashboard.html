@@ -43,8 +43,8 @@
   <div class="grid-main">
   <div class="col-left">
 
-  <!-- Price + Volume Profile -->
-  <div class="section">
+  <!-- Price + Volume Profile (not collapsible — main chart) -->
+  <div class="section" id="mainChartSection">
     <div class="section-head">
       <div class="section-title">
         Price · Volume Profile · Events
@@ -116,41 +116,55 @@
   </div>
 
   <!-- Delta Lane -->
-  <div class="section">
-    <div class="section-head">
+  <div class="section section--collapsible" data-section-key="delta">
+    <div class="section-head section-head--collapsible">
       <div class="section-title">Delta Distribution</div>
       <div class="section-meta" id="cumDelta">cum Δ —</div>
+      <button type="button" class="section-collapse-btn" data-section-title="Delta Distribution" aria-expanded="true">
+        <span class="section-collapse-chevron" aria-hidden="true">▼</span>
+      </button>
     </div>
-    <div class="price-wrap">
-      <canvas id="flowChart"></canvas>
-    </div>
-    <div class="design-note">
-      <strong>Per-bar Δ shown as a histogram</strong>, not a single classification verdict. Aggressor flow is mechanics, not intent — same print could be conviction, a stop, or a hedge. Distribution preserves what a single tag throws away.
+    <div class="section-body">
+      <div class="price-wrap">
+        <canvas id="flowChart"></canvas>
+      </div>
+      <div class="design-note">
+        <strong>Per-bar Δ shown as a histogram</strong>, not a single classification verdict. Aggressor flow is mechanics, not intent — same print could be conviction, a stop, or a hedge. Distribution preserves what a single tag throws away.
+      </div>
     </div>
   </div>
 
   <!-- Glossary + signal counts + chart toggles (single table, API replay) -->
-  <div class="section" id="signalGlossarySection">
-    <div class="section-head">
+  <div class="section section--collapsible" id="signalGlossarySection" data-section-key="glossary">
+    <div class="section-head section-head--collapsible">
       <div class="section-title">Signals &amp; glossary</div>
       <div class="section-meta">definitions · full-load counts · chart markers</div>
+      <button type="button" class="section-collapse-btn" data-section-title="Signals and glossary" aria-expanded="true">
+        <span class="section-collapse-chevron" aria-hidden="true">▼</span>
+      </button>
     </div>
-    <div class="design-note design-note--tight">
-      Sparse event-typed markers — a bar with no marker is normal. Check types to load data and draw chart glyphs.
-    </div>
-    <div class="event-inventory" id="eventInventory">
-      <p class="inv-empty">Open with <code>?source=api</code> to load full-timeline data. Default view is the most recent window at 1m.</p>
+    <div class="section-body">
+      <div class="design-note design-note--tight">
+        Sparse event-typed markers — a bar with no marker is normal. Check types to load data and draw chart glyphs.
+      </div>
+      <div class="event-inventory" id="eventInventory">
+        <p class="inv-empty">Open with <code>?source=api</code> to load full-timeline data. Default view is the most recent window at 1m.</p>
+      </div>
     </div>
   </div>
 
   </div><!-- /col-left -->
   <div class="col-right">
 
-  <div class="section" id="backtestSection">
-    <div class="section-head">
+  <div class="section section--collapsible" id="backtestSection" data-section-key="performance">
+    <div class="section-head section-head--collapsible">
       <div class="section-title">Performance</div>
       <div class="section-meta" id="backtestStatus">Ready</div>
+      <button type="button" class="section-collapse-btn" data-section-title="Performance" aria-expanded="true">
+        <span class="section-collapse-chevron" aria-hidden="true">▼</span>
+      </button>
     </div>
+    <div class="section-body">
     <div class="backtest-legend">
       <span class="legend-item"><span class="legend-dot teal"></span> Regime filter ON</span>
       <span class="legend-item" id="btLegendRegimeOff" hidden><span class="legend-dot orange"></span> Regime filter OFF</span>
@@ -158,7 +172,8 @@
     <div class="backtest-controls">
       <label>Backtest scope
         <select id="btScope">
-          <option value="all" selected>All canonical watches</option>
+          <option value="" selected disabled>Select scope…</option>
+          <option value="all">All canonical watches</option>
           <option value="breakout">Breakout only</option>
           <option value="fade">Fade only</option>
           <option value="absorptionWall">Absorption Wall only</option>
@@ -185,7 +200,7 @@
       <button id="btRunBtn">Run Backtest</button>
     </div>
     <div class="backtest-metrics">
-      <div class="bt-card"><span>Scope</span><strong id="btStatScope">all</strong></div>
+      <div class="bt-card"><span>Scope</span><strong id="btStatScope">—</strong></div>
       <div class="bt-card"><span>Run</span><strong id="btStatRunId">—</strong></div>
       <div class="bt-card"><span>Trades</span><strong id="btStatTrades">—</strong></div>
       <div class="bt-card"><span>Win Rate</span><strong id="btStatWinRate">—</strong></div>
@@ -197,11 +212,12 @@
     <div class="price-wrap backtest-chart-wrap">
       <canvas id="backtestEquityChart"></canvas>
     </div>
+    </div>
   </div>
 
   <!-- Regime Matrix -->
-  <div class="section">
-    <div class="section-head">
+  <div class="section section--collapsible" data-section-key="matrix">
+    <div class="section-head section-head--collapsible">
       <div class="section-title">Regime Matrix · Probabilistic</div>
       <div class="section-meta">
         <span class="matrix-mode-toggle" id="matrixModeToggle" role="tablist" aria-label="Matrix display mode">
@@ -209,8 +225,12 @@
           <button class="matrix-mode-btn" data-mode="heatmap" role="tab">Heatmap</button>
         </span>
       </div>
+      <button type="button" class="section-collapse-btn" data-section-title="Regime Matrix" aria-expanded="true">
+        <span class="section-collapse-chevron" aria-hidden="true">▼</span>
+      </button>
     </div>
 
+    <div class="section-body">
     <!-- Regime-DB plan §3b: occupancy range selector. Drives /occupancy
          fetches that paint the heatmap layer behind the posterior cells. -->
     <div class="matrix-range" id="matrixRange">
@@ -273,17 +293,23 @@
     <div class="design-note">
       <strong>Score-weighted, not single-cell.</strong> Cells brightness = posterior. When confidence is low, multiple cells share illumination. Trail dots show recent path. This resists the "we have classified it, full stop" framing of single-highlight UIs.
     </div>
+    </div>
   </div>
 
   <!-- Event Log (right gutter, below regime matrix) -->
-  <div class="section">
-    <div class="section-head">
+  <div class="section section--collapsible" data-section-key="eventLog">
+    <div class="section-head section-head--collapsible">
       <div class="section-title">Event Log</div>
       <div class="section-meta" id="eventCount">—</div>
+      <button type="button" class="section-collapse-btn" data-section-title="Event Log" aria-expanded="true">
+        <span class="section-collapse-chevron" aria-hidden="true">▼</span>
+      </button>
     </div>
-    <p class="event-log-sync-hint">Lists only primitive and canonical types you enable in <strong>Signals &amp; glossary</strong> (left).</p>
-    <div class="event-log" id="eventLog">
-      <div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>
+    <div class="section-body">
+      <p class="event-log-sync-hint">Lists only primitive and canonical types you enable in <strong>Signals &amp; glossary</strong> (left).</p>
+      <div class="event-log" id="eventLog">
+        <div class="empty">no events yet — events fire only on specific microstructural patterns, not every bar</div>
+      </div>
     </div>
   </div>
 

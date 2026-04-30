@@ -2,7 +2,7 @@ import { state } from './state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from './analytics/canonical.js';
 import { computeMatrixScores } from './analytics/regime.js';
 import { _syncCandleModeSelectorUI, bootstrapReplay, setActiveTimeframe } from './data/replay.js';
-import { fetchBacktestEquity, fetchBacktestSkippedFires, fetchBacktestStats, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
+import { fetchBacktestEquity, fetchBacktestSkippedFires, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { restoreDisplayStateFromUrl } from './render/eventInventory.js';
@@ -16,6 +16,7 @@ import { bindModalDrag, closeModal, onOverlayClick, openModal } from './ui/modal
 import { returnToLiveEdge, _setViewEnd } from './ui/pan.js';
 import { bindSelectionUI, restoreSelectionFromUrl } from './ui/selection.js';
 import { bindEventLogClicks } from './render/eventLog.js';
+import { initSectionCollapse } from './ui/sectionCollapse.js';
 
 // ───────────────────────────────────────────────────────────
 buildMatrix();
@@ -110,6 +111,7 @@ bindMatrixRangeUI();
 bindSelectionUI();
 bindEventLogClicks();
 bindBacktestUI();
+initSectionCollapse();
 
 // The /occupancy fetch is async; when a fresh response lands we want to
 // repaint the matrix (so the heatmap layer fills in) without coupling
@@ -120,42 +122,8 @@ window.addEventListener('orderflow:matrix-repaint', () => repaintMatrix());
 window.addEventListener('orderflow:replay-ready', async () => {
   await restoreDisplayStateFromUrl();
   restoreSelectionFromUrl();
-  await refreshBacktestPanel();
+  renderBacktestPanel();
 });
-
-async function refreshBacktestPanel(runId = null) {
-  try {
-    const stats = await fetchBacktestStats(runId);
-    state.backtest.stats = stats;
-    state.backtest.runId = stats.runId;
-    const [equity, trades, skipped] = await Promise.all([
-      fetchBacktestEquity(stats.runId),
-      fetchBacktestTrades(stats.runId),
-      fetchBacktestSkippedFires(stats.runId),
-    ]);
-    state.backtest.equity = equity.points || [];
-    state.backtest.trades = trades.trades || [];
-    state.backtest.compare.filtered = {
-      runId: stats.runId,
-      stats,
-      equity: equity.points || [],
-      benchmark: equity.benchmark?.points || [],
-      trades: trades.trades || [],
-      skipped: {
-        summary: skipped.summary || {},
-        rows: skipped.rows || [],
-      },
-    };
-    state.backtest.compare.unfiltered = {
-      runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] },
-    };
-    state.backtest.error = null;
-  } catch (_) {
-    // No prior run is a normal initial state.
-  } finally {
-    renderBacktestPanel();
-  }
-}
 
 function _windowBoundsIso() {
   if (state.replay.mode === 'real' && state.replay.dateRange?.min && state.replay.dateRange?.max) {
@@ -214,8 +182,25 @@ function bindBacktestUI() {
   const markersOnInput = document.getElementById('btShowMarkersOn');
   const markersOffInput = document.getElementById('btShowMarkersOff');
   if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !compareInput || !markersOnInput || !markersOffInput) return;
+  function syncBtRunButtonEnabled() {
+    const scopeOk = !!String(scopeInput.value || '').trim();
+    runBtn.disabled = !scopeOk || state.backtest.loading;
+  }
+  state.backtest.runParams = {
+    ...state.backtest.runParams,
+    scope: String(scopeInput.value || ''),
+  };
   markersOnInput.checked = state.backtest.runParams.showMarkersOn !== false;
   syncBacktestCompareRegimeOffUI();
+  scopeInput.addEventListener('change', () => {
+    state.backtest.runParams = {
+      ...state.backtest.runParams,
+      scope: String(scopeInput.value || ''),
+    };
+    syncBtRunButtonEnabled();
+    renderBacktestPanel();
+  });
+  syncBtRunButtonEnabled();
   compareInput.addEventListener('change', () => {
     state.backtest.runParams = {
       ...state.backtest.runParams,
@@ -244,7 +229,9 @@ function bindBacktestUI() {
 
   runBtn.addEventListener('click', async () => {
     if (state.backtest.loading) return;
+    if (!String(scopeInput.value || '').trim()) return;
     state.backtest.loading = true;
+    syncBtRunButtonEnabled();
     state.backtest.error = null;
     state.backtest.runParams = {
       scope: String(scopeInput.value || 'all'),
@@ -292,6 +279,7 @@ function bindBacktestUI() {
         };
         state.backtest.compare.unfiltered = _emptyCompareUnfiltered();
         state.backtest.error = null;
+        state.backtest.lastRunScope = state.backtest.runParams.scope || null;
         renderBacktestPanel();
       } else {
         const [filteredRun, unfilteredRun] = await Promise.all([
@@ -327,6 +315,7 @@ function bindBacktestUI() {
           skipped: { summary: skB.summary || {}, rows: skB.rows || [] },
         };
         state.backtest.error = null;
+        state.backtest.lastRunScope = state.backtest.runParams.scope || null;
         renderBacktestPanel();
       }
     } catch (err) {
@@ -334,6 +323,7 @@ function bindBacktestUI() {
       renderBacktestPanel();
     } finally {
       state.backtest.loading = false;
+      syncBtRunButtonEnabled();
       renderBacktestPanel();
     }
   });

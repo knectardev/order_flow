@@ -80,7 +80,10 @@ function renderBacktestPanel() {
   const showCompareOff =
     state.backtest.runParams?.compareRegimeOff === true && !!u.runId;
 
-  _setStat('btStatScope', state.backtest.runParams?.scope || 'all');
+  const scopeLabel = f.stats
+    ? state.backtest.lastRunScope || '—'
+    : state.backtest.runParams?.scope || '—';
+  _setStat('btStatScope', scopeLabel);
   if (showCompareOff) {
     _setDualStat('btStatRunId', f.runId, u.runId, (v) => v ? String(v).slice(0, 8) : '—');
     _setDualStat('btStatTrades', f.stats, u.stats, (s) => s ? String(s.tradeCount ?? '—') : '—');
@@ -102,7 +105,9 @@ function renderBacktestPanel() {
   if (statusEl) {
     if (state.backtest.loading) statusEl.textContent = 'Running backtest...';
     else if (state.backtest.error) statusEl.textContent = state.backtest.error;
-    else {
+    else if (!f.runId && !f.stats) {
+      statusEl.textContent = 'Select backtest scope, then Run Backtest';
+    } else {
       const summarize = (summary) => {
         const entries = Object.entries(summary || {});
         if (!entries.length) return '0';

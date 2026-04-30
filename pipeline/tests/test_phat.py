@@ -61,6 +61,22 @@ def test_compute_phat_features_emits_rejection_fields():
     assert feats["rejection_type"] in ("none", "absorption", "exhaustion")
 
 
+def test_compute_phat_features_rejection_high_when_two_levels_and_retreat():
+    # Two distinct ticks in the upper band (common for real bars); strong close-off-high retreat.
+    feats = compute_phat_features(
+        open_price=100.0,
+        close_price=100.0,
+        high_price=105.0,
+        low_price=100.0,
+        tick_size=1.0,
+        price_volume={100: 50, 104: 20, 105: 30},
+        price_delta={100: 0, 104: 1, 105: 1},
+    )
+    assert feats["rejection_side"] == "high"
+    assert feats["rejection_strength"] > 0.0
+    assert feats["rejection_type"] in ("absorption", "exhaustion")
+
+
 def test_compute_phat_features_handles_no_wicks():
     feats = compute_phat_features(
         open_price=100.0,

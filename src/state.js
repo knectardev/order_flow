@@ -123,7 +123,7 @@ export const state = {
   // Backtest MVP state (existing-fire replay strategy).
   backtest: {
     runParams: {
-      scope: 'all',
+      scope: '',
       /** When true, runs a second backtest with regime gates relaxed and shows OFF equity/markers. */
       compareRegimeOff: false,
       showMarkersOn: true,
@@ -133,6 +133,8 @@ export const state = {
       slippageTicks: 1,
       qty: 1,
     },
+    /** Scope string for the metrics row; updated only after a successful Run Backtest. */
+    lastRunScope: null,
     runId: null,
     stats: null,
     equity: [],

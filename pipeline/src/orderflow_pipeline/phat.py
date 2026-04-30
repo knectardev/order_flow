@@ -133,8 +133,14 @@ def compute_phat_features(
     near_high_ticks = [t for t, v in price_volume.items() if v > 0 and t >= high_tick - 2]
     near_low_ticks = [t for t, v in price_volume.items() if v > 0 and t <= low_tick + 2]
 
-    reject_threshold = 0.5
-    min_ticks_near = 3
+    # `candle_prototype.html` gates on step-count near the extreme and 50% range retreat.
+    # Here we aggregate to per-tick volume/delta only — "near extreme" is distinct price
+    # levels with prints, which is usually fewer than step count. Using the same literal
+    # 50% + 3 levels leaves almost no rejections in real 1m bars. Slightly looser gates
+    # preserve the same intent (time at extreme × meaningful retreat) while still keeping
+    # most candles without a marker.
+    reject_threshold = 0.28
+    min_ticks_near = 2
 
     high_score = (
         (len(near_high_ticks) / 6.0) * retreat_from_high
