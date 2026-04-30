@@ -10,10 +10,10 @@
     --muted-2: #5c6374;
     --accent: #21a095;
     --accent-dim: #1a8277;
-    --up: #4ea674;
-    --up-dim: #2d6a48;
-    --down: #c95760;
-    --down-dim: #7a363c;
+    --up: #00c087;
+    --up-dim: #007a56;
+    --down: #ff3b30;
+    --down-dim: #c62f28;
     --warn: #d4a04a;
     --absorb: #6b8cce;
     /* Absorption Wall canonical (distinct from --absorb / fade) */
@@ -113,6 +113,7 @@
     gap: 10px;
     margin-top: 6px;
     margin-bottom: 8px;
+    position: relative;
   }
   .chart-pan-label {
     font-size: 10px;
@@ -125,7 +126,30 @@
     min-width: 120px;
     accent-color: var(--accent);
   }
-  /* Real-data replay controls (timeframe; seek UI retired) */
+  .chart-pan-thumb-date {
+    position: absolute;
+    top: -22px;
+    left: 0;
+    transform: translateX(-50%);
+    pointer-events: none;
+    z-index: 3;
+    display: none;
+    white-space: nowrap;
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 3px;
+    color: var(--text-2);
+    font-size: 9.5px;
+    letter-spacing: 0.2px;
+    line-height: 1.2;
+    padding: 3px 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    font-variant-numeric: tabular-nums;
+  }
+  .chart-pan-thumb-date.visible {
+    display: block;
+  }
+  /* Real-data replay controls (timeframe + candle mode) */
   .replay-row {
     display: flex;
     align-items: center;
@@ -137,14 +161,22 @@
     margin-bottom: 12px;
     font-size: 11px;
   }
-  /* Timeframe under price legend: right-aligned, doesn’t span full header width */
-  .replay-row.chart-tf-under-legend {
-    margin-top: 10px;
-    margin-bottom: 0;
-    width: 100%;
-    max-width: 100%;
+  /* Upper-right of main chart header — replaces former bar-count readout */
+  .section-head--main-chart {
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .section-head--main-chart .section-title {
+    flex: 1;
+    min-width: min(100%, 240px);
+  }
+  .replay-row.replay-row--chart-head {
+    margin: 0;
+    flex-shrink: 0;
     justify-content: flex-end;
     flex-wrap: wrap;
+    max-width: 100%;
   }
   .replay-row select {
     background: var(--panel);
@@ -621,10 +653,205 @@
     letter-spacing: 0.3px;
   }
 
+  /* PHAT candle semantics legend (replay row). Mirrors `.bias-legend` behavior. */
+  .phat-legend-wrap {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .phat-legend-wrap[hidden] {
+    display: none !important;
+  }
+  .replay-row--chart-head .phat-legend .bias-legend-popover {
+    left: auto;
+    right: 0;
+  }
+  /* PHAT key: larger panel + tall “candle” swatches + ring demos (does not affect HTF bias popover). */
+  .phat-legend-popover {
+    min-width: 440px;
+    max-width: min(620px, calc(100vw - 28px));
+    padding: 14px 18px 11px;
+  }
+  .phat-legend-popover .bias-legend-title {
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  .phat-legend-section-label {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.85px;
+    text-transform: uppercase;
+    margin: 12px 0 8px;
+  }
+  .phat-legend-popover ul + .phat-legend-section-label {
+    margin-top: 14px;
+  }
+  .phat-legend-popover > .phat-legend-section-label:first-of-type {
+    margin-top: 2px;
+  }
+  .phat-legend-popover ul {
+    /* Swatch | short label | full-width description — avoids splitting width 50/50 between label + body copy. */
+    grid-template-columns: 56px auto minmax(0, 1fr);
+    column-gap: 14px;
+    row-gap: 10px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .phat-legend-popover .bias-name {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text);
+    align-self: start;
+    padding-top: 6px;
+  }
+  .phat-legend-popover .bias-vote {
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--muted);
+    align-self: start;
+    padding-top: 6px;
+    text-align: left;
+  }
+  .phat-legend-popover .bias-vote strong {
+    color: var(--text-2);
+    font-weight: 600;
+  }
+  .phat-legend-popover .bias-legend-foot {
+    font-size: 9.5px;
+    margin-top: 12px;
+  }
+  .phat-legend-popover .bias-legend-foot code {
+    font-size: 9px;
+    color: var(--text-2);
+  }
+  .phat-swatch-body {
+    width: 46px;
+    height: 58px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    align-self: start;
+    margin-top: 2px;
+  }
+  /* Pair of flat bodies: neutral PHAT = standard up/down color, no two-tone split (not chart gray). */
+  .bias-swatch.phat-swatch-neutral-pair {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    padding: 3px;
+    box-sizing: border-box;
+    align-items: stretch;
+  }
+  .phat-swatch-flat {
+    flex: 1 1 0;
+    min-width: 0;
+    border-radius: 1px;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+  }
+  .phat-swatch-flat-up {
+    background: rgba(0, 192, 135, 0.22);
+    border-color: rgba(0, 192, 135, 0.95);
+  }
+  .phat-swatch-flat-down {
+    background: rgba(255, 59, 48, 0.22);
+    border-color: rgba(255, 59, 48, 0.95);
+  }
+  .phat-swatch-border-up {
+    border-color: rgba(0, 192, 135, 0.95);
+  }
+  .phat-swatch-border-down {
+    border-color: rgba(255, 59, 48, 0.95);
+  }
+  .phat-swatch-split {
+    background-size: cover;
+  }
+  .phat-swatch-p {
+    background: linear-gradient(
+      to bottom,
+      rgba(0, 192, 135, 0.9) 0%,
+      rgba(0, 192, 135, 0.9) 50%,
+      rgba(0, 192, 135, 0.32) 50%,
+      rgba(0, 192, 135, 0.32) 100%
+    );
+  }
+  .phat-swatch-b {
+    background: linear-gradient(
+      to bottom,
+      rgba(255, 59, 48, 0.34) 0%,
+      rgba(255, 59, 48, 0.34) 50%,
+      rgba(255, 59, 48, 0.9) 50%,
+      rgba(255, 59, 48, 0.9) 100%
+    );
+  }
+  .phat-ring-cell {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    position: relative;
+    width: 46px;
+    height: 58px;
+    margin-top: 2px;
+    padding-top: 6px;
+    box-sizing: border-box;
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.35);
+  }
+  .phat-ring-cell::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    width: 0;
+    border-left: 1px solid rgba(33, 160, 149, 0.52);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+  .phat-ring-cell::after {
+    top: 24px;
+    height: 20px;
+  }
+  .phat-ring-demo {
+    display: block;
+    box-sizing: border-box;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    position: relative;
+    z-index: 1;
+  }
+  .phat-ring-demo--filled {
+    background: var(--up);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  }
+  .phat-ring-demo--open {
+    background: transparent;
+    border: 2px solid var(--up);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+  }
+  .phat-ring-demo--size {
+    width: 20px;
+    height: 20px;
+    border: 2px solid rgba(33, 160, 149, 0.95);
+    background: transparent;
+    position: relative;
+  }
+  .phat-ring-demo--size::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 2px solid rgba(33, 160, 149, 0.55);
+    transform: translate(-50%, -50%);
+  }
+
   /* Canvases */
   .price-wrap {
     position: relative;
-    background: #0d1218;
+    background: #000000;
     border: 1px solid var(--border);
     border-radius: 3px;
     padding: 0;
@@ -649,7 +876,7 @@
     font-weight: 500;
     letter-spacing: 0.02em;
   }
-  #priceChart { display: block; width: 100%; height: 340px; cursor: crosshair; }
+  #priceChart { display: block; width: 100%; height: 465px; cursor: crosshair; }
   #priceChart.panning { cursor: grabbing; }
   #flowChart  { display: block; width: 100%; height: 64px; }
 
@@ -747,6 +974,32 @@
     letter-spacing: 0.4px;
   }
   .profile-legend .item { display: flex; align-items: center; gap: 5px; }
+  .profile-legend .profile-legend-toggle {
+    border: 1px solid transparent;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    padding: 1px 5px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: border-color 120ms ease, background-color 120ms ease, opacity 120ms ease;
+  }
+  .profile-legend .profile-legend-toggle:hover {
+    border-color: rgba(138, 146, 166, 0.5);
+    background: rgba(21, 28, 42, 0.35);
+  }
+  .profile-legend .profile-legend-toggle:focus-visible {
+    outline: 1px solid rgba(33, 160, 149, 0.7);
+    outline-offset: 1px;
+  }
+  .profile-legend .profile-legend-toggle.is-off {
+    opacity: 0.55;
+  }
+  .profile-legend .profile-legend-toggle.is-off .swatch {
+    border-top-color: rgba(138, 146, 166, 0.45);
+    background: rgba(138, 146, 166, 0.45);
+  }
   .profile-legend .swatch {
     display: inline-block;
     width: 14px;

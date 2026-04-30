@@ -5,6 +5,12 @@ export const MAX_BARS     = 60;
 /** Horizontal zoom: visible candle count on the price chart (wheel); ring buffer stays MAX_BARS. */
 export const MIN_CHART_VISIBLE_BARS = 12;
 export const MAX_CHART_VISIBLE_BARS = 240;
+/** Main price + delta canvases: Webull-style palette on pure black. */
+export const CHART_CANVAS_BG = '#000000';
+export const CHART_CANDLE_UP = '#00c087';
+export const CHART_CANDLE_DOWN = '#ff3b30';
+export const CHART_CANDLE_UP_RGB = Object.freeze([0, 192, 135]);
+export const CHART_CANDLE_DOWN_RGB = Object.freeze([255, 59, 48]);
 /** Bars committed per slice in API `seekAsync` (yield between slices for UI). */
 export const SEEK_ASYNC_BATCH_BARS = 1000;
 export const PROFILE_BINS = 36;

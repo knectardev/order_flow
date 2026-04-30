@@ -1,3 +1,10 @@
+import {
+  CHART_CANVAS_BG,
+  CHART_CANDLE_DOWN,
+  CHART_CANDLE_DOWN_RGB,
+  CHART_CANDLE_UP,
+  CHART_CANDLE_UP_RGB,
+} from '../config/constants.js';
 import { state } from '../state.js';
 import { _getViewedBars } from './priceChart.js';
 import { fctx, flowCanvas, resizeCanvas } from '../util/dom.js';
@@ -5,7 +12,7 @@ import { fctx, flowCanvas, resizeCanvas } from '../util/dom.js';
 function drawFlowChart() {
   const { w, h } = resizeCanvas(flowCanvas);
   fctx.clearRect(0, 0, w, h);
-  fctx.fillStyle = '#0d1218';
+  fctx.fillStyle = CHART_CANVAS_BG;
   fctx.fillRect(0, 0, w, h);
 
   // Use the SAME viewed-state.bars window as the price chart so the delta
@@ -43,15 +50,19 @@ function drawFlowChart() {
     const isForming = (b === state.formingBar);
     const barH = (Math.abs(b.delta) / maxAbs) * (chartH / 2 - 2);
     const isPos = b.delta >= 0;
-    const color = isPos ? '#4ea674' : '#c95760';
+    const color = isPos ? CHART_CANDLE_UP : CHART_CANDLE_DOWN;
+    const [ru, gu, bu] = CHART_CANDLE_UP_RGB;
+    const [rd, gd, bd] = CHART_CANDLE_DOWN_RGB;
     fctx.fillStyle = isForming
-      ? (isPos ? 'rgba(78,166,116,0.35)' : 'rgba(201,87,96,0.35)')
+      ? (isPos ? `rgba(${ru},${gu},${bu},0.35)` : `rgba(${rd},${gd},${bd},0.35)`)
       : color;
     if (isPos) fctx.fillRect(xCenter - candleW/2, midY - barH, candleW, barH);
     else        fctx.fillRect(xCenter - candleW/2, midY,         candleW, barH);
 
     if (isForming) {
-      fctx.strokeStyle = isPos ? 'rgba(78,166,116,0.8)' : 'rgba(201,87,96,0.8)';
+      fctx.strokeStyle = isPos
+        ? `rgba(${CHART_CANDLE_UP_RGB[0]},${CHART_CANDLE_UP_RGB[1]},${CHART_CANDLE_UP_RGB[2]},0.8)`
+        : `rgba(${CHART_CANDLE_DOWN_RGB[0]},${CHART_CANDLE_DOWN_RGB[1]},${CHART_CANDLE_DOWN_RGB[2]},0.8)`;
       fctx.setLineDash([2,2]);
       fctx.lineWidth = 1;
       const y = isPos ? midY - barH : midY;

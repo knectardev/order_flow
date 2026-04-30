@@ -1,4 +1,14 @@
-import { DEFAULT_TIMEFRAME, MAX_CHART_VISIBLE_BARS, MIN_CHART_VISIBLE_BARS } from '../config/constants.js';
+import {
+  CHART_CANVAS_BG,
+  CHART_CANDLE_DOWN,
+  CHART_CANDLE_DOWN_RGB,
+  CHART_CANDLE_UP,
+  CHART_CANDLE_UP_RGB,
+  DEFAULT_TIMEFRAME,
+  ES_MIN_TICK,
+  MAX_CHART_VISIBLE_BARS,
+  MIN_CHART_VISIBLE_BARS,
+} from '../config/constants.js';
 import { state } from '../state.js';
 import { computeProfile } from '../analytics/profile.js';
 import { computeAnchoredVWAP, getVwapAnchors } from '../analytics/vwap.js';
@@ -9,6 +19,35 @@ import { _refreshTooltipFromLastMouse } from '../ui/tooltip.js';
 import { pctx, priceCanvas, resizeCanvas } from '../util/dom.js';
 import { clamp } from '../util/math.js';
 import { drawBiasRibbon } from './biasRibbon.js';
+
+function _candleUpRgba(a) {
+  const [r, g, b] = CHART_CANDLE_UP_RGB;
+  return `rgba(${r},${g},${b},${a})`;
+}
+function _candleDownRgba(a) {
+  const [r, g, b] = CHART_CANDLE_DOWN_RGB;
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/** X-axis and panned readout: US Eastern (RTH session wall clock, DST-aware). */
+const CHART_AXIS_TZ = 'America/New_York';
+const _fmtEtClock12 = new Intl.DateTimeFormat('en-US', {
+  timeZone: CHART_AXIS_TZ,
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+const _fmtEtMonthDay = new Intl.DateTimeFormat('en-US', {
+  timeZone: CHART_AXIS_TZ,
+  month: 'short',
+  day: '2-digit',
+});
+const _fmtEtYmdParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: CHART_AXIS_TZ,
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+});
 
 // Format a Date (or epoch-ms number) as an ISO-8601 timestamp with a Z
 // suffix for the /profile endpoint. We keep millisecond precision because
@@ -25,52 +64,54 @@ function _barTimeMs(t) {
   return t instanceof Date ? t.getTime() : +new Date(t);
 }
 
-/** [y,m,d] in UTC for grouping tick labels across day boundaries */
-function _utcYmd(barTime) {
+/** [y,m,d] in America/New_York for grouping tick labels across session-calendar days */
+function _etYmd(barTime) {
   const d = barTime instanceof Date ? barTime : new Date(barTime);
-  return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()];
+  const parts = _fmtEtYmdParts.formatToParts(d);
+  let y = 0;
+  let m = 0;
+  let day = 0;
+  for (const p of parts) {
+    if (p.type === 'year') y = +p.value;
+    if (p.type === 'month') m = +p.value - 1;
+    if (p.type === 'day') day = +p.value;
+  }
+  return [y, m, day];
 }
 
-function _sameUtcYmd(a, b) {
-  const [ya, ma, da] = _utcYmd(a);
-  const [yb, mb, db] = _utcYmd(b);
+function _sameEtYmd(a, b) {
+  const [ya, ma, da] = _etYmd(a);
+  const [yb, mb, db] = _etYmd(b);
   return ya === yb && ma === mb && da === db;
 }
 
 /**
- * Visible window spans more than one UTC calendar day (any adjacent pair).
+ * Visible window spans more than one Eastern calendar day (any adjacent pair).
  */
-function _viewportSpansMultipleUtcDays(bars) {
+function _viewportSpansMultipleEtDays(bars) {
   if (!bars || bars.length < 2) return false;
   for (let i = 1; i < bars.length; i++) {
-    if (!_sameUtcYmd(bars[i - 1].time, bars[i].time)) return true;
+    if (!_sameEtYmd(bars[i - 1].time, bars[i].time)) return true;
   }
   return false;
 }
 
-/** UTC time for x-axis: 12-hour clock, no timezone suffix (stored bar times are still UTC). */
-function _axisClock12Utc(barTime) {
+/** 12-hour clock in Eastern time, e.g. "2:30 PM" (no suffix — add " ET" at axis layer). */
+function _formatEtClock12(barTime) {
   const d = barTime instanceof Date ? barTime : new Date(barTime);
-  const h24 = d.getUTCHours();
-  const m = d.getUTCMinutes();
-  const mm = String(m).padStart(2, '0');
-  const isAm = h24 < 12;
-  let h12 = h24 % 12;
-  if (h12 === 0) h12 = 12;
-  return `${h12}:${mm} ${isAm ? 'AM' : 'PM'}`;
+  return _fmtEtClock12.format(d);
 }
 
-/** One bottom-axis tick label; prefixes month/day after a UTC day change (multi-day viewports). */
+/** One bottom-axis tick label; prefixes month/day after an ET calendar day change (multi-day viewports). */
 function _bottomAxisTickText(bars, idx, prevTickIdx, multiDay) {
   const b = bars[idx];
-  if (!multiDay) return _axisClock12Utc(b.time);
+  const d = b.time instanceof Date ? b.time : new Date(b.time);
+  if (!multiDay) return `${_formatEtClock12(b.time)} ET`;
   const prevBar = prevTickIdx >= 0 ? bars[prevTickIdx] : null;
-  if (!prevBar || !_sameUtcYmd(prevBar.time, b.time)) {
-    const d = b.time instanceof Date ? b.time : new Date(b.time);
-    const mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()];
-    return `${mo} ${String(d.getUTCDate()).padStart(2, '0')} ${_axisClock12Utc(b.time)}`;
+  if (!prevBar || !_sameEtYmd(prevBar.time, b.time)) {
+    return `${_fmtEtMonthDay.format(d)} ${_formatEtClock12(b.time)} ET`;
   }
-  return _axisClock12Utc(b.time);
+  return `${_formatEtClock12(b.time)} ET`;
 }
 
 /** Matches `catalogKeyFromPrimitiveEvent` in replay.js (keep in sync). */
@@ -142,6 +183,30 @@ function _chartFireListForDraw(isPanned) {
 // cases (cross-session, large pan jumps).
 let _lastApiProfile = null;
 let _lastApiProfileTf = null;
+let _lastApiProfileFromMs = NaN;
+let _lastApiProfileToMs = NaN;
+let _lastApiProfileSessionStartMs = NaN;
+let _lastApiProfileSessionEndMs = NaN;
+
+const _profileDebug = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get('profileDebug') === '1';
+  } catch {
+    return false;
+  }
+})();
+
+function _logProfileDecision(payload) {
+  if (!_profileDebug) return;
+  // eslint-disable-next-line no-console
+  console.debug('[orderflow][profile]', payload);
+}
+
+function _windowOverlapMs(aLo, aHi, bLo, bHi) {
+  const lo = Math.max(aLo, bLo);
+  const hi = Math.min(aHi, bHi);
+  return Math.max(0, hi - lo);
+}
 
 // Profile-fold hysteresis state. The y-range fitter (in drawPriceChart)
 // optionally folds POC/VAH/VAL/profileLo/profileHi into the candle-driven
@@ -230,9 +295,7 @@ function _hasPhatFields(bar) {
 function _drawPhatCandle(ctx, {
   bar, xCenter, top, bodyH, candleW, wickStrokeColor, isUp, isForming, dim, highlighted, yScale,
 }) {
-  const upColor = [78, 166, 116];
-  const downColor = [201, 87, 96];
-  const [r, g, b] = isUp ? upColor : downColor;
+  const [r, g, b] = isUp ? CHART_CANDLE_UP_RGB : CHART_CANDLE_DOWN_RGB;
   const left = xCenter - candleW / 2;
   const halfH = Math.max(1, Math.floor(bodyH / 2));
   const lowerH = Math.max(1, bodyH - halfH);
@@ -245,39 +308,64 @@ function _drawPhatCandle(ctx, {
   // Prototype-aligned wick anchoring:
   // high-first -> upper wick on left edge, lower on right edge.
   // low-first  -> upper wick on right edge, lower on left edge.
+  // Liquidity scores thicken the segment slightly (tip participation).
+  const uLiq = Math.min(1, Math.max(0, Number(bar.upperWickLiquidity) || 0));
+  const lLiq = Math.min(1, Math.max(0, Number(bar.lowerWickLiquidity) || 0));
   ctx.strokeStyle = wickStrokeColor;
-  ctx.lineWidth = 1;
+  ctx.save();
+  ctx.lineWidth = 1 + 0.85 * uLiq;
   ctx.beginPath();
   ctx.moveTo(xHigh, topY);
   ctx.lineTo(xHigh, top);
   ctx.stroke();
+  ctx.lineWidth = 1 + 0.85 * lLiq;
   ctx.beginPath();
   ctx.moveTo(xLow, top + bodyH);
   ctx.lineTo(xLow, botY);
   ctx.stroke();
+  ctx.restore();
 
   if (isForming) {
-    ctx.fillStyle = isUp ? 'rgba(78,166,116,0.18)' : 'rgba(201,87,96,0.18)';
+    ctx.fillStyle = isUp ? _candleUpRgba(0.18) : _candleDownRgba(0.18);
     ctx.fillRect(left, top, candleW, bodyH);
-    ctx.strokeStyle = isUp ? 'rgba(78,166,116,0.7)' : 'rgba(201,87,96,0.7)';
+    ctx.strokeStyle = isUp ? _candleUpRgba(0.7) : _candleDownRgba(0.7);
     ctx.setLineDash([2, 2]);
     ctx.lineWidth = 1;
     ctx.strokeRect(left, top, candleW, bodyH);
     ctx.setLineDash([]);
   } else {
     const dimMul = dim ? 0.45 : 1.0;
-    const topSignal = isUp
-      ? Number.isFinite(Number(bar.topCvdNorm)) ? Number(bar.topCvdNorm) : 0
-      : -(Number.isFinite(Number(bar.topCvdNorm)) ? Number(bar.topCvdNorm) : 0);
-    const botSignal = isUp
-      ? Number.isFinite(Number(bar.bottomCvdNorm)) ? Number(bar.bottomCvdNorm) : 0
-      : -(Number.isFinite(Number(bar.bottomCvdNorm)) ? Number(bar.bottomCvdNorm) : 0);
-    const topAlpha = (0.25 + ((topSignal + 1) / 2) * 0.7) * dimMul;
-    const botAlpha = (0.25 + ((botSignal + 1) / 2) * 0.7) * dimMul;
-    ctx.fillStyle = `rgba(${r},${g},${b},${topAlpha.toFixed(3)})`;
-    ctx.fillRect(left, top, candleW, halfH);
-    ctx.fillStyle = `rgba(${r},${g},${b},${botAlpha.toFixed(3)})`;
-    ctx.fillRect(left, top + halfH, candleW, lowerH);
+    const topNorm = Number(bar.topCvdNorm);
+    const botNorm = Number(bar.bottomCvdNorm);
+    const imbalanceThreshold = Math.max(0, Math.min(2, Number(state.phatBodyImbalanceThreshold) || 0.30));
+    const hasNorms = Number.isFinite(topNorm) && Number.isFinite(botNorm);
+    const imbalance = hasNorms ? Math.abs(topNorm - botNorm) : 0;
+    const neutralAlpha = (0.22 * dimMul);
+    // Option A (locked): disagreement bars render neutral.
+    let shape = 'neutral';
+    if (hasNorms && imbalance >= imbalanceThreshold) {
+      if (isUp && topNorm > botNorm) shape = 'P';
+      else if (!isUp && botNorm > topNorm) shape = 'b';
+    }
+    if (shape === 'neutral') {
+      ctx.fillStyle = `rgba(${r},${g},${b},${neutralAlpha.toFixed(3)})`;
+      ctx.fillRect(left, top, candleW, bodyH);
+    } else if (shape === 'P') {
+      ctx.fillStyle = `rgba(${r},${g},${b},${(0.82 * dimMul).toFixed(3)})`;
+      ctx.fillRect(left, top, candleW, halfH);
+      ctx.fillStyle = `rgba(${r},${g},${b},${(0.30 * dimMul).toFixed(3)})`;
+      ctx.fillRect(left, top + halfH, candleW, lowerH);
+    } else {
+      ctx.fillStyle = `rgba(${r},${g},${b},${(0.30 * dimMul).toFixed(3)})`;
+      ctx.fillRect(left, top, candleW, halfH);
+      ctx.fillStyle = `rgba(${r},${g},${b},${(0.82 * dimMul).toFixed(3)})`;
+      ctx.fillRect(left, top + halfH, candleW, lowerH);
+    }
+    // Prototype parity: keep a thin body border so wick segments appear
+    // continuous at the body edge (avoids the tiny visual "jog").
+    ctx.strokeStyle = wickStrokeColor;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(left, top, candleW, bodyH);
     if (highlighted) {
       ctx.strokeStyle = 'rgba(33, 160, 149, 0.85)';
       ctx.lineWidth = 1;
@@ -286,17 +374,30 @@ function _drawPhatCandle(ctx, {
   }
 
   // Rejection marker: at most one circle, at the wick tip (high/low price). Radius 2–5px encodes strength.
-  // Wicks stay uniform 1px above; diameter must not imply signal via line thickness.
+  // Fill: absorption → solid; exhaustion → solid if wick liquidity crosses configured threshold.
   const rejectionSide = String(bar.rejectionSide || 'none');
   const rejectionStrength = Number.isFinite(Number(bar.rejectionStrength)) ? Number(bar.rejectionStrength) : 0;
   const rejectionType = String(bar.rejectionType || 'none');
-  const ringCol = isUp ? 'rgba(78,166,116,0.90)' : 'rgba(201,87,96,0.90)';
-  const chartBg = '#0d1218';
+  const ringCol = isUp ? _candleUpRgba(0.9) : _candleDownRgba(0.9);
+  const chartBg = CHART_CANVAS_BG;
+  const _wickLiqAtSide = () => {
+    if (rejectionSide === 'high') return Number(bar.upperWickLiquidity);
+    if (rejectionSide === 'low') return Number(bar.lowerWickLiquidity);
+    return NaN;
+  };
+  const _ringFilled = () => {
+    if (rejectionType === 'absorption') return true;
+    const liq = _wickLiqAtSide();
+    if (rejectionType === 'exhaustion' && Number.isFinite(liq) && liq >= state.phatExhaustionRingLiquidityThreshold) {
+      return true;
+    }
+    return false;
+  };
   const drawRing = (x, y) => {
     const ringR = 2 + Math.max(0, Math.min(1, rejectionStrength)) * 3;
     ctx.beginPath();
     ctx.arc(x, y, ringR, 0, Math.PI * 2);
-    if (rejectionType === 'absorption') {
+    if (_ringFilled()) {
       ctx.fillStyle = ringCol;
       ctx.fill();
     } else {
@@ -384,7 +485,7 @@ function drawPriceChart() {
   state.chartHits = [];
 
   // Background grid
-  pctx.fillStyle = '#0d1218';
+  pctx.fillStyle = CHART_CANVAS_BG;
   pctx.fillRect(0, 0, w, h);
 
   // ── Viewport selection ───────────────────────────────────────────────
@@ -430,7 +531,7 @@ function drawPriceChart() {
   const RIBBON_H   = 10;     // total ribbon height (split into two ~4px strips at 1m)
   const RIBBON_TOP = 2;      // small gap from canvas top
   const RIBBON_GAP = 3;      // gap between ribbon and candle area
-  // Bottom padding reserves a strip below the volume band for UTC time ticks (x-axis).
+  // Bottom padding reserves a strip below the volume band for Eastern time ticks (x-axis).
 
   const PAD = { l: 6, r: 8, t: RIBBON_TOP + RIBBON_H + RIBBON_GAP, b: 22 };
   const chartW = w - PROFILE_W - PAD.l - PAD.r - 8;
@@ -468,10 +569,12 @@ function drawPriceChart() {
     : viewedBars.filter(b => b !== state.formingBar);
   let profileBars = settledViewed;
   const _scopeToRightEdgeSession = (state.activeTimeframe || DEFAULT_TIMEFRAME) === DEFAULT_TIMEFRAME;
+  let scopedSession = null;
   if (_scopeToRightEdgeSession && state.replay.mode === 'real' && settledViewed.length > 0) {
     const rightEdgeIdx = (isPanned ? state.chartViewEnd : state.replay.cursor) - 1;
     const sess = sessionForBar(clamp(rightEdgeIdx, 0, state.replay.allBars.length - 1));
     if (sess) {
+      scopedSession = sess;
       profileBars = settledViewed.filter(b => {
         const ms = b.time instanceof Date ? b.time.getTime() : new Date(b.time).getTime();
         return ms >= sess.sessionStartMs && ms < sess.sessionEndMs;
@@ -504,6 +607,8 @@ function drawPriceChart() {
     if (state.replay.dataDriven && state.replay.apiBase) {
       const fromIso = _isoZ(profileBars[0].time);
       const toIso   = _isoZ(profileBars[profileBars.length - 1].time);
+      const fromMs = _barTimeMs(profileBars[0].time);
+      const toMs   = _barTimeMs(profileBars[profileBars.length - 1].time);
       const activeTf = state.activeTimeframe || 'unknown';
       const cached = getCachedProfile(fromIso, toIso);
       // API may legitimately return all-null POC/VAH/VAL when the window
@@ -517,6 +622,21 @@ function drawPriceChart() {
         profile = cached;
         _lastApiProfile = cached;
         _lastApiProfileTf = activeTf;
+        _lastApiProfileFromMs = fromMs;
+        _lastApiProfileToMs = toMs;
+        _lastApiProfileSessionStartMs = scopedSession?.sessionStartMs ?? NaN;
+        _lastApiProfileSessionEndMs = scopedSession?.sessionEndMs ?? NaN;
+        _logProfileDecision({
+          isPanned,
+          source: 'api-cache',
+          timeframe: activeTf,
+          fromIso,
+          toIso,
+          fromMs,
+          toMs,
+          pocPrice: cached.pocPrice,
+          maxBin: cached.maxBin,
+        });
       } else {
         // Cache miss for this exact (from, to) window. Anti-flicker at
         // the live edge: reuse the most recently resolved API profile
@@ -537,13 +657,48 @@ function drawPriceChart() {
           if (b.low  < candleLo) candleLo = b.low;
           if (b.high > candleHi) candleHi = b.high;
         }
-        if (!isPanned
-            && _lastApiProfile
-            && _lastApiProfileTf === activeTf
-            && _isApiProfileCompatibleWith(_lastApiProfile, candleLo, candleHi)) {
+        let canReuseLastApi = !!_lastApiProfile
+          && _lastApiProfileTf === activeTf
+          && _isApiProfileCompatibleWith(_lastApiProfile, candleLo, candleHi);
+        if (canReuseLastApi
+            && Number.isFinite(fromMs)
+            && Number.isFinite(toMs)
+            && Number.isFinite(_lastApiProfileFromMs)
+            && Number.isFinite(_lastApiProfileToMs)) {
+          canReuseLastApi = _windowOverlapMs(fromMs, toMs, _lastApiProfileFromMs, _lastApiProfileToMs) > 0;
+        }
+        if (canReuseLastApi && scopedSession
+            && Number.isFinite(_lastApiProfileSessionStartMs)
+            && Number.isFinite(_lastApiProfileSessionEndMs)) {
+          canReuseLastApi = _lastApiProfileSessionStartMs === scopedSession.sessionStartMs
+            && _lastApiProfileSessionEndMs === scopedSession.sessionEndMs;
+        }
+        if (canReuseLastApi) {
           profile = _lastApiProfile;
+          _logProfileDecision({
+            isPanned,
+            source: 'api-carryover',
+            timeframe: activeTf,
+            fromIso,
+            toIso,
+            fromMs,
+            toMs,
+            pocPrice: _lastApiProfile.pocPrice,
+            maxBin: _lastApiProfile.maxBin,
+          });
         } else {
           profile = computeProfile(profileBars);
+          _logProfileDecision({
+            isPanned,
+            source: 'proxy',
+            timeframe: activeTf,
+            fromIso,
+            toIso,
+            fromMs,
+            toMs,
+            pocPrice: profile?.pocPrice ?? null,
+            maxBin: profile?.maxBin ?? null,
+          });
         }
         // Only kick off a fetch if one hasn't *already* resolved for
         // this (from, to). When a window's response was null POC/VAH/VAL
@@ -630,25 +785,33 @@ function drawPriceChart() {
     // State is wiped whenever the underlying profile changes (session
     // boundary, pan, timeframe switch) so we don't carry "folded"
     // decisions across discontinuities.
-    const pid = _profileIdentity(profile);
-    if (pid !== _foldHysteresis.pid) _resetFoldHysteresis(pid);
-
     const candleRange = Math.max(hi - lo, 1.0);
     const slackFold = candleRange * 1.5;
     const slackKeep = candleRange * 3.0;
     const profileHi = profile.priceLo + profile.bins.length * profile.binStep;
-
-    const _shouldFold = (p, key) => {
-      if (!Number.isFinite(p)) {
-        _foldHysteresis[key] = false;
-        return false;
-      }
-      const wasFolded = _foldHysteresis[key];
-      const slack = wasFolded ? slackKeep : slackFold;
-      const folded = p >= lo - slack && p <= hi + slack;
-      _foldHysteresis[key] = folded;
-      return folded;
-    };
+    // Hysteresis is valuable at the live edge (streaming jitter), but while
+    // panned it can "stick" prior fold decisions across tiny viewport moves
+    // and produce abrupt scale compression. Use a stateless strict fold check
+    // when panned so each viewport position is evaluated independently.
+    const useFoldHysteresis = !isPanned;
+    let _shouldFold;
+    if (useFoldHysteresis) {
+      const pid = _profileIdentity(profile);
+      if (pid !== _foldHysteresis.pid) _resetFoldHysteresis(pid);
+      _shouldFold = (p, key) => {
+        if (!Number.isFinite(p)) {
+          _foldHysteresis[key] = false;
+          return false;
+        }
+        const wasFolded = _foldHysteresis[key];
+        const slack = wasFolded ? slackKeep : slackFold;
+        const folded = p >= lo - slack && p <= hi + slack;
+        _foldHysteresis[key] = folded;
+        return folded;
+      };
+    } else {
+      _shouldFold = (p) => Number.isFinite(p) && p >= lo - slackFold && p <= hi + slackFold;
+    }
 
     if (_shouldFold(profile.priceLo, 'priceLo'))   lo = Math.min(lo, profile.priceLo);
     if (_shouldFold(profileHi,       'profileHi')) hi = Math.max(hi, profileHi);
@@ -685,6 +848,10 @@ function drawPriceChart() {
     if (p < lo) return  1;   // below visible range → line pinned to bottom
     return 0;
   };
+  const overlayVisibility = state.chartOverlayVisibility || {};
+  const showPoc = overlayVisibility.poc !== false;
+  const showVa = overlayVisibility.va !== false;
+  const showVwap = overlayVisibility.vwap !== false;
 
   // Draw VAH / VAL / POC lines across full chart. Same null-guard as the
   // profile-bar label block below — empty windows can return all-null
@@ -718,16 +885,19 @@ function drawPriceChart() {
                       PAD.l + chartW - 4, yLabel);
       }
     };
-    _drawRefLine(profile.vahPrice, 'VAH', 'rgba(138, 146, 166, 0.55)', 1,   [3, 3]);
-    _drawRefLine(profile.valPrice, 'VAL', 'rgba(138, 146, 166, 0.55)', 1,   [3, 3]);
-    _drawRefLine(profile.pocPrice, 'POC', 'rgba(33, 160, 149, 0.75)',  1.2, null);
+    if (showVa) {
+      _drawRefLine(profile.vahPrice, 'VAH', 'rgba(138, 146, 166, 0.55)', 1, [3, 3]);
+      _drawRefLine(profile.valPrice, 'VAL', 'rgba(138, 146, 166, 0.55)', 1, [3, 3]);
+    }
+    if (showPoc) {
+      _drawRefLine(profile.pocPrice, 'POC', 'rgba(33, 160, 149, 0.75)', 1.2, null);
+    }
   }
 
   // Candles
   const totalBars = allBars.length;
   const slotW = chartW / Math.max(totalBars, 12);
   const baseCandleW = Math.max(2, Math.min(slotW * 0.65, 14));
-  const maxBarVol = allBars.reduce((m, b) => Math.max(m, Number(b.volume) || 0), 1);
 
   // Phase 6: directional-bias ribbon. Drawn first inside the reserved
   // [RIBBON_TOP, RIBBON_TOP + RIBBON_H] band above the candle pane so
@@ -807,8 +977,8 @@ function drawPriceChart() {
     const xCenter = PAD.l + (i + 0.5) * slotW;
     const isForming = (b === state.formingBar);
     const isUp = b.close >= b.open;
-    const upColor   = '#4ea674';
-    const downColor = '#c95760';
+    const upColor = CHART_CANDLE_UP;
+    const downColor = CHART_CANDLE_DOWN;
     const color = isUp ? upColor : downColor;
 
     // Selection-driven tint. Forming bars are passed through unchanged
@@ -826,11 +996,15 @@ function drawPriceChart() {
     }
 
     const wickColor = isForming ? 'rgba(192,198,208,0.45)'
-                    : dim         ? (isUp ? 'rgba(78,166,116,0.22)' : 'rgba(201,87,96,0.22)')
+                    : dim         ? (isUp ? _candleUpRgba(0.22) : _candleDownRgba(0.22))
                                   : color;
     const usePhat = state.candleMode === 'phat' && _hasPhatFields(b);
-    const volNorm = Math.max(0, Math.min(1, (Number(b.volume) || 0) / Math.max(maxBarVol, 1)));
-    const phatWidth = Math.max(2, Math.min(slotW * 0.92, baseCandleW * (0.45 + volNorm * 1.4)));
+    // candle_prototype.html: bodyW = maxBodyW * (spreadTicks === 1 ? 0.7 : 1.0). No L2 spread in bars —
+    // use body extent in ticks as the proxy (≤1 tick → narrow “tight” bar).
+    const bodyTicks = Math.round(Math.abs(b.close - b.open) / ES_MIN_TICK);
+    const narrowPhatBody = bodyTicks <= 1;
+    const maxBodyW = Math.min(slotW * 0.6, 30);
+    const phatWidth = Math.max(2, maxBodyW * (narrowPhatBody ? 0.7 : 1.0));
     const candleW = usePhat ? phatWidth : baseCandleW;
     if (!usePhat) {
       pctx.strokeStyle = wickColor;
@@ -860,15 +1034,15 @@ function drawPriceChart() {
         yScale,
       });
     } else if (isForming) {
-      pctx.fillStyle = isUp ? 'rgba(78,166,116,0.18)' : 'rgba(201,87,96,0.18)';
+      pctx.fillStyle = isUp ? _candleUpRgba(0.18) : _candleDownRgba(0.18);
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
-      pctx.strokeStyle = isUp ? 'rgba(78,166,116,0.7)' : 'rgba(201,87,96,0.7)';
+      pctx.strokeStyle = isUp ? _candleUpRgba(0.7) : _candleDownRgba(0.7);
       pctx.setLineDash([2, 2]);
       pctx.lineWidth = 1;
       pctx.strokeRect(xCenter - candleW/2, top, candleW, bodyH);
       pctx.setLineDash([]);
     } else if (dim) {
-      pctx.fillStyle = isUp ? 'rgba(78,166,116,0.22)' : 'rgba(201,87,96,0.22)';
+      pctx.fillStyle = isUp ? _candleUpRgba(0.22) : _candleDownRgba(0.22);
       pctx.fillRect(xCenter - candleW/2, top, candleW, bodyH);
     } else {
       pctx.fillStyle = color;
@@ -985,8 +1159,8 @@ function drawPriceChart() {
     const isUp = b.close >= b.open;
     const barH = Math.max(1, (b.volume / maxVol) * (volBandH - 2));
     pctx.fillStyle = isForming
-      ? (isUp ? 'rgba(78,166,116,0.30)' : 'rgba(201,87,96,0.30)')
-      : (isUp ? 'rgba(78,166,116,0.55)' : 'rgba(201,87,96,0.55)');
+      ? (isUp ? _candleUpRgba(0.3) : _candleDownRgba(0.3))
+      : (isUp ? _candleUpRgba(0.55) : _candleDownRgba(0.55));
     const volW = Math.max(2, Math.min(slotW * 0.65, 14));
     pctx.fillRect(xCenter - volW/2, volTop + volBandH - barH, volW, barH);
   }
@@ -1010,7 +1184,7 @@ function drawPriceChart() {
   // segment; we break the polyline at every such point so the visual
   // reset at every RTH open is unambiguous (no slanted line connecting
   // the last bar of Day N to the first of Day N+1).
-  if (vwapDisplay && vwapDisplay.length > 0) {
+  if (showVwap && vwapDisplay && vwapDisplay.length > 0) {
     pctx.strokeStyle = 'rgba(220, 200, 90, 0.72)';
     pctx.lineWidth = 1.3;
     pctx.setLineDash([4, 3]);
@@ -1166,18 +1340,51 @@ function drawPriceChart() {
   // null doesn't poison `toFixed`.
   if (profile && profile.bins && profile.vahPrice != null && profile.valPrice != null && profile.pocPrice != null) {
     const px = PAD.l + chartW + 8;
+    // Sidebar width normalization should use what the user can actually see in
+    // the chart pane, not a far-tail max bin that may be off-screen. We score
+    // bins by pixel visibility first, then fall back to value-area bins, then
+    // full-profile max as a last resort.
+    const paneTop = PAD.t;
+    const paneBot = PAD.t + chartH;
+    let pixelVisibleMaxBin = 0;
+    let vaMaxBin = 0;
     for (let i = 0; i < profile.bins.length; i++) {
       const v = profile.bins[i];
-      const bw = (v / Math.max(profile.maxBin, 1)) * (PROFILE_W - 8);
+      const yTop = yScale(profile.priceLo + (i + 1) * profile.binStep);
+      const yBot = yScale(profile.priceLo + i * profile.binStep);
+      const yLo = Math.min(yTop, yBot);
+      const yHi = Math.max(yTop, yBot);
+      const overlapsPane = yHi >= paneTop && yLo <= paneBot;
+      if (overlapsPane && v > pixelVisibleMaxBin) pixelVisibleMaxBin = v;
+
+      const binPrice = profile.priceLo + (i + 0.5) * profile.binStep;
+      const inVA = binPrice >= profile.valPrice && binPrice <= profile.vahPrice;
+      if (inVA && v > vaMaxBin) vaMaxBin = v;
+    }
+    const widthMaxBin = pixelVisibleMaxBin > 0
+      ? pixelVisibleMaxBin
+      : (vaMaxBin > 0 ? vaMaxBin : Math.max(profile.maxBin || 0, 1));
+    _logProfileDecision({
+      isPanned,
+      source: 'vp-width-norm',
+      widthMaxBin,
+      pixelVisibleMaxBin,
+      vaMaxBin,
+      profileMaxBin: profile.maxBin,
+      pocPrice: profile.pocPrice,
+    });
+    for (let i = 0; i < profile.bins.length; i++) {
+      const v = profile.bins[i];
+      const bw = (v / widthMaxBin) * (PROFILE_W - 8);
       const yTop = yScale(profile.priceLo + (i + 1) * profile.binStep);
       const yBot = yScale(profile.priceLo + i * profile.binStep);
       const binH = Math.max(1, Math.abs(yBot - yTop) - 1);
       const binPrice = profile.priceLo + (i + 0.5) * profile.binStep;
-      const inVA = binPrice >= profile.valPrice && binPrice <= profile.vahPrice;
-      const isPOC = binPrice >= profile.pocPrice - profile.binStep/2 && binPrice <= profile.pocPrice + profile.binStep/2;
+      const inVA = showVa && binPrice >= profile.valPrice && binPrice <= profile.vahPrice;
+      const isPOC = showPoc && binPrice >= profile.pocPrice - profile.binStep/2 && binPrice <= profile.pocPrice + profile.binStep/2;
       pctx.fillStyle = isPOC ? 'rgba(33,160,149,0.85)'
-                      : inVA  ? 'rgba(33,160,149,0.32)'
-                              : 'rgba(138,146,166,0.18)';
+        : inVA ? 'rgba(33,160,149,0.32)'
+          : 'rgba(138,146,166,0.18)';
       pctx.fillRect(px, Math.min(yTop, yBot), bw, binH);
     }
 
@@ -1185,16 +1392,16 @@ function drawPriceChart() {
     pctx.fillStyle = 'rgba(192,198,208,0.6)';
     pctx.font = '9px "IBM Plex Mono", monospace';
     pctx.textAlign = 'left';
-    pctx.fillText('VAH ' + profile.vahPrice.toFixed(2), px, yScale(profile.vahPrice) - 3);
-    pctx.fillText('POC ' + profile.pocPrice.toFixed(2), px, yScale(profile.pocPrice) - 3);
-    pctx.fillText('VAL ' + profile.valPrice.toFixed(2), px, yScale(profile.valPrice) + 11);
+    if (showVa) pctx.fillText('VAH ' + profile.vahPrice.toFixed(2), px, yScale(profile.vahPrice) - 3);
+    if (showPoc) pctx.fillText('POC ' + profile.pocPrice.toFixed(2), px, yScale(profile.pocPrice) - 3);
+    if (showVa) pctx.fillText('VAL ' + profile.valPrice.toFixed(2), px, yScale(profile.valPrice) + 11);
   }
 
   // Last price tag
   if (allBars.length) {
     const last = allBars[allBars.length - 1];
     const yL = yScale(last.close);
-    pctx.fillStyle = last.close >= last.open ? '#4ea674' : '#c95760';
+    pctx.fillStyle = last.close >= last.open ? CHART_CANDLE_UP : CHART_CANDLE_DOWN;
     pctx.font = '10px "IBM Plex Mono", monospace';
     pctx.textAlign = 'right';
     pctx.fillText(last.close.toFixed(2), PAD.l + chartW - 4, yL - 4);
@@ -1222,12 +1429,12 @@ function drawPriceChart() {
     pctx.restore();
   }
 
-  // Bottom axis strip (canvas area above HTML “Chart view” slider): UTC-based 12h clock ticks
-  // (no “Z” suffix). 15m uses fewer candidate ticks + larger min gap so long date+time labels
-  // never overlap. Mirrored session dates on a second row are skipped on 15m and when the
-  // clock ticks already carry day changes (multi-day window).
+  // Bottom axis strip (canvas area above HTML “Chart view” slider): US Eastern 12h clock + “ ET”.
+  // 15m uses fewer candidate ticks + larger min gap so long date+time labels never overlap.
+  // Mirrored session dates on a second row are skipped on 15m and when clock ticks already
+  // carry day changes (multi-day window).
   const axisFloorY = volTop + volBandH;
-  const multiDayVp = _viewportSpansMultipleUtcDays(allBars);
+  const multiDayVp = _viewportSpansMultipleEtDays(allBars);
   const is15mAxis = activeTf === '15m';
 
   if (totalBars >= 1) {
@@ -1363,12 +1570,11 @@ function drawPriceChart() {
     const end = clamp(state.chartViewEnd, 1, state.replay.allBars.length);
     const lastBar = state.replay.allBars[end - 1];
     const t = lastBar ? new Date(lastBar.time) : null;
-    const hh = t ? String(t.getUTCHours()).padStart(2, '0') : '--';
-    const mm = t ? String(t.getUTCMinutes()).padStart(2, '0') : '--';
+    const tEt = t ? `${_formatEtClock12(t)} ET` : '--';
     pctx.fillStyle = 'rgba(212, 160, 74, 0.85)';
     pctx.font = '9px "IBM Plex Mono", monospace';
     pctx.textAlign = 'left';
-    pctx.fillText(`PANNED · ${hh}:${mm}Z · bar ${end}/${state.replay.allBars.length}`,
+    pctx.fillText(`PANNED · ${tEt} · bar ${end}/${state.replay.allBars.length}`,
                   PAD.l + 2, PAD.t + 8);
   }
 

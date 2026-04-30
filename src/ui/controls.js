@@ -125,7 +125,6 @@ function resetStream() {
   renderEventLog();
   drawPriceChart();
   drawFlowChart();
-  document.getElementById('barCount').textContent = '0 bars';
   document.getElementById('cumDelta').textContent = 'cum Δ —';
 }
 

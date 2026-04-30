@@ -66,16 +66,111 @@ document.querySelectorAll('#candleModeSelect .tf-btn').forEach(btn => {
     drawPriceChart();
   });
 });
+const _chartPanTooltipEt = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  month: 'short',
+  day: '2-digit',
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+
+function _chartPanTooltipText(sliderValue) {
+  if (state.replay.mode !== 'real') return '';
+  const end = Number.parseInt(sliderValue, 10);
+  if (!Number.isFinite(end) || end <= 0 || !state.replay.allBars.length) return '';
+  const bar = state.replay.allBars[Math.min(end - 1, state.replay.allBars.length - 1)];
+  if (!bar?.time) return '';
+  const dt = bar.time instanceof Date ? bar.time : new Date(bar.time);
+  return `${_chartPanTooltipEt.format(dt)} ET`;
+}
+
+function _positionChartPanTooltip(sliderEl, tooltipEl) {
+  const min = Number(sliderEl.min) || 0;
+  const max = Number(sliderEl.max) || 1;
+  const val = Number(sliderEl.value) || min;
+  const range = Math.max(max - min, 1);
+  const pct = Math.max(0, Math.min(1, (val - min) / range));
+  const width = sliderEl.clientWidth || 0;
+  const pad = sliderEl.offsetLeft;
+  const x = pct * width;
+  tooltipEl.style.left = `${pad + x}px`;
+}
+
+function _updateChartPanTooltip(visible = true) {
+  const sliderEl = document.getElementById('chartPanSlider');
+  const tooltipEl = document.getElementById('chartPanThumbDateTooltip');
+  if (!sliderEl || !tooltipEl || state.replay.mode !== 'real') return;
+  const text = _chartPanTooltipText(sliderEl.value);
+  if (!text) {
+    tooltipEl.classList.remove('visible');
+    tooltipEl.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  tooltipEl.textContent = text;
+  _positionChartPanTooltip(sliderEl, tooltipEl);
+  if (visible) {
+    tooltipEl.classList.add('visible');
+    tooltipEl.setAttribute('aria-hidden', 'false');
+  }
+}
+
+function _hideChartPanTooltip() {
+  const tooltipEl = document.getElementById('chartPanThumbDateTooltip');
+  if (!tooltipEl) return;
+  tooltipEl.classList.remove('visible');
+  tooltipEl.setAttribute('aria-hidden', 'true');
+}
+
+function bindChartOverlayLegendToggles() {
+  const buttons = Array.from(document.querySelectorAll('[data-overlay-toggle]'));
+  if (!buttons.length) return;
+
+  const syncButtonStates = () => {
+    for (const btn of buttons) {
+      const key = String(btn.getAttribute('data-overlay-toggle') || '');
+      const on = state.chartOverlayVisibility[key] !== false;
+      btn.classList.toggle('is-off', !on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  };
+
+  for (const btn of buttons) {
+    btn.addEventListener('click', () => {
+      const key = String(btn.getAttribute('data-overlay-toggle') || '');
+      if (!(key in state.chartOverlayVisibility)) return;
+      state.chartOverlayVisibility[key] = !(state.chartOverlayVisibility[key] !== false);
+      syncButtonStates();
+      drawPriceChart();
+    });
+  }
+
+  syncButtonStates();
+}
+
 function onChartPanSliderInput() {
   const sl = document.getElementById('chartPanSlider');
   if (!sl || state.replay.mode !== 'real') return;
   _setViewEnd(parseInt(sl.value, 10));
+  _updateChartPanTooltip(true);
 }
 (() => {
   const panEl = document.getElementById('chartPanSlider');
   if (!panEl) return;
   panEl.addEventListener('input', onChartPanSliderInput);
   panEl.addEventListener('change', onChartPanSliderInput);
+  panEl.addEventListener('pointerdown', () => _updateChartPanTooltip(true));
+  panEl.addEventListener('mousemove', () => _updateChartPanTooltip(true));
+  panEl.addEventListener('mouseenter', () => _updateChartPanTooltip(true));
+  panEl.addEventListener('focus', () => _updateChartPanTooltip(true));
+  panEl.addEventListener('blur', _hideChartPanTooltip);
+  panEl.addEventListener('mouseleave', () => {
+    if (document.activeElement !== panEl) _hideChartPanTooltip();
+  });
+  window.addEventListener('pointerup', () => {
+    if (document.activeElement !== panEl) _hideChartPanTooltip();
+  });
+  window.addEventListener('resize', () => _updateChartPanTooltip(false));
 })();
 document.getElementById('streamBtn').addEventListener('click', toggleStream);
 document.getElementById('resetBtn').addEventListener('click', resetStream);
@@ -111,6 +206,7 @@ bindMatrixRangeUI();
 bindSelectionUI();
 bindEventLogClicks();
 bindBacktestUI();
+bindChartOverlayLegendToggles();
 initSectionCollapse();
 
 // The /occupancy fetch is async; when a fresh response lands we want to

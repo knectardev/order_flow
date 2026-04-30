@@ -153,6 +153,13 @@ export const state = {
   // When the user pans, chartViewEnd is locked to a specific value and a "↺ Live"
   // button appears to return to live edge.
   chartViewEnd: null,
+  // Bottom chart-legend overlay toggles. Each key controls whether its
+  // associated reference line/labels are rendered in priceChart.
+  chartOverlayVisibility: {
+    poc: true,
+    va: true,
+    vwap: true,
+  },
   /** How many candles to fit horizontally (wheel zoom); rolling buffer size remains MAX_BARS. */
   chartVisibleBars: MAX_BARS,
 
@@ -262,8 +269,11 @@ export const state = {
   // Candle rendering mode for the price panel.
   // 'phat' is only meaningful when bars carry PHAT features (API mode).
   candleMode: 'standard',
-  // PHAT wick-tip ring fill threshold. Values >= threshold render solid.
-  phatRingFillThreshold: 0.55,
+  // PHAT body imbalance gate for P/b shading:
+  // imbalance = |topCvdNorm - bottomCvdNorm|. Below threshold => neutral flat body.
+  phatBodyImbalanceThreshold: 0.30,
+  // PHAT exhaustion-ring liquidity threshold. Values >= threshold render filled ring.
+  phatExhaustionRingLiquidityThreshold: 0.55,
   // Saved matrix-range selection from the timeframe the user was on
   // before switching to '1h'. Used to restore the selection when they
   // switch back to 1m/15m. null ⇒ no saved selection (first paint).

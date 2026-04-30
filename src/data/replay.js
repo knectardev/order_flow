@@ -343,17 +343,9 @@ function _syncChartPanSliderDOM() {
 function _renderReplayChrome() {
   if (state.replay.mode !== 'real') return;
   _syncChartPanSliderDOM();
-  // Bar-count + cumulative-delta readouts mirror what's actually on screen.
-  // When panned the user is looking at a historical slice; reporting the
-  // live-edge `state.bars` array's count and cumΔ here would contradict the
-  // candles + delta-distribution panel they're viewing.
-  const { viewedBars, isPanned } = _getViewedBars();
-  const lastTag = isPanned
-    ? 'panned'
-    : (state.formingBar ? 'forming' : 'settled');
-  const tfLabel = state.activeTimeframe || '1m';
-  document.getElementById('barCount').textContent =
-    `${tfLabel} bars · ${viewedBars.length} shown · last ${lastTag}`;
+  // Cumulative-delta in the Delta section mirrors the visible bar window
+  // (panned history vs live edge + forming).
+  const { viewedBars } = _getViewedBars();
   const cumD = viewedBars.reduce((s, b) => s + b.delta, 0);
   document.getElementById('cumDelta').textContent =
     viewedBars.length ? `cum Δ ${cumD >= 0 ? '+' : ''}${cumD}` : 'cum Δ —';
@@ -919,7 +911,6 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
     : _replayDateRangeStubFromBars(allBars);
   state.replay.dateRange = drMerged ?? _replayDateRangeStubFromBars(allBars);
 
-  document.getElementById('replayRow').style.display = '';
   const panRow = document.getElementById('chartPanRow');
   if (panRow) panRow.style.display = '';
   _renderModeBadge();
@@ -1121,6 +1112,10 @@ function _syncCandleModeSelectorUI() {
   });
   if (!hasPhat && state.candleMode === 'phat') {
     state.candleMode = 'standard';
+  }
+  const phatLegendWrap = document.getElementById('phatLegendWrap');
+  if (phatLegendWrap) {
+    phatLegendWrap.hidden = !(hasPhat && state.candleMode === 'phat');
   }
 }
 

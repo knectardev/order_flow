@@ -108,6 +108,7 @@ class Bar:
     bottom_cvd: float = 0.0
     top_cvd_norm: float = 0.0
     bottom_cvd_norm: float = 0.0
+    cvd_imbalance: float = 0.0
     top_body_volume_ratio: float = 0.5
     bottom_body_volume_ratio: float = 0.5
     upper_wick_liquidity: float = 0.0
@@ -189,6 +190,7 @@ class Bar:
             "bottomCvd":       self.bottom_cvd,
             "topCvdNorm":      self.top_cvd_norm,
             "bottomCvdNorm":   self.bottom_cvd_norm,
+            "cvdImbalance":    self.cvd_imbalance,
             "topBodyVolumeRatio": self.top_body_volume_ratio,
             "bottomBodyVolumeRatio": self.bottom_body_volume_ratio,
             "upperWickLiquidity": self.upper_wick_liquidity,
@@ -235,6 +237,7 @@ class Bar:
             "bottom_cvd":        self.bottom_cvd,
             "top_cvd_norm":      self.top_cvd_norm,
             "bottom_cvd_norm":   self.bottom_cvd_norm,
+            "cvd_imbalance":     self.cvd_imbalance,
             "top_body_volume_ratio": self.top_body_volume_ratio,
             "bottom_body_volume_ratio": self.bottom_body_volume_ratio,
             "upper_wick_liquidity": self.upper_wick_liquidity,
@@ -359,6 +362,7 @@ def _stamp_phat_features(bars: list[Bar]) -> None:
         b.bottom_cvd = feats["bottom_cvd"]
         b.top_cvd_norm = feats["top_cvd_norm"]
         b.bottom_cvd_norm = feats["bottom_cvd_norm"]
+        b.cvd_imbalance = feats["cvd_imbalance"]
         b.top_body_volume_ratio = feats["top_body_volume_ratio"]
         b.bottom_body_volume_ratio = feats["bottom_body_volume_ratio"]
         b.upper_wick_liquidity = feats["upper_wick_liquidity"]

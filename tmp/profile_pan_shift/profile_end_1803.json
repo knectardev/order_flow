@@ -1,0 +1,20 @@
+{
+  "from": "2026-01-30T12:33:00Z",
+  "to": "2026-01-30T13:32:00Z",
+  "session_date": null,
+  "timeframe": "1m",
+  "ticks": [],
+  "total_volume": 0,
+  "bins": [],
+  "binStep": 0.25,
+  "priceLo": null,
+  "priceHi": null,
+  "pocPrice": null,
+  "valPrice": null,
+  "vahPrice": null,
+  "maxBin": 0,
+  "pocTick": null,
+  "vahTick": null,
+  "valTick": null,
+  "_url": "http://127.0.0.1:8001/profile?timeframe=1m&from=2026-01-30T17%3A33%3A00.000Z&to=2026-01-30T18%3A32%3A00.000Z"
+}

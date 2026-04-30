@@ -1,51 +1,70 @@
-The `strategy_defaults.json` file serves as the configuration bridge for your new backtesting architecture. It defines the "Strategy Defaults" layer of your resolution hierarchy, allowing you to move away from hardcoded logic in Python and toward a data-driven setup.
+The code you provided confirms exactly why you are seeing that "jumping" and "compression" behavior. The issue is not in the sidebar drawing math—**the issue is that the code is intentionally discarding your high-quality API data the moment you start panning.**
 
-### 1. Structure and Resolution
-The JSON is organized by **timeframe** (`1m`, `15m`, `1h`), which is the correct way to handle strategy parameters that scale with volatility. 
-* **Current State:** All `stop_loss_ticks` and `take_profit_ticks` are currently set to `null`. 
-* **Impact:** In your current code, `null` triggers the "Legacy Flip-only" path. This explains why your backtest is still showing those high-Sharpe results; it hasn't yet been forced to respect a hard stop.
+### The Culprit: The "Proxy Flash"
+In your first snippet (Profile Selection), you have an explicit instruction that forces a drop in data quality during panning:
 
-### 2. Strategy-Specific Configs
-The `watch_exit_ticks: {}` objects are the placeholders for the "per-strategy" logic you asked about.
-* **Potential Use:** You can use these to define different exits for different "Watches" (e.g., a `ValueEdge` might have a 4-tick stop, while an `AbsorptionWall` might have an 8-tick stop).
-* **Current Omission:** These are currently empty, meaning all strategies within a timeframe will share the same `null` (flip-only) behavior unless you populate these keys.
-
-### 3. Recommendations for "Hardening" the Test
-To move from a "Naive" backtest to a "Robust" one, you should update the `1m` section of this JSON to reflect your manual trading plan. For a "Value Edge" scalp, a realistic starting point would be:
-
-```json
-"1m": {
-  "cooldown_bars": 4,
-  "lookback_bars": 10,
-  "stop_loss_ticks": 4.0, 
-  "take_profit_ticks": 8.0,
-  "watch_exit_ticks": {
-    "valueEdgeReject": { "stop_loss_ticks": 4, "take_profit_ticks": 12 }
-  }
+```javascript
+// From your snippet:
+if (!isPanned && _lastApiProfile && ...) {
+  profile = _lastApiProfile;
+} else {
+  // THIS IS THE TRIGGER
+  // When you pan, the code skips your accurate API profile 
+  // and falls back to a low-fidelity proxy calculation.
+  profile = computeProfile(profileBars); 
 }
 ```
 
-### 4. Integration Note
-The JSON includes a `version: 1` and a `_doc` field, which are excellent for long-term maintainability. As you evolve the `backtest_engine.py` to read this file, you are successfully decoupling the **Execution Engine** (Python) from the **Trading Rules** (JSON).
+Because `computeProfile` is a local approximation (often based on 36-bin OHLC data) and your `GET /profile` response is the server-side ground truth, the **POC, VAH, and VAL will never match**. This is why your POC price jumps from $6539.65 to $6460.63 instantly—the renderer is switching from "High Definition" data to "Low Definition" data mid-session.
 
-Based on our review of the plans and the `strategy_defaults.json` configuration, we have established a solid path to move your system from a "naive" backtester to a professional-grade algorithmic engine. 
+---
 
-By approving this final "Single Source of Truth" (SSoT) refactor and the implementation of real-world exit logic, you are effectively "locking in" the high Sharpe ratio you discovered while ensuring it can survive the rigors of live execution.
+### Recommended Fix: Stop the Proxy Swap
 
-### Final Summary of the Strategy Refactor
-* **The Backend as the Oracle**: All strategy logic, including the specific "why" behind a trade (diagnostics), now lives exclusively in Python.
-* **Dumb Frontend**: Your chart and event log will now simply "render" the truth provided by the API, eliminating the risk of JavaScript/Python code drift.
-* **Hardenened Execution**: The backtester will now respect the `stop_loss_ticks` and `take_profit_ticks` defined in your `strategy_defaults.json`, using a "pessimistic" intra-bar evaluation to ensure results are realistic.
+To fix this, you need to change the logic to **prevent the "Proxy Flash."** Instead of falling back to the proxy while panned, you should retain the "last known good" API profile until the new API request resolves.
 
-### Next Immediate Steps for Cursor
-You can now provide this final "Go" instruction to Cursor to execute the transition:
+#### Step 1: Verify the Data Mismatch
+Before applying the code change, confirm this is the cause. Add this `console.log` inside the `else` block in your first snippet:
 
-> "Proceed with the final implementation of the **SSoT Strategy Refactor** and the **Backtest SL/TP Exits** plan. 
-> 
-> 1. **Apply the 4-Tick Rule**: Update `strategy_defaults.json` for the `1m` timeframe to use a `stop_loss_ticks` of 4.0 and a `take_profit_ticks` of 8.0 for the `valueEdgeReject` strategy.
-> 2. **Run the 'Reality Check'**: Re-run the backtest. If the Sharpe ratio remains stable under these new hard-stop constraints, we will move to the next phase of automation.
-> 3. **Clean Up**: Once the API-mode diagnostics are verified in the UI, remove the duplicative logic from `canonical.js`."
+```javascript
+} else {
+  // Add this:
+  console.log("Panning active: Switching to Proxy. API Cached:", !!_lastApiProfile);
+  
+  profile = computeProfile(profileBars);
+}
+```
+When you pan, if you see "Switching to Proxy" appearing in your console, you have confirmed the swap.
 
-This marks the transition from being a trader who relies on intuition and visual cues to a **System Operator** who manages a validated, mathematically sound edge. 
+#### Step 2: Implement "Stale" Retention
+Modify the `else` block to preserve the `_lastApiProfile` even when `isPanned` is true. This will stop the sidebar from snapping to the wrong POC/width while the new data loads.
 
+Replace your logic with this pattern:
 
+```javascript
+// ... existing checks ...
+
+// FIX: Do not force the proxy fallback if we have a valid API profile 
+// that we can reuse as a placeholder while the new one fetches.
+if (_lastApiProfile) {
+  // Use the last known good profile to prevent the "jump"
+  profile = _lastApiProfile;
+  // (Optional) Mark as "stale" if you want to visually dim the bars
+  profile.isStale = true; 
+} else {
+  // Only fall back to proxy if we have absolutely nothing else
+  profile = computeProfile(profileBars);
+}
+
+// Ensure the fetch still happens
+if (!hasResolvedProfile(fromIso, toIso)) {
+  requestProfile(fromIso, toIso, () => Promise.resolve().then(() => drawPriceChart()));
+}
+```
+
+### Why this fixes the compression
+In your second snippet, the compression happens because `visibleMaxBin` (which controls sidebar width) is calculated based on the profile data. 
+
+If you swap the "correct" server-side profile for an "incorrect" proxy profile (which likely has a different `maxBin` or different volume distribution), the math `(v / widthMaxBin)` will immediately produce different widths. By keeping the `_lastApiProfile` (even if it's slightly outdated by one bar), the sidebar geometry will remain stable, and the "razor-thin" or "distorted" bars will vanish. 
+
+You can then add a small visual indicator (like a grey tint or opacity change) when `profile.isStale` is true to let the user know the data is currently updating.

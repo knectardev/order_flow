@@ -60,7 +60,7 @@ import os
 import json
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -170,9 +170,11 @@ def _parse_iso(ts: str | None) -> datetime | None:
         dt = datetime.fromisoformat(s)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid ISO timestamp: {ts!r}") from exc
-    # DuckDB TIMESTAMP columns are tz-naive; strip any tz info.
+    # DuckDB TIMESTAMP columns are tz-naive UTC. Convert any offset-aware
+    # inputs to UTC first, then strip tzinfo. Using local time here shifts
+    # windows by the machine offset and can make /profile appear empty.
     if dt.tzinfo is not None:
-        dt = dt.astimezone(tz=None).replace(tzinfo=None)
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
 
 
@@ -354,6 +356,7 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "bottomCvd":       b.get("bottom_cvd"),
         "topCvdNorm":      b.get("top_cvd_norm"),
         "bottomCvdNorm":   b.get("bottom_cvd_norm"),
+        "cvdImbalance":    b.get("cvd_imbalance"),
         "topBodyVolumeRatio": b.get("top_body_volume_ratio"),
         "bottomBodyVolumeRatio": b.get("bottom_body_volume_ratio"),
         "upperWickLiquidity": b.get("upper_wick_liquidity"),

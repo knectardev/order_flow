@@ -18,3 +18,26 @@ https://claude.ai/chat/71209195-ad66-4ed6-a07b-7b3004aa1379
 C:\local_dev\order_flow
 phat-candle-research-plan.md
 
+
+
+Updates we want to make the chart bigger probably although let’s see how it is on the desktop then we want to be more transparent about what each strategy is doing not just words but visually if possible just for my visual brain
+
+
+We want to introduce opening range breakout, but also just general box theory in which the previous resistance becomes the new support where the horizontal lines of the box are essentially showing consolidation zones
+
+It’s at the zones, especially on trending days that I’ve often seen relatively straightforward. Trading scenarios.
+
+
+However, I want to bolster this visual interpretation with our regime identifier because I would assume that it’s just as easy that fake outs occur in what appear to be straightforward trading scenarios as not an arguably more
+
+I want the back test visualization also to be more visual while we have entry and exit demarcations. I want it to be clear. What the stop loss and take profit are in the back testing model as a basis for visually confirming that the rules are being adhered to.
+
+
+Candles need to be larger
+
+Introduce point cloud on the regime matrix in which each point correlates with a candle 
+Cursor Prompt: DOC Regime Matrix Point Cloud + Bidirectional Brushing
+https://mail.google.com/mail/u/0/#inbox/FMfcgzQgLXwZkWGlXLbKShLFXgctQqCR 
+
+Set a threshold for the top heavy versus bottom, heavy color - inspired by P / b volume structures from Wyckoff 
+

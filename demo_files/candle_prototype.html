@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asymmetric Candle Prototype</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'IBM Plex Mono', Monaco, monospace;
+            background: #0f1419;
+            color: #e0e6ed;
+            padding: 20px 16px;
+            line-height: 1.5;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { font-size: 16px; font-weight: 500; margin-bottom: 4px; }
+        .subtitle { font-size: 11px; color: #8a92a6; margin-bottom: 20px; }
+        .canvas-wrapper {
+            background: #1a1f2e;
+            border: 1px solid #2a3142;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 20px;
+        }
+        canvas { display: block; width: 100%; }
+        .controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        button {
+            background: #21a095;
+            color: #fff;
+            border: none;
+            padding: 10px 14px;
+            border-radius: 3px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            flex: 1;
+            min-width: 140px;
+        }
+        button:hover { background: #1a8277; }
+        .legend {
+            background: #1a1f2e;
+            border: 1px solid #2a3142;
+            border-radius: 4px;
+            padding: 14px;
+            font-size: 12px;
+        }
+        .legend-title { margin-bottom: 10px; font-weight: 500; color: #21a095; }
+        .legend-item { margin-bottom: 6px; }
+        .legend-item:last-child { margin-bottom: 0; }
+        strong { color: #e0e6ed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Asymmetric Candle Prototype</h1>
+        <p class="subtitle">CVD-weighted body shading + liquidity-weighted wick tips</p>
+
+        <div class="controls">
+            <button onclick="generateNewCandles()">Generate New Candles</button>
+        </div>
+
+        <div class="canvas-wrapper">
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div class="legend">
+            <div class="legend-title">Encoding</div>
+            <div class="legend-item"><strong>Green/red body:</strong> close > open (up) or < open (down)</div>
+            <div class="legend-item"><strong>Top half shade:</strong> darker = aggressive participation reinforcing the candle's direction at upper prices</div>
+            <div class="legend-item"><strong>Bottom half shade:</strong> same logic at lower prices — darker = stronger conviction</div>
+            <div class="legend-item"><strong>Filled circle:</strong> rejection by <em>absorption</em> — heavy volume hit a wall of opposing liquidity (committed defender, level likely holds)</div>
+            <div class="legend-item"><strong>Hollow circle:</strong> rejection by <em>exhaustion</em> — aggressive flow faded, no wall (weak level, often fails on retest)</div>
+            <div class="legend-item"><strong>Circle diameter:</strong> strength of the rejection. At most one circle per candle.</div>
+            <div class="legend-item"><strong>Wick position:</strong> low first = upper wick on right edge, lower wick on left edge; high first = opposite</div>
+            <div class="legend-item"><strong>Body width:</strong> bid-ask spread (narrower = 1 tick, wider = 2+ ticks)</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        const PAD = { top: 20, bottom: 30, left: 65, right: 15 };
+        let candles = [];
+
+        // Box-Muller: standard normal random
+        function randn() {
+            const u = 1 - Math.random();
+            const v = Math.random();
+            return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+        }
+
+        function generateCandles(count) {
+            const result = [];
+            const TICK = 0.25;  // MES tick size
+            let price = 4500;   // realistic MES price level
+            let trend = 0;      // momentum/drift state (AR(1))
+            let vol = 0.8;      // current volatility (clustered via GARCH-ish process)
+            
+            for (let i = 0; i < count; i++) {
+                // --- Volatility clustering (GARCH-ish: persistent with mean reversion) ---
+                vol = 0.85 * vol + 0.15 * 0.8 + Math.abs(randn()) * 0.15;
+                vol = Math.max(0.3, Math.min(vol, 2.5));
+                
+                // --- Trend persistence (AR(1) drift) ---
+                trend = 0.7 * trend + randn() * 0.15;
+                
+                // --- Open ≈ prior close (tiny gap, max ~1 tick) ---
+                const open = i === 0 ? price : result[i-1].close + (Math.random() - 0.5) * TICK * 0.5;
+                
+                // --- Simulate intracandle path with per-step signed volume ---
+                // Track running high/low, when hit, and accumulate CVD per price half
+                const steps = 20;
+                let p = open;
+                let hi = open, lo = open;
+                let hiStep = 0, loStep = 0;
+                const stepVol = vol / Math.sqrt(steps);
+                
+                // Volume delta buckets: split the candle range in half after path is known
+                // So record every step's (price, signedVolume) and bucket after
+                const stepTrace = [];
+                
+                for (let s = 1; s <= steps; s++) {
+                    const noise = randn() * stepVol;
+                    const drift = trend / steps;
+                    p += drift + noise;
+                    if (p > hi) { hi = p; hiStep = s; }
+                    if (p < lo) { lo = p; loStep = s; }
+                    
+                    // Signed volume: correlated with the step's direction + trend
+                    // Magnitude scales with volatility (more volume when more action)
+                    const stepReturn = drift + noise;
+                    const volMag = (0.3 + Math.abs(stepReturn) * 2 + Math.abs(randn()) * 0.2) * vol;
+                    // Sign: leans toward direction of move but with noise (real aggression isn't perfect)
+                    const stepDelta = Math.sign(stepReturn) * volMag * (0.5 + Math.random() * 0.5);
+                    stepTrace.push({ price: p, delta: stepDelta });
+                }
+                const close = p;
+                
+                // Snap to tick grid
+                const snap = x => Math.round(x / TICK) * TICK;
+                const snappedOpen = snap(open);
+                const snappedHigh = snap(hi);
+                const snappedLow = snap(lo);
+                const snappedClose = snap(close);
+                
+                const lowFirst = loStep < hiStep;
+                const range = snappedHigh - snappedLow;
+                const midPrice = (snappedHigh + snappedLow) / 2;
+                
+                // --- Cumulative Volume Delta per half ---
+                // Sum signed volume for steps that occurred in upper vs lower half of range
+                let topCVD = 0, botCVD = 0;
+                let topVol = 0, botVol = 0;
+                stepTrace.forEach(step => {
+                    const absVol = Math.abs(step.delta);
+                    if (step.price >= midPrice) {
+                        topCVD += step.delta;
+                        topVol += absVol;
+                    } else {
+                        botCVD += step.delta;
+                        botVol += absVol;
+                    }
+                });
+                
+                // Normalize CVD to -1..+1 per half (sign = net aggression direction, magnitude = conviction)
+                const topCVDNorm = topVol > 0 ? topCVD / topVol : 0;
+                const botCVDNorm = botVol > 0 ? botCVD / botVol : 0;
+                
+                // --- Rejection at extremes ---
+                // Rejection = extreme was tested, price couldn't push through, reversed away
+                // Mutually exclusive: only the extreme with stronger evidence registers
+                // (Dual rejection is rare and produces confusing visuals)
+                
+                const nearHighSteps = stepTrace.filter(s => s.price >= snappedHigh - TICK * 2).length;
+                const nearLowSteps = stepTrace.filter(s => s.price <= snappedLow + TICK * 2).length;
+                
+                // Distance close retreated from each extreme (0 = closed at extreme, 1 = closed at opposite end)
+                const retreatFromHigh = range > 0 ? (snappedHigh - snappedClose) / range : 0;
+                const retreatFromLow = range > 0 ? (snappedClose - snappedLow) / range : 0;
+                
+                // Raw rejection score per side (requires time spent near extreme AND meaningful retreat)
+                // Need at least 3 steps near extreme (brief tags don't count as absorption)
+                const REJECT_THRESHOLD = 0.5;  // close must retreat 50%+ of range from the rejected extreme
+                const MIN_STEPS_NEAR = 3;
+                
+                const highScore = (nearHighSteps >= MIN_STEPS_NEAR && retreatFromHigh >= REJECT_THRESHOLD)
+                    ? (nearHighSteps / 6) * retreatFromHigh
+                    : 0;
+                const lowScore = (nearLowSteps >= MIN_STEPS_NEAR && retreatFromLow >= REJECT_THRESHOLD)
+                    ? (nearLowSteps / 6) * retreatFromLow
+                    : 0;
+                
+                // Mutually exclusive: only the stronger side gets a rejection
+                let highRejection = 0;
+                let lowRejection = 0;
+                let rejectionType = null;  // 'absorption' or 'exhaustion' or null
+                
+                if (highScore > lowScore) {
+                    highRejection = Math.min(1, highScore * 1.3);
+                } else if (lowScore > highScore) {
+                    lowRejection = Math.min(1, lowScore * 1.3);
+                }
+                
+                // --- Classify rejection: absorption vs exhaustion ---
+                // Absorption: heavy volume at the extreme hitting a wall of opposing liquidity
+                //   → step volume at extreme is HIGH relative to rest of candle, yet price didn't progress
+                // Exhaustion: aggressive flow simply dried up at the extreme
+                //   → step volume at extreme is LOW relative to rest of candle (momentum faded)
+                if (highRejection > 0 || lowRejection > 0) {
+                    const isHighSide = highRejection > 0;
+                    const extremeSteps = isHighSide
+                        ? stepTrace.filter(s => s.price >= snappedHigh - TICK * 2)
+                        : stepTrace.filter(s => s.price <= snappedLow + TICK * 2);
+                    
+                    // Average |volume| near the extreme
+                    const extremeAvgVol = extremeSteps.length > 0
+                        ? extremeSteps.reduce((sum, s) => sum + Math.abs(s.delta), 0) / extremeSteps.length
+                        : 0;
+                    // Average |volume| across all steps
+                    const overallAvgVol = stepTrace.reduce((sum, s) => sum + Math.abs(s.delta), 0) / stepTrace.length;
+                    
+                    // Volume concentration ratio: >1 means extreme had heavier volume than average
+                    const volRatio = overallAvgVol > 0 ? extremeAvgVol / overallAvgVol : 1;
+                    
+                    // High volume at extreme with no progress = absorption (filled)
+                    // Low volume at extreme = exhaustion (hollow)
+                    rejectionType = volRatio > 1.1 ? 'absorption' : 'exhaustion';
+                }
+                
+                // --- Realistic spread: usually 1 tick, occasionally 2 ---
+                const spreadTicks = Math.random() < (0.85 - vol * 0.1) ? 1 : 2;
+                
+                result.push({
+                    open: snappedOpen,
+                    high: Math.max(snappedHigh, snappedOpen, snappedClose),
+                    low: Math.min(snappedLow, snappedOpen, snappedClose),
+                    close: snappedClose,
+                    lowFirst,
+                    spread: spreadTicks,
+                    topCVD: topCVDNorm,
+                    botCVD: botCVDNorm,
+                    highRejection,
+                    lowRejection,
+                    rejectionType            // 'absorption' (filled) | 'exhaustion' (hollow) | null
+                });
+            }
+            return result;
+        }
+
+        function getBounds() {
+            const chartH = canvas.height - PAD.top - PAD.bottom;
+            const chartW = canvas.width - PAD.left - PAD.right;
+            const prices = candles.flatMap(c => [c.high, c.low]);
+            const minP = Math.min(...prices);
+            const maxP = Math.max(...prices);
+            const p = (maxP - minP) * 0.08;
+            return { minP: minP - p, maxP: maxP + p, chartH, chartW };
+        }
+
+        function priceToY(price, b) {
+            return PAD.top + (1 - (price - b.minP) / (b.maxP - b.minP)) * b.chartH;
+        }
+
+        function drawCandle(c, xCenter, maxBodyW) {
+            const b = getBounds();
+            const yHigh = priceToY(c.high, b);
+            const yLow = priceToY(c.low, b);
+            const yOpen = priceToY(c.open, b);
+            const yClose = priceToY(c.close, b);
+
+            const bodyTop = Math.min(yOpen, yClose);
+            const bodyBottom = Math.max(yOpen, yClose);
+            const bodyH = Math.max(bodyBottom - bodyTop, 2);
+
+            const bodyW = maxBodyW * (c.spread === 1 ? 0.7 : 1.0);
+            const bodyLeft = xCenter - bodyW / 2;
+
+            const isUp = c.close >= c.open;
+            // Green or red
+            const [r, g, bl] = isUp ? [16, 185, 129] : [239, 68, 68];
+            const borderColor = isUp ? '#059669' : '#dc2626';
+
+            // Wicks attached to body edges: low first = upper wick on right edge, lower wick on left edge
+            const wickX = c.lowFirst ? xCenter + bodyW / 2 : xCenter - bodyW / 2;
+            const lowerWickX = c.lowFirst ? xCenter - bodyW / 2 : xCenter + bodyW / 2;
+
+            // Upper wick (uniform thin line)
+            ctx.strokeStyle = borderColor;
+            ctx.setLineDash([]);
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(wickX, yHigh);
+            ctx.lineTo(wickX, bodyTop);
+            ctx.stroke();
+
+            // Lower wick (uniform thin line)
+            ctx.beginPath();
+            ctx.moveTo(lowerWickX, bodyBottom);
+            ctx.lineTo(lowerWickX, yLow);
+            ctx.stroke();
+
+            // Rejection markers: circle at the rejected extreme
+            // Diameter = rejection strength; filled = absorption (wall of opposing liquidity), hollow = exhaustion (flow faded)
+            if (c.highRejection > 0) {
+                const radius = 2 + c.highRejection * 3;
+                ctx.beginPath();
+                ctx.arc(wickX, yHigh, radius, 0, Math.PI * 2);
+                if (c.rejectionType === 'absorption') {
+                    ctx.fillStyle = borderColor;
+                    ctx.fill();
+                } else {
+                    // Hollow: chart background fill + colored outline
+                    ctx.fillStyle = '#0f1419';
+                    ctx.fill();
+                    ctx.strokeStyle = borderColor;
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }
+            }
+            if (c.lowRejection > 0) {
+                const radius = 2 + c.lowRejection * 3;
+                ctx.beginPath();
+                ctx.arc(lowerWickX, yLow, radius, 0, Math.PI * 2);
+                if (c.rejectionType === 'absorption') {
+                    ctx.fillStyle = borderColor;
+                    ctx.fill();
+                } else {
+                    ctx.fillStyle = '#0f1419';
+                    ctx.fill();
+                    ctx.strokeStyle = borderColor;
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }
+            }
+
+            // Body — top half and bottom half shaded by CVD magnitude
+            // Sign of CVD determines if the half gets "reinforcing" shading
+            // Magnitude = conviction (darker = stronger aggression)
+            const midY = bodyTop + bodyH / 2;
+
+            // For up candles: positive top CVD = buyers pressed up (reinforcing) = darker
+            //                 negative top CVD = distribution into strength (weak) = lighter
+            // For down candles: negative top CVD = sellers active at highs (reinforcing down) = darker
+            //                   positive top CVD = absorption at highs (weak down) = lighter
+            const topSignal = isUp ? c.topCVD : -c.topCVD;
+            const botSignal = isUp ? c.botCVD : -c.botCVD;
+
+            // Map -1..+1 signal to opacity 0.25..0.95
+            const topOpacity = 0.25 + (topSignal + 1) / 2 * 0.7;
+            const botOpacity = 0.25 + (botSignal + 1) / 2 * 0.7;
+
+            ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${topOpacity})`;
+            ctx.fillRect(bodyLeft, bodyTop, bodyW, midY - bodyTop);
+
+            ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, ${botOpacity})`;
+            ctx.fillRect(bodyLeft, midY, bodyW, bodyBottom - midY);
+
+            // Body border
+            ctx.strokeStyle = borderColor;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(bodyLeft, bodyTop, bodyW, bodyH);
+        }
+
+        function draw() {
+            const wrapper = document.querySelector('.canvas-wrapper');
+            const cssW = wrapper.clientWidth - 24;
+            const cssH = Math.min(500, Math.max(360, window.innerHeight - 320));
+
+            canvas.style.width = cssW + 'px';
+            canvas.style.height = cssH + 'px';
+            canvas.width = cssW;
+            canvas.height = cssH;
+
+            ctx.fillStyle = '#0f1419';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const b = getBounds();
+
+            // Grid + price labels
+            ctx.strokeStyle = '#1a2332';
+            ctx.lineWidth = 1;
+            const steps = 6;
+            for (let i = 0; i <= steps; i++) {
+                const price = b.minP + (i / steps) * (b.maxP - b.minP);
+                const y = priceToY(price, b);
+                ctx.beginPath();
+                ctx.moveTo(PAD.left, y);
+                ctx.lineTo(canvas.width - PAD.right, y);
+                ctx.stroke();
+                ctx.fillStyle = '#6a7280';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'right';
+                ctx.fillText(price.toFixed(2), PAD.left - 5, y + 3);
+            }
+
+            // Axes
+            ctx.strokeStyle = '#2a3142';
+            ctx.beginPath();
+            ctx.moveTo(PAD.left, PAD.top);
+            ctx.lineTo(PAD.left, canvas.height - PAD.bottom);
+            ctx.lineTo(canvas.width - PAD.right, canvas.height - PAD.bottom);
+            ctx.stroke();
+
+            // Candles
+            const n = candles.length;
+            const slotW = b.chartW / n;
+            const maxBodyW = Math.min(slotW * 0.6, 30);
+            candles.forEach((c, i) => {
+                const xCenter = PAD.left + (i + 0.5) * slotW;
+                drawCandle(c, xCenter, maxBodyW);
+            });
+
+            // X-axis labels
+            ctx.fillStyle = '#6a7280';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'center';
+            const labelStep = Math.max(1, Math.ceil(n / 6));
+            for (let i = 0; i < n; i += labelStep) {
+                const xCenter = PAD.left + (i + 0.5) * slotW;
+                ctx.fillText(i, xCenter, canvas.height - PAD.bottom + 14);
+            }
+        }
+
+        function generateNewCandles() {
+            candles = generateCandles(12);
+            draw();
+        }
+
+        window.addEventListener('resize', draw);
+        candles = generateCandles(12);
+        draw();
+    </script>
+</body>
+</html>

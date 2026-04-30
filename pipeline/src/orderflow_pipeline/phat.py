@@ -125,6 +125,7 @@ def compute_phat_features(
 
     top_cvd_norm = float(top_cvd) / top_abs_delta if top_abs_delta > 0 else 0.0
     bottom_cvd_norm = float(bottom_cvd) / bottom_abs_delta if bottom_abs_delta > 0 else 0.0
+    cvd_imbalance = abs(float(top_cvd_norm) - float(bottom_cvd_norm))
 
     rng = max(high_price - low_price, 0.0)
     retreat_from_high = ((high_price - close_price) / rng) if rng > 0 else 0.0
@@ -133,12 +134,12 @@ def compute_phat_features(
     near_high_ticks = [t for t, v in price_volume.items() if v > 0 and t >= high_tick - 2]
     near_low_ticks = [t for t, v in price_volume.items() if v > 0 and t <= low_tick + 2]
 
-    # `candle_prototype.html` gates on step-count near the extreme and 50% range retreat.
-    # Here we aggregate to per-tick volume/delta only — "near extreme" is distinct price
-    # levels with prints, which is usually fewer than step count. Using the same literal
-    # 50% + 3 levels leaves almost no rejections in real 1m bars. Slightly looser gates
-    # preserve the same intent (time at extreme × meaningful retreat) while still keeping
-    # most candles without a marker.
+    # Rejection *detection* vs `demo_files/candle_prototype.html`:
+    # The prototype uses simulated intrabar steps (MIN_STEPS_NEAR=3, 50% retreat).
+    # Here we only have per-tick aggregates — literal 50% + 3 levels yields almost no
+    # markers on real 1m bars. Looser gates below match the same intent (dwell × retreat)
+    # while keeping most bars unmarked. There is no separate "strict prototype" flag;
+    # tune these constants if research needs closer parity to the HTML sim.
     reject_threshold = 0.28
     min_ticks_near = 2
 
@@ -177,6 +178,7 @@ def compute_phat_features(
         "bottom_cvd": float(bottom_cvd),
         "top_cvd_norm": round(float(top_cvd_norm), 6),
         "bottom_cvd_norm": round(float(bottom_cvd_norm), 6),
+        "cvd_imbalance": round(float(cvd_imbalance), 6),
         "top_body_volume_ratio": round(float(top_body_ratio), 6),
         "bottom_body_volume_ratio": round(float(bottom_body_ratio), 6),
         "upper_wick_liquidity": round(float(upper_wick_liq), 6),

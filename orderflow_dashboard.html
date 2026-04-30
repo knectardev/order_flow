@@ -45,7 +45,7 @@
 
   <!-- Price + Volume Profile (not collapsible — main chart) -->
   <div class="section" id="mainChartSection">
-    <div class="section-head">
+    <div class="section-head section-head--main-chart">
       <div class="section-title">
         Price · Volume Profile · Events
         <!--
@@ -78,7 +78,55 @@
           </div>
         </span>
       </div>
-      <div class="section-meta" id="barCount">0 bars</div>
+      <div class="replay-row replay-row--chart-head" id="replayRow">
+        <span class="replay-tf-label">Timeframe</span>
+        <span class="tf-select" id="timeframeSelect" role="tablist" aria-label="Timeframe">
+          <button type="button" class="tf-btn active" data-tf="1m"  role="tab" aria-selected="true">1m</button>
+          <button type="button" class="tf-btn"        data-tf="15m" role="tab" aria-selected="false">15m</button>
+          <button type="button" class="tf-btn"        data-tf="1h"  role="tab" aria-selected="false">1h</button>
+        </span>
+        <span class="replay-tf-label">Candle</span>
+        <span class="tf-select" id="candleModeSelect" role="tablist" aria-label="Candle mode">
+          <button type="button" class="tf-btn active" data-candle-mode="standard" role="tab" aria-selected="true">Standard</button>
+          <button type="button" class="tf-btn" data-candle-mode="phat" role="tab" aria-selected="false">PHAT</button>
+        </span>
+        <!-- PHAT semantics legend (same hover/focus pattern as HTF bias ribbon key). -->
+        <span id="phatLegendWrap" class="phat-legend-wrap" hidden>
+          <span class="bias-legend phat-legend" tabindex="0" role="button"
+                aria-label="PHAT candle semantics legend"
+                aria-describedby="phatLegendPopover">
+            <span class="bias-legend-icon" aria-hidden="true">i</span>
+            <div class="bias-legend-popover phat-legend-popover" id="phatLegendPopover" role="tooltip">
+              <div class="bias-legend-title">PHAT CANDLES</div>
+              <div class="phat-legend-section-label">Body shading (imbalance gate)</div>
+              <ul>
+                <li>
+                  <span class="bias-swatch phat-swatch-body phat-swatch-neutral-pair" aria-hidden="true">
+                    <span class="phat-swatch-flat phat-swatch-flat-up"></span>
+                    <span class="phat-swatch-flat phat-swatch-flat-down"></span>
+                  </span>
+                  <span class="bias-name">Neutral (no P/b split)</span>
+                  <span class="bias-vote">Translucent green or red body (swatches: up · down), matching chart neutral candles with no two-tone split. When |topNorm − botNorm| is below the gate, or when imbalance is high but fights bar direction — <strong>disagreement</strong>, Option A — the chart shows this same neutral look (not a separate visual).</span>
+                </li>
+                <li><span class="bias-swatch phat-swatch-body phat-swatch-split phat-swatch-p phat-swatch-border-up"></span><span class="bias-name">P-shape</span><span class="bias-vote">Up candle · darker top half — buyers pressed the upper body</span></li>
+                <li><span class="bias-swatch phat-swatch-body phat-swatch-split phat-swatch-b phat-swatch-border-down"></span><span class="bias-name">b-shape</span><span class="bias-vote">Down candle · darker bottom half — sellers pressed the lower body</span></li>
+              </ul>
+              <div class="phat-legend-section-label">Wick-tip rejection (at most one per bar)</div>
+              <ul>
+                <li><span class="phat-ring-cell"><span class="phat-ring-demo phat-ring-demo--filled" aria-hidden="true"></span></span><span class="bias-name">Filled circle</span><span class="bias-vote"><strong>Absorption</strong> — heavy prints at the extreme; volume held the level</span></li>
+                <li><span class="phat-ring-cell"><span class="phat-ring-demo phat-ring-demo--open" aria-hidden="true"></span></span><span class="bias-name">Open circle</span><span class="bias-vote"><strong>Exhaustion</strong> — aggressive flow faded at the extreme; hollow unless wick liquidity also clears <code>phatExhaustionRingLiquidityThreshold</code> (0.55), in which case it fills.</span></li>
+                <li><span class="phat-ring-cell"><span class="phat-ring-demo phat-ring-demo--size" aria-hidden="true"></span></span><span class="bias-name">Circle diameter</span><span class="bias-vote">Strength of the rejection — larger = more decisive; at most one circle per bar.</span></li>
+              </ul>
+              <div class="bias-legend-foot">
+                Threshold default: <strong>0.30</strong> on imbalance (see <code>phatBodyImbalanceThreshold</code>).<br>
+                Exhaustion can fill when wick liquidity ≥ <code>phatExhaustionRingLiquidityThreshold</code> (default <strong>0.55</strong>).<br>
+                Also: body width tier · asymmetric wicks by extreme order · thicker wick stroke when liquidity concentrates at the tip.<br>
+                PHAT requires API bars with PHAT fields populated.
+              </div>
+            </div>
+          </span>
+        </span>
+      </div>
     </div>
     <div class="price-wrap">
       <div class="chart-seek-loading" id="chartSeekLoading" hidden>
@@ -91,27 +139,20 @@
     <div class="chart-pan-row" id="chartPanRow" style="display:none;">
       <label class="chart-pan-label" for="chartPanSlider">Chart view</label>
       <input type="range" id="chartPanSlider" class="chart-pan-slider" min="1" max="1" value="1" step="1" title="Pan the visible window along the loaded timeline" aria-label="Pan chart view along timeline">
+      <div class="chart-pan-thumb-date" id="chartPanThumbDateTooltip" aria-hidden="true"></div>
     </div>
     <div class="profile-legend">
       <div class="item"><strong style="color: var(--accent);">1 candle</strong> = 1 min OHLC · <strong style="color: var(--accent);">1 vol bar</strong> = contracts/min</div>
-      <div class="item"><span class="swatch poc"></span><strong>POC</strong> point of control</div>
-      <div class="item"><span class="swatch va"></span><strong>VAH / VAL</strong> ±1σ value area (≈68% vol)</div>
-      <div class="item"><span class="swatch vwap"></span><strong>VWAP</strong> anchored, dashed yellow</div>
+      <button type="button" class="item profile-legend-toggle" data-overlay-toggle="poc" aria-pressed="true" title="Toggle POC line visibility">
+        <span class="swatch poc"></span><strong>POC</strong> point of control
+      </button>
+      <button type="button" class="item profile-legend-toggle" data-overlay-toggle="va" aria-pressed="true" title="Toggle VAH / VAL line visibility">
+        <span class="swatch va"></span><strong>VAH / VAL</strong> ±1σ value area (≈68% vol)
+      </button>
+      <button type="button" class="item profile-legend-toggle" data-overlay-toggle="vwap" aria-pressed="true" title="Toggle VWAP line visibility">
+        <span class="swatch vwap"></span><strong>VWAP</strong> anchored, dashed yellow
+      </button>
       <div class="item"><strong style="color: var(--muted-2);">forming bar</strong> dashed = unsettled</div>
-    </div>
-    <!-- Timeframe selector: real-data only; right-aligned under legend (replay.js toggles visibility) -->
-    <div class="replay-row chart-tf-under-legend" id="replayRow" style="display:none;">
-      <span class="replay-tf-label">Timeframe</span>
-      <span class="tf-select" id="timeframeSelect" role="tablist" aria-label="Timeframe">
-        <button type="button" class="tf-btn active" data-tf="1m"  role="tab" aria-selected="true">1m</button>
-        <button type="button" class="tf-btn"        data-tf="15m" role="tab" aria-selected="false">15m</button>
-        <button type="button" class="tf-btn"        data-tf="1h"  role="tab" aria-selected="false">1h</button>
-      </span>
-      <span class="replay-tf-label">Candle</span>
-      <span class="tf-select" id="candleModeSelect" role="tablist" aria-label="Candle mode">
-        <button type="button" class="tf-btn active" data-candle-mode="standard" role="tab" aria-selected="true">Standard</button>
-        <button type="button" class="tf-btn" data-candle-mode="phat" role="tab" aria-selected="false">PHAT</button>
-      </span>
     </div>
   </div>
 

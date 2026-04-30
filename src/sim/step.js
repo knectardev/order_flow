@@ -60,9 +60,6 @@ function step() {
   }
 
   // Render
-  document.getElementById('barCount').textContent =
-    (state.replay.mode === 'real' ? '1m bars · ' : '') +
-    `${state.bars.length} ${state.replay.mode === 'real' ? 'shown' : 'bars'} · last ${state.formingBar ? 'forming' : 'settled'}`;
   drawPriceChart();
   drawFlowChart();
   renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical);

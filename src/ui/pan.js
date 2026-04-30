@@ -161,6 +161,10 @@ let _panStartX = 0;
 let _panStartViewEnd = null;
 let _panSlotW = 1;
 let _panMovedDuringDown = false;
+/** True while pointer is over `#priceChart` — gates arrow-key pan. */
+let _pointerOverPriceChart = false;
+
+const CHART_ARROW_PAN_STEP = 3;
 
 // Click-vs-drag arbiter: tooltip click handler asks whether the just-released
 // mousedown crossed the drag threshold. If so, suppress the click → modal-open
@@ -188,6 +192,36 @@ function consumePanMoved() {
 //     with that cell as the kernel center, and re-render — without disturbing
 //     the live `state.sim`/`state.trail`/`state.matrixScores` state used by the ongoing
 //     state.replay/streaming pipeline.
+
+priceCanvas.addEventListener('mouseenter', () => {
+  _pointerOverPriceChart = true;
+});
+priceCanvas.addEventListener('mouseleave', () => {
+  _pointerOverPriceChart = false;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
+  if (!_pointerOverPriceChart || !_panAvailable()) return;
+  if (document.getElementById('modalOverlay')?.classList.contains('visible')) return;
+
+  const target = e.target;
+  const isEditable = target instanceof HTMLElement && (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.tagName === 'SELECT' ||
+    target.isContentEditable
+  );
+  if (isEditable) return;
+
+  // ArrowLeft → viewport shifts right on screen (older bars); ArrowRight → toward live.
+  // Matches drag: drag-right decreases viewEnd; drag-left increases viewEnd.
+  e.preventDefault();
+  const step = CHART_ARROW_PAN_STEP;
+  const delta = e.code === 'ArrowLeft' ? -step : step;
+  _setViewEnd(_currentViewEnd() + delta);
+  drawFlowChart();
+}, true);
 
 priceCanvas.addEventListener('wheel', (e) => {
   if (!_chartWheelZoomAvailable()) return;
