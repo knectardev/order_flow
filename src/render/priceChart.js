@@ -19,6 +19,7 @@ import { _refreshTooltipFromLastMouse } from '../ui/tooltip.js';
 import { pctx, priceCanvas, resizeCanvas } from '../util/dom.js';
 import { clamp } from '../util/math.js';
 import { drawBiasRibbon } from './biasRibbon.js';
+import { computeViewportVolumeRange, volumeNorm01Linear } from '../analytics/viewportVolumeNorm.js';
 
 function _candleUpRgba(a) {
   const [r, g, b] = CHART_CANDLE_UP_RGB;
@@ -30,6 +31,12 @@ function _candleDownRgba(a) {
 }
 
 /** X-axis and panned readout: US Eastern (RTH session wall clock, DST-aware). */
+/**
+ * Chart-only: min width as a fraction of tier `maxCap` for viewport volume → PHAT body width.
+ * Raising compresses volume contrast (silhouettes look alike); lowering thins low-volume bodies (noisier, harder hit-test).
+ */
+const PHAT_WIDTH_VOLUME_MIN_CAP_FRAC = 0.20;
+
 const CHART_AXIS_TZ = 'America/New_York';
 const _fmtEtClock12 = new Intl.DateTimeFormat('en-US', {
   timeZone: CHART_AXIS_TZ,
@@ -608,6 +615,7 @@ function drawPriceChart() {
   const volTop = PAD.t + chartH + VOL_BAND_GAP;
 
   const allBars = viewedBars;
+  const phatViewportVolRange = computeViewportVolumeRange(allBars);
 
   // Profile (computed from settled state.bars only — exclude state.formingBar at live edge,
   // and use the visible window when panned so the profile reflects what's
@@ -1104,7 +1112,11 @@ function drawPriceChart() {
     const bodyTicks = Math.round(Math.abs(b.close - b.open) / ES_MIN_TICK);
     const narrowPhatBody = bodyTicks <= 1;
     const maxBodyW = Math.min(slotW * 0.6, 30);
-    const phatWidth = Math.max(2, maxBodyW * (narrowPhatBody ? 0.7 : 1.0));
+    // Tier cap (prototype): narrow bodies when ≤1 tick; volume maps linearly in [minCap, maxCap] over visible bars.
+    const maxCap = maxBodyW * (narrowPhatBody ? 0.7 : 1.0);
+    const minCap = maxCap * PHAT_WIDTH_VOLUME_MIN_CAP_FRAC;
+    const volNorm = volumeNorm01Linear(b, phatViewportVolRange);
+    const phatWidth = Math.max(2, minCap + (maxCap - minCap) * volNorm);
     const candleW = usePhat ? phatWidth : baseCandleW;
     if (!usePhat) {
       pctx.strokeStyle = wickColor;

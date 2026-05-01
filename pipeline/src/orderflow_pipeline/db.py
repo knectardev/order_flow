@@ -14,7 +14,8 @@ Tables (Phase 5):
 
     bars
         session_date    DATE        - "2026-04-21" etc., RTH date
-        bar_time        TIMESTAMP   - bin-start UTC
+        bar_time        TIMESTAMP   - bin-start UTC (inclusive)
+        bar_end_time    TIMESTAMP   - exclusive bar end UTC (half-open [bar_time, bar_end_time))
         timeframe       VARCHAR     - '1m' | '15m' | '1h'
         open / high / low / close   FLOAT
         volume                       INTEGER
@@ -95,6 +96,7 @@ _SCHEMA_SQL: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS bars (
         session_date      DATE       NOT NULL,
         bar_time          TIMESTAMP  NOT NULL,
+        bar_end_time      TIMESTAMP  NOT NULL,
         timeframe         VARCHAR    NOT NULL,
         open              DOUBLE     NOT NULL,
         high              DOUBLE     NOT NULL,
@@ -276,6 +278,10 @@ _PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("parent_1h_bias",  "VARCHAR"),
     ("parent_15m_bias", "VARCHAR"),
 )
+_BAR_SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("bar_end_time", "TIMESTAMP"),
+)
+
 _FIRE_DIAGNOSTIC_COLUMNS: tuple[tuple[str, str], ...] = (
     ("diagnostic_version", "VARCHAR"),
     ("diagnostics_json", "VARCHAR"),
@@ -299,13 +305,16 @@ def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     """Idempotent CREATE TABLE / CREATE INDEX. Safe to call on every run.
 
-    For databases created by Phase 5 (without the Phase 6 ``vwap`` /
-    ``bias_state`` / ``parent_*_bias`` columns) we add them via
-    ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``. The columns default
-    to NULL; a subsequent rebuild via ``cli.py rebuild`` populates them.
+    For databases created without newer columns we add them via
+    ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``. ``bar_end_time``
+    (exclusive bar end UTC, half-open with ``bar_time``) enables Phase 6
+    HTF parent bias joins without fragile fixed ``INTERVAL`` widths.
     """
     for stmt in _SCHEMA_SQL:
         con.execute(stmt)
+    # bar_end_time: exclusive end instant for Phase 6 HTF joins (upgrade-safe).
+    for col_name, col_type in _BAR_SPAN_COLUMNS:
+        con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     # Phase 6 in-place upgrade for pre-existing databases.
     for col_name, col_type in _PHASE6_BAR_COLUMNS:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
@@ -335,7 +344,7 @@ def write_session(
 
     Expected DataFrame columns (all required, must match table column names):
 
-        bars_df:    session_date, bar_time, timeframe, open, high, low,
+        bars_df:    session_date, bar_time, bar_end_time, timeframe, open, high, low,
                     close, volume, delta, trade_count, large_print_count,
                     distinct_prices, range_pct, vpt, concentration, v_rank,
                     d_rank, vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type, bias_state, parent_1h_bias,
@@ -398,19 +407,19 @@ def write_session(
             # NULL so a partially-stamped frame still writes cleanly. The
             # cli.py rebuild always populates them, so this fallback is
             # only exercised by tests / direct API users.
-            for col in ("vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias"):
+            for col in ("bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias"):
                 if col not in bars_df.columns:
                     bars_df[col] = None
             con.execute(
                 """
                 INSERT INTO bars
-                    (session_date, bar_time, timeframe, open, high, low, close,
+                    (session_date, bar_time, bar_end_time, timeframe, open, high, low, close,
                      volume, delta, trade_count, large_print_count,
                      distinct_prices, range_pct, vpt, concentration,
                      v_rank, d_rank,
                      vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type,
                      bias_state, parent_1h_bias, parent_15m_bias)
-                SELECT session_date, bar_time, timeframe, open, high, low, close,
+                SELECT session_date, bar_time, bar_end_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
                        v_rank, d_rank,

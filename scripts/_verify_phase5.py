@@ -67,11 +67,9 @@ def main(db_path: str = "data/orderflow.duckdb") -> int:
         emit = total - null_v
         print(f"  {tf:>4}: {emit:>5}/{total} non-NULL ({100*emit/total:.1f}%); {null_v} NULL")
 
-    # 5. Hybrid-warmup contract: with 1h warmup=8 and only 6 bars/session,
-    # session 1 ranks are entirely NULL (no seed available). Session 2's
-    # first bar still has only 6+1=7 bars in the working frame (< warmup),
-    # so bar 0 is NULL. Bar 1 reaches 6+2=8 bars and emits. Session 3+
-    # have enough seed for all bars.
+    # 5. Hybrid-warmup: 1h warmup=8 with 7 session-anchored bars/session.
+    # Session 1 is usually all NULL (no seed). Later sessions show the
+    # seed+current working frame filling in — inspect rows below after a rebuild.
     print("\n[5] 1h hybrid-warmup rank emission across sessions 1..3:")
     sessions_1h = [r[0] for r in con.execute(
         "SELECT DISTINCT session_date FROM bars WHERE timeframe='1h' "
@@ -88,24 +86,19 @@ def main(db_path: str = "data/orderflow.duckdb") -> int:
             print(f"  {sd} bar {i}: v_rank={vr}, d_rank={dr}")
         print()
 
-    # 6. Partial-bar drop sanity: zero 1h bars should land at 09:00 ET
-    # (the leading-partial bin we drop). 09:00 ET = 13:00 UTC (DST) or
-    # 14:00 UTC (non-DST), so we check via "bar_time hour-of-day in
-    # {13, 14} when extracted in UTC" — those are the dropped-leading
-    # bin starts.
-    print("\n[6] Leading 1h partial-bar drop sanity:")
-    n_partials = con.execute(
-        "SELECT COUNT(*) FROM bars WHERE timeframe='1h' AND "
-        "EXTRACT(MINUTE FROM bar_time) <> 0"
-    ).fetchone()[0]
-    print(f"  1h bars NOT on top-of-hour: {n_partials} (expect 0)")
-    # Also check no 1h bar starts at 09:00 ET (= 13:00 or 14:00 UTC depending on DST).
-    bad_starts = con.execute(
-        "SELECT COUNT(DISTINCT session_date) FROM bars "
-        "WHERE timeframe='1h' AND EXTRACT(HOUR FROM bar_time) IN (13, 14) "
-        "AND CAST(bar_time AS TIME) IN ('13:00:00', '14:00:00')"
-    ).fetchone()[0]
-    # Summary: every session has a 10:00 ET first 1h bar and no 09:00 ET partial.
+    # 6. Session-anchored 1h: first bucket starts at RTH open (09:30 ET),
+    # so many `bar_time` values are NOT UTC top-of-hour. The final hour
+    # bucket is also 30 minutes — expect :30 UTC minute mass in typical EDT.
+    print("\n[6] Session-anchored 1h — bar_time minute distribution (UTC):")
+    dist = con.execute(
+        """
+        SELECT CAST(EXTRACT(MINUTE FROM bar_time) AS INTEGER) AS mm, COUNT(*) AS n
+        FROM bars WHERE timeframe='1h'
+        GROUP BY 1 ORDER BY 1
+        """
+    ).fetchall()
+    for mm, n in dist:
+        print(f"  UTC minute={mm}: {n} bars")
     first_bars = con.execute(
         "SELECT bar_time, session_date FROM bars WHERE timeframe='1h' "
         "ORDER BY session_date, bar_time"

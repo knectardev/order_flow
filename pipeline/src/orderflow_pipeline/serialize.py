@@ -10,7 +10,8 @@ Per-session JSON shape (consumed by the dashboard's `loadSessionFromUrl`):
       "sessionStart": "2026-04-21T13:30:00Z",
       "sessionEnd":   "2026-04-21T20:00:00Z",
       "tunings":      { ... see DEFAULT_TUNINGS ... },
-      "bars":         [ ...AggregateResult.bars, each via Bar.to_json()... ]
+      "bars":         [ ...AggregateResult.bars, each via Bar.to_json()
+                       (`time`, `barEnd`, ...)... ]
     }
 
 Plan refs: §3.6, §3.7, §5 (file layout).

@@ -1,47 +1,90 @@
-I understand. If the proxy-swap logic wasn't the root cause (or only part of it), we need to stop guessing and start observing. The "razor-thin" bar issue is almost certainly a math error in the normalization step, and right now, the code is "black-boxing" that math.
+# Cursor Prompt: Migrate from UTC-aligned to Session-anchored Bar Binning
 
-We need to make the code report exactly why the sidebar is collapsing while you are panning.
+Read this prompt and produce a detailed implementation plan as a markdown file (`PLAN.md`) before writing any code. Do not implement yet.
 
-### The Diagnostic Approach
-We are going to instrument the render loop. This will print the exact inputs to the scaling math the moment it glitches, without flooding your console while the chart is static.
+## Problem
 
-Add this `console.log` block inside your `drawPriceChart` function, right before the sidebar loop starts (around line 1255 in your snippet):
+The current Phase 5 partial-bar handling drops any bar whose UTC-aligned bin window is not fully inside `[rth_open, rth_close)`. For RTH (09:30–16:00 ET), this works fine for 1m and 15m (which divide the session evenly) but produces only 6 hourly bars per session (10:00, 11:00, 12:00, 13:00, 14:00, 15:00 ET), silently dropping the 09:30–10:00 opening window.
 
-```javascript
-// Add this diagnostic block inside the render loop
-if (isPanned) {
-  const isUsingProxy = !cachedUsable && !( _lastApiProfile && _isApiProfileCompatibleWith(...) );
-  console.log(`[VP DEBUG] Panned: ${isPanned} | UsingProxy: ${isUsingProxy}`, {
-    visibleMaxBin,
-    rawProfileMaxBin: profile.maxBin,
-    calculatedWidthMaxBin: widthMaxBin,
-    binsLength: profile.bins.length,
-    normRange: (widthNormHi - widthNormLo).toFixed(2),
-    poc: profile.pocPrice
-  });
-}
-```
+This is wrong for two reasons:
 
-### What to look for in the console
-When you pan and the sidebar collapses, watch these specific values:
+1. **Analytical:** the opening 30 minutes is the most informative part of the trading day. Dropping it on the 1h timeframe makes 1h regime, volume, and morphology analysis blind to opening dynamics.
 
-1.  **`calculatedWidthMaxBin` vs `rawProfileMaxBin`**: 
-    * If `calculatedWidthMaxBin` is **massively larger** than `rawProfileMaxBin`, the code has artificially expanded the normalization range (likely due to the `widthNormLo`/`widthNormHi` logic in your code). This forces all your bars to shrink because the denominator is too large.
-2.  **`normRange`**: 
-    * If this number spikes when you pan, it confirms that your `widthNormLo/Hi` calculation is capturing outliers (or noise) that aren't actually part of the visible price action, effectively "stretching" the sidebar and crushing your bars.
-3.  **`UsingProxy`**:
-    * Confirm if the collapse *only* happens when `UsingProxy` is `true`. If it happens even when `UsingProxy` is `false`, the issue is definitively in the normalization math, not the data source.
+2. **Cross-timeframe consistency:** 1m and 15m timeframes have data for 09:30–10:00, but 1h does not. Any correlation, regime mapping, or matrix work that crosses timeframes has an undefined 1h state for the first 30 minutes of every session. That breaks the regime matrix and morphology correlation work downstream.
 
-### The Likely Culprit: The Normalization Band
-Look closely at this section of your provided code:
+It also diverges from industry convention. TradingView, Webull, ThinkOrSwim, and similar platforms session-anchor their bins, not UTC-anchor them. Users expect the first bar of an RTH session to start at the open, not at the next UTC top-of-hour after the open.
 
-```javascript
-const widthNormLo = Math.min(
-  lo, profile.priceLo, profileLadderHi, profile.pocPrice, profile.valPrice, profile.vahPrice
-);
-```
+## Goal
 
-If `profile.priceLo` or `profileLadderHi` (which is `profile.priceLo + bins.length * step`) are far away from the `lo` and `hi` of your actual candle chart, **they will force the normalization window to include empty or irrelevant price space.** **The Test:**
-If you see the logs showing a huge `calculatedWidthMaxBin`, try commenting out the `profile.priceLo` and `profileLadderHi` inputs in `widthNormLo` and `widthNormHi`. If the bars suddenly become a "normal" size, you have found the bug: the sidebar is trying to normalize its width against the *entire potential price range* of the profile, rather than just the *visible candles*.
+Migrate the bar aggregator to **session-anchored binning** so the first bar of every RTH session always starts at `rth_open` (09:30 ET), and bins proceed forward from there at the configured `bin_ns` interval.
 
-**Does the log show `calculatedWidthMaxBin` jumping to a massive number when the compression occurs?**
+## Design
+
+### Binning rule change
+
+Current: `bin_start_ns = floor(ts_ns / bin_ns) * bin_ns`
+
+New: `bin_start_ns = rth_open_ns + floor((ts_ns - rth_open_ns) / bin_ns) * bin_ns`
+
+This anchors bin grid to the session open instead of the UTC clock.
+
+### Trailing partial handling
+
+When `bin_ns` does not evenly divide the RTH session length (e.g. 1h on a 6.5-hour session), the final bin will be shorter than `bin_ns`. Two reasonable strategies — please evaluate both in the plan and recommend one:
+
+**Strategy A — Emit trailing partial as a shorter bar.**
+- Final bar covers `[rth_open + N*bin_ns, rth_close)` and is allowed to be shorter than `bin_ns`.
+- Result for 1h on RTH: 7 bars (09:30, 10:30, 11:30, 12:30, 13:30, 14:30, 15:30), with the last covering only 30 minutes.
+- Pros: no data loss, matches TradingView behavior, preserves cross-timeframe coverage.
+- Cons: bars are not all the same duration; downstream code that assumes uniform bar duration may need adjustment.
+
+**Strategy B — Merge trailing partial into the previous bar.**
+- Final bar covers `[rth_open + (N-1)*bin_ns, rth_close)` and is longer than `bin_ns`.
+- Result for 1h on RTH: 6 bars (09:30, 10:30, 11:30, 12:30, 13:30, 14:30), with the last covering 90 minutes.
+- Pros: bin count is what users see in retail tools that fold partials backward.
+- Cons: the merged bar is non-uniform in the other direction (longer than `bin_ns`).
+
+Recommended default: **Strategy A**. It preserves cross-timeframe analytical consistency (every minute of RTH is covered exactly once at every timeframe), and downstream consumers can branch on `bin.duration_ns` if they need to. Strategy B should be available as a config option but not the default.
+
+### Cross-timeframe invariant to preserve
+
+After migration, this invariant must hold for any timeframe `t` and any RTH session:
+
+> The union of bar windows at timeframe `t` covers exactly `[rth_open, rth_close)` with no gaps and no overlaps.
+
+This is the property that makes cross-timeframe analysis sound. The current implementation violates it for 1h. The new implementation must satisfy it for all supported timeframes.
+
+## Files likely to touch
+
+- The Phase 5 partial-bar logic in the aggregator (please find the exact file)
+- Any tests that assert the current 6-bar behavior or UTC-aligned bin starts
+- The pipeline tests covering bin grid alignment for 1h
+- Possibly `requirements.md` if there is a section documenting the binning contract
+
+## Compatibility considerations
+
+- Existing cached or persisted bars at 1h will have different `bin_start_ns` values after this change. The plan should specify whether existing data needs reprocessing, invalidation, or coexistence.
+- If the regime matrix, morphology classifier, or any other downstream system has stored references to specific `bin_start_ns` values, those references will become stale. The plan should enumerate any such dependencies.
+- Front-end timeframe controls and any UI that displays bin counts per session will see different numbers. Update copy or labels if needed.
+
+## Out of scope
+
+- Changing how non-RTH sessions are handled (overnight, ETH, etc.) unless they currently use the same UTC-aligned rule and are also affected.
+- Changing the `bin_ns` interval choices themselves.
+- Any changes to the regime matrix, morphology, or PHAT pipelines beyond what's required to consume the new bin grid.
+
+## Deliverable
+
+A `PLAN.md` covering:
+
+- Current behavior recap (one paragraph) and the specific files implementing it
+- Proposed new binning algorithm in pseudocode
+- Strategy A vs Strategy B comparison and your recommendation
+- The cross-timeframe coverage invariant and how the new code enforces it
+- All files and tests that need changes, with brief notes on what changes
+- Migration plan for existing cached/persisted 1h bars
+- List of downstream consumers that reference `bin_start_ns` and how they're affected
+- Test plan: include a test that explicitly verifies the cross-timeframe coverage invariant for 1m, 15m, and 1h on a standard RTH session
+- Any open questions or decisions that need my input before implementation
+
+Keep the plan tight. Once I approve it, you'll implement.

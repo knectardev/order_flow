@@ -46,17 +46,15 @@ from .symbology import resolve_front_month
 # and 15m bars.
 TIMEFRAMES = ("1h", "15m", "1m")
 
-# Phase 6: which higher-timeframes each lower-timeframe should be
-# denormalized against, plus the matching DuckDB INTERVAL literal that
-# defines the half-open bin-cover predicate.
-HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str, str], ...]] = {
-    # ltf -> tuple of (htf, parent_column_name, htf_width_interval)
+# Phase 6: higher-timeframes whose bias_state is copied onto each LTF row.
+# Coverage uses bars.bar_end_time (exclusive): [HTF.bar_time, HTF.bar_end_time).
+HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str], ...]] = {
     "1m": (
-        ("1h",  "parent_1h_bias",  "1 hour"),
-        ("15m", "parent_15m_bias", "15 minutes"),
+        ("1h",  "parent_1h_bias"),
+        ("15m", "parent_15m_bias"),
     ),
     "15m": (
-        ("1h",  "parent_1h_bias",  "1 hour"),
+        ("1h",  "parent_1h_bias"),
     ),
     "1h": (),
 }
@@ -155,9 +153,9 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
                     )
                     break
                 else:
-                    # Higher timeframes can in principle produce zero bars
-                    # if the session is degenerate (every bar partial),
-                    # but that doesn't happen during regular RTH.
+                    # Higher timeframes can produce zero bars if every bin
+                    # is empty (no trades), but that doesn't happen during
+                    # regular RTH.
                     print(f"  [{tf}] no bars produced")
                     continue
 
@@ -371,8 +369,18 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
                 }
             )
     if len(bar_rows) > 0 and len(fires_rows) == 0:
-        raise ValueError(
-            f"No canonical fires generated for timeframe={timeframe} with {len(bar_rows)} bars."
+        # At 1m, bar density should almost always yield at least one canonical
+        # fire under the locked baseline config — treat empty as a hard error.
+        # At 15m/1h a full session can legitimately emit none (quiet day + regime
+        # filter); still persist bars + empty fires slice for that timeframe.
+        if timeframe == "1m":
+            raise ValueError(
+                f"No canonical fires generated for timeframe={timeframe} with {len(bar_rows)} bars."
+            )
+        print(
+            f"  [{timeframe}] warning: no canonical fires this session "
+            f"({len(bar_rows)} bars); continuing with empty fires.",
+            file=sys.stderr,
         )
     fires_df = pd.DataFrame(
         fires_rows,
@@ -399,8 +407,8 @@ def _stamp_parent_bias(con, session_date: date, ltf: str) -> None:
     """Denormalize HTF bias states onto LTF rows for one session.
 
     Runs AFTER the LTF rows for `(session_date, ltf)` have been written.
-    For every parent (`htf`, `parent_col`, `htf_width`) tuple registered
-    in ``HTF_PARENTS_BY_LTF[ltf]``, this issues:
+    For every parent (`htf`, `parent_col`) tuple registered in
+    ``HTF_PARENTS_BY_LTF[ltf]``, this issues:
 
         UPDATE bars AS LTF
            SET LTF.<parent_col> = HTF.bias_state
@@ -408,22 +416,15 @@ def _stamp_parent_bias(con, session_date: date, ltf: str) -> None:
          WHERE LTF.timeframe = '<ltf>' AND LTF.session_date = <date>
            AND HTF.timeframe = '<htf>'
            AND LTF.bar_time >= HTF.bar_time
-           AND LTF.bar_time <  HTF.bar_time + INTERVAL '<htf_width>'
+           AND LTF.bar_time <  HTF.bar_end_time
 
-    The half-open interval predicate `[HTF.bar_time, HTF.bar_time +
-    width)` is "bar-of-context" semantics: a 1m bar at 10:01 attaches
-    to the 1h bar starting at 10:00 (and never to 09:00 or 11:00). For
-    historical replay (the only mode this pipeline supports today), the
-    1h bar's bias_state at 10:00 reflects ranks computed across that
-    full hour — the LTF child sees the bias of the bin it sits inside,
-    which matches what a backtester would have known once the hour
-    closed. A "strictly-previously-closed" variant is reserved for a
-    future live-ingest mode.
+    Half-open bounds come from persisted ``bars.bar_end_time`` so variable-
+    width HTF buckets (e.g. short final 1h bar at RTH close) stay correct.
 
     No-op when `ltf == '1h'` (there are no parents to stamp).
     """
     parents = HTF_PARENTS_BY_LTF.get(ltf, ())
-    for htf, parent_col, htf_width in parents:
+    for htf, parent_col in parents:
         con.execute(
             f"""
             UPDATE bars AS LTF
@@ -433,7 +434,7 @@ def _stamp_parent_bias(con, session_date: date, ltf: str) -> None:
               AND LTF.session_date = ?
               AND HTF.timeframe = ?
               AND LTF.bar_time >= HTF.bar_time
-              AND LTF.bar_time <  HTF.bar_time + INTERVAL '{htf_width}'
+              AND LTF.bar_time < HTF.bar_end_time
             """,
             [ltf, session_date, htf],
         )

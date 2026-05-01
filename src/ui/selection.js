@@ -24,13 +24,16 @@
 //
 // All mutations end with `_repaint()` which:
 //   - calls drawPriceChart() (tint + vertical anchor)
+//   - calls drawFlowChart() (same visible bar window as price chart)
 //   - calls renderEventLog() (filtered rows when kind != null)
 //   - calls repaintMatrix() so the matrix paints `selected` borders on
 //     the active cells
 // ───────────────────────────────────────────────────────────
 import { state } from '../state.js';
+import { isPhatLegendModalOpen } from './phatLegendModal.js';
 import { _syncCurrentSession } from '../data/replay.js';
 import { drawPriceChart } from '../render/priceChart.js';
+import { drawFlowChart } from '../render/flowChart.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { _refreshMatrixForView } from './pan.js';
 import { repaintMatrix } from './matrixRange.js';
@@ -256,12 +259,14 @@ function _sameCellSet(a, b) {
 
 function _repaint() {
   drawPriceChart();
+  drawFlowChart();
   renderEventLog();
   repaintMatrix();
 }
 
 function _repaintLinked() {
   drawPriceChart();
+  drawFlowChart();
   repaintMatrix();
 }
 
@@ -398,6 +403,7 @@ function bindSelectionUI() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (state.currentModal) return;
+    if (isPhatLegendModalOpen()) return;
     if (state.selection.kind !== null) clearSelection();
   });
 }

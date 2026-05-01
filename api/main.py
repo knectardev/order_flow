@@ -330,7 +330,8 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
     values. Phase-1 NULLs on rank columns flow through as JSON null.
 
     Phase 6 additions: ``vwap``, ``biasState`` (this bar's own bias on
-    the active timeframe), and the projected HTF parent biases via
+    the active timeframe), ``barEndTime`` (exclusive end, from
+    ``bars.bar_end_time``), and the projected HTF parent biases via
     ``_attach_htf_bias`` (``biasH1`` for 15m / 1m; ``bias15m`` for 1m
     only).
     """
@@ -367,6 +368,11 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "rejectionType":   b.get("rejection_type"),
         "biasState":       b.get("bias_state"),
         "time":            bt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "barEndTime": (
+            b["bar_end_time"].strftime("%Y-%m-%dT%H:%M:%SZ")
+            if b.get("bar_end_time") is not None
+            else None
+        ),
     }
     shape.update(_attach_htf_bias(b, tf))
     return shape

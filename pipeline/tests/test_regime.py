@@ -247,24 +247,24 @@ def _make_session_with_volume(n: int, base_high: float, base_low: float, seed: i
 def test_regime_hybrid_warmup_1h_emits_ranks_session_2():
     """5 seed sessions of 1h bars + 1 current → ranks emit from bar 0.
 
-    Without seeding, a 1h session has only ~6 bars and the 8-bar warmup
-    would NULL every bar in the entire session. With seed_history_df
-    containing the prior sessions' 1h bars, the working frame is long
-    enough that the warmup mask falls entirely within the seed rows —
-    so every current-session bar emits a non-NULL rank.
+    Without seeding, a full RTH 1h grid has only 7 session-anchored bars and
+    the 8-bar warmup would NULL every bar in the entire session. With
+    seed_history_df containing the prior sessions' 1h bars, the working
+    frame is long enough that the warmup mask falls entirely within the
+    seed rows — so every current-session bar emits a non-NULL rank.
     """
-    # 5 seed sessions of 6 bars each (~30 seed bars at 1h)
+    # 5 seed sessions of 7 bars each (~35 seed bars at 1h)
     seed_sessions = [
-        _make_session_with_volume(6, base_high=4500.0, base_low=4498.0, seed=10 + i)
+        _make_session_with_volume(7, base_high=4500.0, base_low=4498.0, seed=10 + i)
         for i in range(5)
     ]
     seed_df = pd.concat(seed_sessions, ignore_index=True)
-    current_df = _make_session_with_volume(6, base_high=4500.0, base_low=4498.0, seed=99)
+    current_df = _make_session_with_volume(7, base_high=4500.0, base_low=4498.0, seed=99)
 
     out = regime.compute_ranks(current_df.copy(), timeframe="1h", seed_history_df=seed_df)
 
-    assert len(out) == 6, "1h session length unchanged by seeding"
-    for i in range(6):
+    assert len(out) == 7, "1h session length unchanged by seeding"
+    for i in range(7):
         v = out["v_rank"].iloc[i]
         d = out["d_rank"].iloc[i]
         assert v is not None, f"bar {i} v_rank should be non-NULL with seed history"

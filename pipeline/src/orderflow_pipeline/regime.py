@@ -29,13 +29,12 @@ Per-timeframe contract (Phase 5)
 
 Why hybrid (option c) at higher timeframes
 ------------------------------------------
-RTH at 1h produces only 6 bars per session, fewer than even the 8-bar
-warmup window. Without intervention, every 1h session would emit NULL
-ranks for its entire duration. Cross-session seeding gives the rolling
-statistics + percentile windows enough samples to emit ranks from bar 0
-of session 2 onward (assuming `SEED_SESSIONS_BY_TF` worth of prior 1h
-data exists in the DB). After K bars (~one full session at 1h), the
-classifier transitions to current-session-only so end-of-session ranks
+RTH at 1h produces 7 session-anchored bars per full session, still fewer
+than the 8-bar warmup window. Without intervention, the first session would
+emit NULL ranks for its entire duration. Cross-session seeding gives the
+rolling statistics + percentile windows enough samples for non-NULL ranks
+once enough prior 1h history exists in the DB. After K bars (~one full
+session at 1h), the classifier transitions to current-session-only so end-of-session ranks
 reflect today's distribution alone — a smooth handoff between "borrowed
 context" and "today's regime".
 

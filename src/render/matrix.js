@@ -3,12 +3,18 @@ import { state } from '../state.js';
 import { computeConfidence, topCells } from '../analytics/regime.js';
 import { getCachedOccupancy, requestOccupancy } from '../data/occupancyApi.js';
 import { resolveOccupancyWindow } from '../ui/matrixRange.js';
+import {
+  computeMatrixSqrtVolumeLadder,
+  getLoadedBarsForMatrixVolumeLadder,
+  matrixVolumeBaseRadiusPx,
+} from '../analytics/matrixVolumeRadiusNorm.js';
 
 const POINT_MIN_OPACITY = 0.18;
 const POINT_MAX_OPACITY = 0.95;
 const POINT_RADIUS_PX = 2.5;
-const POINT_HOVER_RADIUS_PX = 3.5;
-const POINT_SELECTED_RADIUS_PX = 4.0;
+/** Hover / selected radii multiply volume-derived base — keep rank ordering under interaction. */
+const MATRIX_POINT_HOVER_RADIUS_MULT = 1.3;
+const MATRIX_POINT_SELECTED_RADIUS_MULT = 1.5;
 const JITTER_RADIUS_NORM = 0.075;
 const POINT_STROKE_WIDTH_PX = 1;
 const POINT_FILL_COLOR = 'rgba(33,160,149,1)';
@@ -327,10 +333,11 @@ function _resolvePointFrame(inner) {
   return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
 }
 
-function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pulseBull }) {
-  const radius = isSelected
-    ? POINT_SELECTED_RADIUS_PX
-    : (isHovered ? POINT_HOVER_RADIUS_PX : POINT_RADIUS_PX);
+function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx }) {
+  const base = Number.isFinite(baseRadiusPx) && baseRadiusPx > 0 ? baseRadiusPx : POINT_RADIUS_PX;
+  let radius = base;
+  if (isSelected) radius = base * MATRIX_POINT_SELECTED_RADIUS_MULT;
+  else if (isHovered) radius = base * MATRIX_POINT_HOVER_RADIUS_MULT;
   const zIndex = isSelected ? 4 : (isHovered ? 3 : 2);
   if (pulseBear && _isBearBar(bar)) {
     return {
@@ -401,6 +408,7 @@ function _renderPointCloud() {
   layer.innerHTML = '';
   const count = eligible.length;
   if (!count) return;
+  const volLadder = computeMatrixSqrtVolumeLadder(getLoadedBarsForMatrixVolumeLadder());
   for (let i = 0; i < count; i++) {
     const point = eligible[i];
     const age = (count - 1) - i;
@@ -426,7 +434,10 @@ function _renderPointCloud() {
       && (state.selection.hoverBarTime == null || state.selection.hoverBarTime === formingMs);
     const pulseBear = _isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBear);
     const pulseBull = !_isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBull);
-    const style = resolvePointStyle(point.bar, { isSelected, isHovered, opacity, pulseBear, pulseBull });
+    const baseRadiusPx = matrixVolumeBaseRadiusPx(point.bar, volLadder, POINT_RADIUS_PX);
+    const style = resolvePointStyle(point.bar, {
+      isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx,
+    });
 
     const el = document.createElement('button');
     el.type = 'button';
@@ -445,6 +456,11 @@ function _renderPointCloud() {
     el.style.opacity = style.opacity.toFixed(3);
     el.style.zIndex = String(style.zIndex);
     if (style.pulseKind) {
+      const r = style.radius;
+      const ringMin = Math.max(1, r * 0.35);
+      const ringMax = Math.max(ringMin + 0.5, r * 1.75);
+      el.style.setProperty('--pulse-ring-min', `${ringMin}px`);
+      el.style.setProperty('--pulse-ring-max', `${ringMax}px`);
       el.style.background = 'transparent';
       el.style.border = 'none';
     } else {

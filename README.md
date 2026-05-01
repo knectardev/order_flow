@@ -37,9 +37,9 @@ order_flow/
 │   ├── raw/                   # gitignored — Databento .dbn.zst downloads
 │   │   ├── GLBX-20260426-6CCNUHXDNK/   # ES.FUT, 2026-04-19 → 2026-04-24 (working)
 │   │   └── GLBX-20260426-SKK8MTRW7S/   # MES.FUT, same window (comparison)
-│   └── bars/                  # CHECKED IN — small JSON, dashboard works after clone
+│   └── bars/                  # gitignored — run `aggregate` / `rebuild` to populate locally
 │       ├── index.json
-│       └── es_2026-04-{20..24}_rth.json
+│       └── es_<date>_rth.json
 ├── pipeline/                  # Python pipeline (decode → aggregate → JSON)
 ├── notes.txt
 └── requirements.md            # original dashboard design doc
@@ -49,7 +49,9 @@ The dashboard ships as plain ES modules with no build step — `src/main.js`
 is loaded as a `<script type="module">`, which means it must be served over
 HTTP (not opened via `file://`). See **Quick start** below.
 
-## Quick start (use existing bars)
+## Quick start (static bars JSON — optional)
+
+After **`aggregate`** / **`rebuild`** has written **`data/bars/`** locally:
 
 ```powershell
 # from repo root, serve the dashboard so fetch() can reach data/bars/index.json

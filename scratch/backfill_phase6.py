@@ -52,13 +52,13 @@ DEFAULT_DB = Path(os.environ.get("ORDERFLOW_DB_PATH", "data/orderflow.duckdb"))
 # require importing cli.py (which pulls in databento etc. via its
 # transitive imports). The semantics must stay aligned with cli.py if
 # that file changes.
-HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str, str], ...]] = {
+HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str], ...]] = {
     "1m": (
-        ("1h",  "parent_1h_bias",  "1 hour"),
-        ("15m", "parent_15m_bias", "15 minutes"),
+        ("1h",  "parent_1h_bias"),
+        ("15m", "parent_15m_bias"),
     ),
     "15m": (
-        ("1h",  "parent_1h_bias",  "1 hour"),
+        ("1h",  "parent_1h_bias"),
     ),
     "1h": (),
 }
@@ -154,11 +154,10 @@ def _backfill_vwap_and_bias(con: duckdb.DuckDBPyConnection, tf: str) -> int:
 
 
 def _backfill_parent_bias(con: duckdb.DuckDBPyConnection, ltf: str) -> int:
-    """For every (htf, parent_col, htf_width) registered against this
-    LTF, run the same UPDATE that cli._stamp_parent_bias runs at write
-    time. Returns the total number of UPDATE statements issued (one per
-    session × parent), not row counts (DuckDB doesn't surface those for
-    UPDATE FROM in the same shape pandas does).
+    """For every (htf, parent_col) registered against this LTF, run the
+    same UPDATE that cli._stamp_parent_bias runs at write time (uses
+    ``bars.bar_end_time``). Returns the total number of UPDATE statements
+    issued (one per session × parent).
     """
     parents = HTF_PARENTS_BY_LTF.get(ltf, ())
     if not parents:
@@ -173,7 +172,7 @@ def _backfill_parent_bias(con: duckdb.DuckDBPyConnection, ltf: str) -> int:
     issued = 0
     print(f"  [{ltf}] stamping parent_*_bias across {len(sessions)} session(s)...")
     for (session_date,) in sessions:
-        for htf, parent_col, htf_width in parents:
+        for htf, parent_col in parents:
             con.execute(
                 f"""
                 UPDATE bars AS LTF
@@ -183,7 +182,7 @@ def _backfill_parent_bias(con: duckdb.DuckDBPyConnection, ltf: str) -> int:
                   AND LTF.session_date = ?
                   AND HTF.timeframe = ?
                   AND LTF.bar_time >= HTF.bar_time
-                  AND LTF.bar_time <  HTF.bar_time + INTERVAL '{htf_width}'
+                  AND LTF.bar_time < HTF.bar_end_time
                 """,
                 [ltf, session_date, htf],
             )

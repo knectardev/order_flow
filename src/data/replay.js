@@ -121,7 +121,7 @@ function _commitRealBar(idx) {
   // for this day.
   //
   // Phase 5 timeframe-aware: at 15m and 1h, sessions are too short
-  // (26 bars and 6 bars respectively) for a per-session rolling window
+  // (26 bars and 7 bars respectively) for a per-session rolling window
   // to be useful — wiping state.bars at every boundary makes the chart
   // visibly clear several times across a 60-bar window. Treat the
   // multi-session timeline as one continuous stream at those

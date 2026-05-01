@@ -9,6 +9,7 @@ import { drawPriceChart } from '../render/priceChart.js';
 import { _hideTooltip } from './tooltip.js';
 import { priceCanvas } from '../util/dom.js';
 import { clamp } from '../util/math.js';
+import { isPhatLegendModalOpen } from './phatLegendModal.js';
 
 function _panAvailable() {
   return state.replay.mode === 'real' && state.replay.allBars.length > MAX_BARS;
@@ -60,6 +61,7 @@ function _setViewEnd(idx) {
     precomputeAllFires();
   }
   drawPriceChart();
+  drawFlowChart();
   if (state.replay.mode === 'real') _renderReplayChrome();
   // Keep the regime matrix synced to whatever bar the NOW line points at,
   // so the user can scroll through vol×depth states across the session.
@@ -69,6 +71,7 @@ function _setViewEnd(idx) {
 function returnToLiveEdge() {
   state.chartViewEnd = null;
   drawPriceChart();
+  drawFlowChart();
   _refreshMatrixForView();   // resyncs matrix to live state on un-pan
   if (state.replay.mode === 'real') _renderReplayChrome();
 }
@@ -204,6 +207,7 @@ document.addEventListener('keydown', (e) => {
   if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
   if (!_pointerOverPriceChart || !_panAvailable()) return;
   if (document.getElementById('modalOverlay')?.classList.contains('visible')) return;
+  if (isPhatLegendModalOpen()) return;
 
   const target = e.target;
   const isEditable = target instanceof HTMLElement && (
@@ -220,7 +224,6 @@ document.addEventListener('keydown', (e) => {
   const step = CHART_ARROW_PAN_STEP;
   const delta = e.code === 'ArrowLeft' ? -step : step;
   _setViewEnd(_currentViewEnd() + delta);
-  drawFlowChart();
 }, true);
 
 priceCanvas.addEventListener('wheel', (e) => {

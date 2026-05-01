@@ -14,11 +14,9 @@ Coverage:
    distribution differs across the 1m sub-bars; the 15m bar's vpt /
    concentration should not equal the simple average of the 1m values.
 
-3. test_1h_partial_bar_dropped
-   RTH = 6.5 h. A 1h bar starting at 15:30 ET would only have 30
-   minutes of trades, so the aggregator drops it. Synthesize trades
-   in the 15:30-16:00 window and assert the 1h output has no bar with
-   bin_start at 15:30.
+3. test_1h_session_anchored_seven_bars
+   Session-anchored 1h bins: seven bars per full RTH session including a
+   short final bucket ending at rth_close.
 
 4. test_aggregate_15m_drops_no_full_bars_in_rth
    RTH divides cleanly by 15 min ⇒ 26 bars expected, no partial drops.
@@ -29,6 +27,7 @@ Coverage:
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 from datetime import date, datetime, timezone
@@ -56,6 +55,59 @@ UTC = timezone.utc
 # RTH is fine — the test is about bin arithmetic, not calendar effects.
 SESSION_DATE = date(2026, 4, 21)
 FRONT_ID = 42140864
+
+SESSION_ANCHOR_GOLDEN = (
+    pathlib.Path(__file__).resolve().parent / "fixtures" / "session_anchor_aggregate_full_rth.golden.json"
+)
+
+
+def _full_session_one_trade_per_minute():
+    trades = []
+    base_ns = _ts_ns_at(9, 30)
+    for m in range(390):
+        trades.append(
+            _trade(
+                base_ns + m * NS_PER_MINUTE + 1_000_000_000,
+                price=4500.0 + (m % 7) * 0.25,
+                size=2,
+                side="A",
+            )
+        )
+    return trades
+
+
+def _bar_aggregate_snapshot_dict(b):
+    """Stable dict for golden-byte regression (post-aggregate bars only)."""
+    vpt, conc = b._vpt_concentration()
+    return {
+        "bar_end_ns": b.bar_end_ns,
+        "bin_start_ns": b.bin_start_ns,
+        "bottom_body_volume_ratio": round(b.bottom_body_volume_ratio, 6),
+        "bottom_cvd": round(b.bottom_cvd, 6),
+        "bottom_cvd_norm": round(b.bottom_cvd_norm, 6),
+        "close": round(b.close, 4),
+        "concentration": conc,
+        "cvd_imbalance": round(b.cvd_imbalance, 6),
+        "delta": b.delta,
+        "distinct_prices": b.distinct_prices,
+        "high": round(b.high, 4),
+        "high_before_low": b.high_before_low,
+        "large_print_count": b.large_print_count,
+        "low": round(b.low, 4),
+        "lower_wick_liquidity": round(b.lower_wick_liquidity, 6),
+        "open": round(b.open, 4),
+        "rejection_side": b.rejection_side,
+        "rejection_strength": round(b.rejection_strength, 6),
+        "rejection_type": b.rejection_type,
+        "top_body_volume_ratio": round(b.top_body_volume_ratio, 6),
+        "top_cvd": round(b.top_cvd, 6),
+        "top_cvd_norm": round(b.top_cvd_norm, 6),
+        "trade_count": b.trade_count,
+        "upper_wick_liquidity": round(b.upper_wick_liquidity, 6),
+        "volume": b.volume,
+        "vpt": vpt,
+        "vwap": b.vwap,
+    }
 
 
 def _ts_ns_at(et_hour: int, et_minute: int, et_second: int = 0, *, day: date = SESSION_DATE) -> int:
@@ -173,40 +225,60 @@ def test_15m_vpt_concentration_not_equal_to_1m_average():
 
 
 # ───────────────────────────────────────────────────────────
-# 3. 1h partial bars (leading + trailing) dropped.
+# 3. Session-anchored 1h: seven bars, first at RTH open, short final bucket.
 # ───────────────────────────────────────────────────────────
-def test_1h_partial_bar_dropped():
-    # Bins are aligned to UTC top-of-hour. RTH opens at 09:30 ET = ...30
-    # UTC, so the FIRST 1h bin of every RTH session starts at 09:00 ET
-    # and contains only 30 min of in-session trades — a leading partial.
-    # If trades existed past RTH close they'd land in bins past the
-    # 16:00 ET cutoff (trailing partial) — also dropped.
-    # Synthesize trades from 09:30-16:00 (full session) at one trade per
-    # minute and assert the 1h output has exactly 6 bars (10:00, 11:00,
-    # 12:00, 13:00, 14:00, 15:00 ET) — no leading 09:00 partial.
-    trades = []
-    base_ns = _ts_ns_at(9, 30)
-    for m in range(390):
-        trades.append(_trade(base_ns + m * NS_PER_MINUTE + 1_000_000_000,
-                             price=4500.0 + (m % 7) * 0.25, size=2, side="A"))
-
+def test_1h_session_anchored_seven_bars():
+    trades = _full_session_one_trade_per_minute()
     res_1h = aggregate_trades(
         trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
         bin_ns=BIN_NS_BY_TIMEFRAME["1h"], timeframe="1h",
     )
-    assert len(res_1h.bars) == 6, f"expected 6 1h bars (RTH minus leading partial); got {len(res_1h.bars)}"
+    assert len(res_1h.bars) == 7, f"expected 7 session-anchored 1h bars; got {len(res_1h.bars)}"
+    assert res_1h.bars[0].bin_start_ns == _ts_ns_at(9, 30)
+    assert res_1h.bars[-1].bin_start_ns == _ts_ns_at(15, 30)
+    assert res_1h.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
 
-    # The first emitted bar must start at 10:00 ET (the leading 09:00 ET
-    # bin is dropped because its window [09:00, 10:00) extends before
-    # the RTH open at 09:30).
-    first_bar_ts_ns = res_1h.bars[0].bin_start_ns
-    assert first_bar_ts_ns == _ts_ns_at(10, 0), \
-        f"expected first 1h bar at 10:00 ET; got bin_start_ns={first_bar_ts_ns}"
 
-    # And specifically: NO bar starts at 09:00 ET (the leading partial).
-    nine_am_ns = _ts_ns_at(9, 0)
-    assert all(b.bin_start_ns != nine_am_ns for b in res_1h.bars), \
-        "1h aggregator must drop the leading 09:00-10:00 ET partial"
+def test_rth_full_session_bar_counts_and_end_spans():
+    """Every minute populated ⇒ 390 / 26 / 7 emitted bars with partition ends."""
+    trades = _full_session_one_trade_per_minute()
+    res_1m = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    res_15m = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["15m"], timeframe="15m",
+    )
+    res_1h = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["1h"], timeframe="1h",
+    )
+    assert len(res_1m.bars) == 390
+    assert len(res_15m.bars) == 26
+    assert len(res_1h.bars) == 7
+    assert res_1m.bars[0].bin_start_ns == _ts_ns_at(9, 30)
+    assert res_1m.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
+    assert res_15m.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
+    assert res_1h.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
+
+
+def test_session_aggregate_snapshot_matches_golden():
+    """Byte-stable aggregate output for one canonical session (all TFs)."""
+    trades = _full_session_one_trade_per_minute()
+    payload = {}
+    for tf in ("1m", "15m", "1h"):
+        res = aggregate_trades(
+            trades,
+            front_month_id=FRONT_ID,
+            session_date=SESSION_DATE,
+            bin_ns=BIN_NS_BY_TIMEFRAME[tf],
+            timeframe=tf,
+        )
+        payload[tf] = [_bar_aggregate_snapshot_dict(b) for b in res.bars]
+    observed = json.dumps(payload, sort_keys=True).encode("utf-8")
+    assert SESSION_ANCHOR_GOLDEN.is_file(), f"missing golden file {SESSION_ANCHOR_GOLDEN}"
+    assert observed == SESSION_ANCHOR_GOLDEN.read_bytes()
 
 
 # ───────────────────────────────────────────────────────────
@@ -245,6 +317,9 @@ def test_bar_to_dict_carries_timeframe():
     b = res_15m.bars[0]
     row = b.to_dict(SESSION_DATE, "15m")
     assert row["timeframe"] == "15m"
+    assert row["bar_end_time"] == datetime.fromtimestamp(
+        b.bar_end_ns / 1e9, tz=UTC
+    ).replace(tzinfo=None)
     profile_rows = list(b.iter_profile_rows("15m"))
     assert profile_rows, "expected at least one profile row"
     for r in profile_rows:
@@ -326,6 +401,10 @@ def test_session_vwap_monotonic_with_carry_forward():
 
 
 def test_session_vwap_converges_across_timeframes():
+    # VWAP recurrence (_stamp_session_vwap) is unchanged from Phase 6; this
+    # test only checks cross-timeframe agreement at shared *bar close*
+    # instants after session-anchored re-binning (bin membership moved).
+    #
     # The cumulative session VWAP at the close of any 1h bar must match
     # the cumulative VWAP at the corresponding 1m / 15m bar that closes
     # at the same instant — within a tolerance set by the typical-price
@@ -353,25 +432,18 @@ def test_session_vwap_converges_across_timeframes():
         bin_ns=BIN_NS_BY_TIMEFRAME["1h"], timeframe="1h",
     )
 
-    # At the close of each 1h bar, find the corresponding 1m / 15m bar
-    # that ends at the same instant and compare cumulative VWAPs.
-    # A 1h bar at 10:00 ET ends at 11:00 ET, which is the close of the
-    # 1m bar at 10:59 and the 15m bar at 10:45.
+    # At each 1h bar's exclusive end (bar_end_ns), pick the 1m / 15m bar
+    # whose window ends at the same instant (half-open alignment).
     for hour_bar in res_1h.bars:
-        # 1m index ending at the same instant: the bar whose bin_start is
-        # 1 minute before hour_bar's right edge.
-        one_min_before_close = hour_bar.bin_start_ns + BIN_NS_BY_TIMEFRAME["1h"] - NS_PER_MINUTE
+        end_ns = hour_bar.bar_end_ns
+        one_min_before_close = end_ns - NS_PER_MINUTE
         cand_1m = [b for b in res_1m.bars if b.bin_start_ns == one_min_before_close]
-        assert cand_1m, f"no 1m bar at {one_min_before_close}"
+        assert cand_1m, f"no 1m bar ending at {end_ns}"
         bar_1m_at_close = cand_1m[0]
 
-        # 15m index: bar whose bin_start is 15 min before the right edge.
-        fifteen_min_before_close = (
-            hour_bar.bin_start_ns + BIN_NS_BY_TIMEFRAME["1h"]
-            - BIN_NS_BY_TIMEFRAME["15m"]
-        )
+        fifteen_min_before_close = end_ns - BIN_NS_BY_TIMEFRAME["15m"]
         cand_15m = [b for b in res_15m.bars if b.bin_start_ns == fifteen_min_before_close]
-        assert cand_15m, f"no 15m bar at {fifteen_min_before_close}"
+        assert cand_15m, f"no 15m bar ending at {end_ns}"
         bar_15m_at_close = cand_15m[0]
 
         # Tolerance: the typical-price drift across timeframes is bounded

@@ -1,3 +1,8 @@
+Test / bracket by various time sessions during day. 
+Consider off-hours. 
+
+
+
 Refine Backtesting logic / params 
 C:\Users\chris\.cursor\plans
 strategy_config_model_refinement_23f40018.plan.md 

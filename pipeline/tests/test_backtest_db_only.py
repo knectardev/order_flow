@@ -16,10 +16,12 @@ def _seed_bars(con) -> tuple[datetime, datetime]:
         close = px + (0.5 if i % 2 == 0 else -0.25)
         high = max(open_, close) + 0.5
         low = min(open_, close) - 0.5
+        bt = t0 + timedelta(minutes=i)
         rows.append(
             (
                 datetime(2026, 1, 26).date(),
-                t0 + timedelta(minutes=i),
+                bt,
+                bt + timedelta(minutes=1),
                 "1m",
                 open_,
                 high,
@@ -45,11 +47,11 @@ def _seed_bars(con) -> tuple[datetime, datetime]:
     con.executemany(
         """
         INSERT INTO bars (
-            session_date, bar_time, timeframe, open, high, low, close, volume, delta,
+            session_date, bar_time, bar_end_time, timeframe, open, high, low, close, volume, delta,
             trade_count, large_print_count, distinct_prices, range_pct, vpt, concentration,
             v_rank, d_rank, vwap, bias_state, parent_1h_bias, parent_15m_bias
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

@@ -20,6 +20,7 @@ volume/delta breakdown persisted to `bar_volume_profile`):
         "vpt":             float,  # volume / distinctPrices ("depth" — high = stacked)
         "concentration":   float,  # modal_volume / volume   ("friction" — high = brick wall)
         "time":            str     # ISO-8601 UTC, bin-start ("...:31:00Z")
+        "barEnd":          str     # ISO-8601 UTC, exclusive bar end (half-open [start,end))
     }
 
 Per-tick breakdown is exposed via Bar.iter_profile_rows() and routed to the
@@ -82,7 +83,8 @@ class Bar:
     delta: int = 0
     trade_count: int = 0
     large_print_count: int = 0
-    bin_start_ns: int = 0   # nanoseconds since epoch, bin-aligned
+    bin_start_ns: int = 0   # nanoseconds since epoch, bar open (inclusive)
+    bar_end_ns: int = 0     # nanoseconds since epoch, bar close (exclusive); set after aggregation
     high_first_ns: int = 0
     low_first_ns: int = 0
     # Per-tick microstructure. Keyed on integer `round(price / TICK_SIZE)`;
@@ -155,6 +157,11 @@ class Bar:
             "%Y-%m-%dT%H:%M:%SZ"
         )
 
+    def _iso_bar_end(self) -> str:
+        return datetime.fromtimestamp(self.bar_end_ns / 1e9, tz=UTC).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
     def to_json(self) -> dict:
         """JSON-mode serialization (dashboard via data/bars/*.json).
 
@@ -163,6 +170,8 @@ class Bar:
         `vpt`, `concentration`), plus the regime ranks (`range_pct`,
         `v_rank`, `d_rank`). Per-tick breakdown is intentionally omitted —
         the JSON dashboard uses an OHLC-distribution proxy.
+
+        ``barEnd`` is the exclusive end instant (half-open bar window).
 
         `timeframe` is NOT included in the JSON shape today; JSON output is
         per-file (one file per (session, timeframe) future step), and the
@@ -200,14 +209,15 @@ class Bar:
             "rejectionStrength": self.rejection_strength,
             "rejectionType":   self.rejection_type,
             "time":            self._iso_time(),
+            "barEnd":          self._iso_bar_end(),
         }
 
     def to_dict(self, session_date: date, timeframe: str) -> dict:
         """DuckDB-mode row dict (column names = bars table column names).
 
-        Returned by AggregateResult.bars_dataframe_rows() and consumed by
-        db.write_session(). `bar_time` is a stdlib datetime so DuckDB's
-        DataFrame zero-copy ingest preserves microsecond precision.
+        Consumed by db.write_session(). `bar_time` / `bar_end_time` are
+        stdlib UTC datetimes (tz stripped) so DuckDB ingest stays consistent
+        with existing TIMESTAMP columns.
 
         `timeframe` is the canonical Phase 5 keying ('1m' / '15m' / '1h').
         It is stamped on every row for the active aggregation pass; the DB
@@ -217,6 +227,7 @@ class Bar:
         return {
             "session_date":      session_date,
             "bar_time":          datetime.fromtimestamp(self.bin_start_ns / 1e9, tz=UTC).replace(tzinfo=None),
+            "bar_end_time":      datetime.fromtimestamp(self.bar_end_ns / 1e9, tz=UTC).replace(tzinfo=None),
             "timeframe":         timeframe,
             "open":              round(self.open, 4),
             "high":              round(self.high, 4),
@@ -253,8 +264,8 @@ class Bar:
 
         `timeframe` is stamped on every emitted row so the DB's composite
         PK `(bar_time, timeframe, price_tick)` resolves cleanly across
-        the three timeframes that share bin_start instants (every 1h
-        aligns with a 15m which aligns with a 1m).
+        timeframes. Session-anchored RTH grids align 1m/15m/1h bin starts
+        where period boundaries coincide (not UTC-hour-driven for 1h).
 
         Skips ticks with zero volume (shouldn't happen in practice — every
         key in `price_volume` was created on a non-zero `size += t.size`).
@@ -290,6 +301,22 @@ class AggregateResult:
     timeframe: str = "1m"
 
 
+def session_bar_end_ns(
+    bin_start_ns: int,
+    bin_ns: int,
+    *,
+    session: str,
+    rth_close_ns: int | None,
+) -> int:
+    """Exclusive end nanosecond for a bar's half-open window [bin_start, end).
+
+    RTH caps the final bucket at ``rth_close_ns``. Globex uses nominal width.
+    """
+    if session == "rth" and rth_close_ns is not None:
+        return min(bin_start_ns + bin_ns, rth_close_ns)
+    return bin_start_ns + bin_ns
+
+
 def _rth_window_ns(session_date: date) -> tuple[int, int]:
     """Return [open_ns, close_ns) for the RTH session of `session_date` in ET."""
     start_et = datetime.combine(session_date, RTH_OPEN, tzinfo=ET)
@@ -312,9 +339,15 @@ def _signed_size(side: str, size: int) -> int:
 def _stamp_session_vwap(bars: list[Bar]) -> None:
     """Stamp running session VWAP on each bar in place (Phase 6).
 
-    Runs after the partial-bar drop so it walks only in-session bars in
-    order. Uses the standard VWAP formula with bar typical price as the
-    unit-of-volume-weighting:
+    **Semantic invariance:** the recurrence below is unchanged across binning
+    migrations; only which trades populate each ``Bar`` (bin boundaries /
+    timestamps) changes. Same trades and ordering imply the same per-bar OHLC
+    inputs within each bucket, hence VWAP tracks bin definitions—not a new
+    formula.
+
+    Runs after bars are finalized for the active session mode so it walks
+    emitted bars in chronological order. Uses the standard VWAP formula with
+    bar typical price as the unit-of-volume-weighting:
 
         cum_pv = sum_{0..i} typical[j] * volume[j]
         cum_v  = sum_{0..i} volume[j]
@@ -391,36 +424,33 @@ def aggregate_trades(
     redundant on purpose — `bin_ns` is the math, `timeframe` is the label,
     and they're paired via `BIN_NS_BY_TIMEFRAME`.
 
+    **RTH binning:** bins are **session-anchored** to ``rth_open_ns``::
+
+        bin_start = rth_open_ns + floor((ts - rth_open_ns) / bin_ns) * bin_ns
+
+    so the first bar of each timeframe starts at the cash open (09:30 ET).
+    **Globex** keeps UTC-aligned ``floor(ts / bin_ns) * bin_ns``.
+
+    **Trailing bucket (Strategy A):** when ``bin_ns`` does not evenly divide
+    the RTH session (e.g. 1h), the final bar may span fewer than ``bin_ns``
+    nanoseconds; ``Bar.bar_end_ns`` is ``min(bin_start + bin_ns, rth_close_ns)``
+    (exclusive end).
+
+    **VWAP:** `_stamp_session_vwap` uses the same cumulative typical-price
+    formula as before; migration changes only trade-to-bar assignment, not
+    the VWAP recurrence.
+
     - Drops any trade whose `instrument_id != front_month_id` (filters out
       spreads + back months).
     - If `session == 'rth'`, drops trades outside 09:30-16:00 ET on
       `session_date`.
     - Skips empty bins (no trades in the window) so the output bar grid
-      contains only bins with at least one trade. Higher timeframes
-      mechanically rarely have empty bins during RTH.
+      contains only bins with at least one trade.
     - Routes every (price, size, side) tuple into a per-tick bucket
       (`price_volume` / `price_delta`) keyed on `round(price / TICK_SIZE)`.
-      The bar-level OHLCV+delta loop is unchanged; per-tick accumulation is
-      in the same loop iteration so we never re-walk the trade stream.
 
-    Partial-bar handling (Phase 5): we drop any bar that doesn't have a
-    full `bin_ns` of in-session trade time inside [rth_open_ns,
-    rth_close_ns). Two kinds of partials occur:
-
-      - Leading partial: bins are aligned to UTC top-of-bin (the math is
-        `floor(ts / bin_ns) * bin_ns`). RTH opens at 09:30 ET = ...:30 UTC
-        which falls in the middle of a 1h bin, so the FIRST 1h bar of a
-        session would only contain trades from 09:30 → next top-of-hour
-        — a 30-min partial. Dropped via `bin_start_ns >= rth_open_ns`.
-      - Trailing partial: when `bin_ns` doesn't divide the RTH window,
-        the last bar's right edge runs past RTH close. (At 1h this
-        cannot happen because RTH closes at 16:00 ET = top-of-hour, but
-        if the session schedule ever changes this guard stays correct.)
-        Dropped via `bin_start_ns + bin_ns <= rth_close_ns`.
-
-    1m and 15m divide RTH evenly and have RTH-aligned bin grids (390 /
-    26 bars respectively); 1h emits 6 bars per session (10:00, 11:00,
-    12:00, 13:00, 14:00, 15:00 ET).
+    Full RTH coverage with one trade per minute yields 390 × 1m bars,
+    26 × 15m bars, and 7 × 1h bars (including a 30-minute final hour bucket).
     """
     if session not in ("rth", "globex"):
         raise ValueError(f"Unknown session {session!r} (use 'rth' or 'globex').")
@@ -439,8 +469,11 @@ def aggregate_trades(
         if session == "rth":
             if t.ts_event_ns < rth_open_ns or t.ts_event_ns >= rth_close_ns:
                 continue
-
-        bin_ns_start = (t.ts_event_ns // bin_ns) * bin_ns
+            bin_ns_start = rth_open_ns + (
+                (t.ts_event_ns - rth_open_ns) // bin_ns
+            ) * bin_ns
+        else:
+            bin_ns_start = (t.ts_event_ns // bin_ns) * bin_ns
 
         if bin_ns_start != cur_bin_ns:
             if cur is not None:
@@ -481,24 +514,12 @@ def aggregate_trades(
     if cur is not None:
         bars.append(cur)
 
-    # Partial-bar drop (Phase 5). Bins are aligned to UTC epoch top-of-bin
-    # (`floor(ts / bin_ns) * bin_ns`), so a bin's [bin_start, bin_start +
-    # bin_ns) window may not be entirely inside [rth_open, rth_close).
-    # We require BOTH endpoints to lie within RTH to count the bar. At
-    # 1h this drops the leading 30-min partial (bin starts at top-of-hour
-    # = 09:00 ET, contains only 09:30-10:00 ET of in-session trades);
-    # at 1m and 15m this filter is a no-op (each bin width divides
-    # cleanly and the bin grid aligns to RTH open).
-    if session == "rth":
-        bars = [
-            b for b in bars
-            if b.bin_start_ns >= rth_open_ns
-            and b.bin_start_ns + bin_ns <= rth_close_ns
-        ]
+    rc = rth_close_ns if session == "rth" else None
+    for b in bars:
+        b.bar_end_ns = session_bar_end_ns(b.bin_start_ns, bin_ns, session=session, rth_close_ns=rc)
 
-    # Phase 6: stamp running session VWAP after the partial-bar drop so
-    # we only include in-session bars (otherwise leading partials would
-    # bias the running average).
+    # Phase 6: stamp running session VWAP after bars are finalized (trade
+    # filtering already enforced RTH bounds).
     _stamp_session_vwap(bars)
     _stamp_phat_features(bars)
 

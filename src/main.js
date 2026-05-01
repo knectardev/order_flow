@@ -13,6 +13,7 @@ import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from '.
 import { dismissFire, openFireDetails } from './ui/fireBanner.js';
 import { bindMatrixRangeUI, repaintMatrix } from './ui/matrixRange.js';
 import { bindModalDrag, closeModal, onOverlayClick, openModal } from './ui/modal.js';
+import { bindPhatLegendModal } from './ui/phatLegendModal.js';
 import { returnToLiveEdge, _setViewEnd } from './ui/pan.js';
 import { bindSelectionUI, restoreSelectionFromUrl } from './ui/selection.js';
 import { bindEventLogClicks } from './render/eventLog.js';
@@ -43,6 +44,7 @@ window.addEventListener('resize', () => {
 // `?source=api` (regime-DB plan §2f retired the JSON-manifest fallback).
 bootstrapReplay();
 bindModalDrag();
+bindPhatLegendModal();
 
 // ───────────────────────────────────────────────────────────
 // DOM event wiring (replaces inline on*= handlers stripped from HTML).

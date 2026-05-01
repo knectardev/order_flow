@@ -22,9 +22,12 @@ dist/
 .DS_Store
 Thumbs.db
 
-# --- Aggregated bars are CHECKED IN (small) so the dashboard works after clone. ---
-!data/bars/
-!data/bars/**
+# --- Aggregated session JSON + index (large after full rebuilds; regenerate via pipeline). ---
+data/bars/
 
 # --- Local analytical DB artifact (large, machine-specific) ---
 data/orderflow.duckdb
+data/**/*.bak
+
+# --- Pipeline rebuild logs (local only) ---
+data/rebuild_log.txt
