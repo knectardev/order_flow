@@ -1,26 +1,18 @@
 /**
  * Stable sqrt(volume) ladder for regime-matrix point radii (decoupled from chart viewport).
- * Winsorize at p5/p95 on sqrt(volume) over loaded bars — robust tails; spike-heavy days
- * compress extremes (see requirements — tunable toward p1/p99 later).
+ * Winsorize at MATRIX_LADDER_LO_PCT / HI_PCT on sqrt(volume) over loaded bars — same band as
+ * abs(delta) coloring (`matrixLadderConstants.js`). Spike-heavy days compress extremes.
  */
 
 import { state } from '../state.js';
+import {
+  MATRIX_LADDER_HI_PCT,
+  MATRIX_LADDER_LO_PCT,
+  linearPercentile,
+} from './matrixLadderConstants.js';
 
-/** Lower / upper percentile on sorted sqrt volumes (loaded timeframe universe). */
-export const MATRIX_SQRT_VOLUME_LO_PCT = 0.05;
-export const MATRIX_SQRT_VOLUME_HI_PCT = 0.95;
-
-function _percentileLinear(sortedAsc, p) {
-  const n = sortedAsc.length;
-  if (n === 0) return NaN;
-  if (n === 1) return sortedAsc[0];
-  const idx = (n - 1) * Math.max(0, Math.min(1, p));
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  if (lo === hi) return sortedAsc[lo];
-  const w = idx - lo;
-  return sortedAsc[lo] * (1 - w) + sortedAsc[hi] * w;
-}
+export const MATRIX_SQRT_VOLUME_LO_PCT = MATRIX_LADDER_LO_PCT;
+export const MATRIX_SQRT_VOLUME_HI_PCT = MATRIX_LADDER_HI_PCT;
 
 /** Loaded timeline for active TF — same universe matrix percentile ladder uses. */
 export function getLoadedBarsForMatrixVolumeLadder() {
@@ -48,8 +40,8 @@ export function computeMatrixSqrtVolumeLadder(bars) {
     const hi = sqrtVals[n - 1];
     return { lo, hi, degenerate: hi <= lo };
   }
-  const lo = _percentileLinear(sqrtVals, MATRIX_SQRT_VOLUME_LO_PCT);
-  const hi = _percentileLinear(sqrtVals, MATRIX_SQRT_VOLUME_HI_PCT);
+  const lo = linearPercentile(sqrtVals, MATRIX_LADDER_LO_PCT);
+  const hi = linearPercentile(sqrtVals, MATRIX_LADDER_HI_PCT);
   return { lo, hi, degenerate: hi <= lo };
 }
 

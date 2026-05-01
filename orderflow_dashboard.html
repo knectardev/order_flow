@@ -400,7 +400,7 @@
         Threshold default: <strong>0.30</strong> on imbalance (see <code>phatBodyImbalanceThreshold</code>).<br>
         Exhaustion can fill when wick liquidity ≥ <code>phatExhaustionRingLiquidityThreshold</code> (default <strong>0.55</strong>).<br>
         Also: ≤1-tick bodies use the tighter width tier before volume · asymmetric wicks by extreme order · thicker wick stroke when liquidity concentrates at the tip.<br>
-        Matrix regime dots encode volume separately (stable ladder over loaded bars; requirements §6.1) — not the same scale as chart PHAT width.<br>
+        Matrix regime dots: radius scales with volume (stable ladder); fill color encodes bar delta sign and magnitude vs loaded bars — independent from candle OHLC color (§6.1). Not the same scale as chart PHAT width.<br>
         PHAT requires API bars with PHAT fields populated.
       </div>
     </div>

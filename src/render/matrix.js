@@ -4,6 +4,10 @@ import { computeConfidence, topCells } from '../analytics/regime.js';
 import { getCachedOccupancy, requestOccupancy } from '../data/occupancyApi.js';
 import { resolveOccupancyWindow } from '../ui/matrixRange.js';
 import {
+  computeMatrixAbsDeltaLadder,
+  matrixDeltaFillAndStroke,
+} from '../analytics/matrixDeltaColorNorm.js';
+import {
   computeMatrixSqrtVolumeLadder,
   getLoadedBarsForMatrixVolumeLadder,
   matrixVolumeBaseRadiusPx,
@@ -17,8 +21,6 @@ const MATRIX_POINT_HOVER_RADIUS_MULT = 1.3;
 const MATRIX_POINT_SELECTED_RADIUS_MULT = 1.5;
 const JITTER_RADIUS_NORM = 0.075;
 const POINT_STROKE_WIDTH_PX = 1;
-const POINT_FILL_COLOR = 'rgba(33,160,149,1)';
-const POINT_STROKE_COLOR = 'rgba(8,12,20,0.55)';
 const POINT_HOVER_STROKE_COLOR = 'rgba(255,255,255,0.9)';
 const POINT_SELECTED_STROKE_COLOR = 'rgba(255,255,255,1)';
 
@@ -333,7 +335,7 @@ function _resolvePointFrame(inner) {
   return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
 }
 
-function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx }) {
+function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx, deltaLadder }) {
   const base = Number.isFinite(baseRadiusPx) && baseRadiusPx > 0 ? baseRadiusPx : POINT_RADIUS_PX;
   let radius = base;
   if (isSelected) radius = base * MATRIX_POINT_SELECTED_RADIUS_MULT;
@@ -361,12 +363,13 @@ function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pul
       pulseKind: 'bull',
     };
   }
+  const { fill: deltaFill, stroke: deltaStroke } = matrixDeltaFillAndStroke(bar, deltaLadder);
   const stroke = isSelected
     ? POINT_SELECTED_STROKE_COLOR
-    : (isHovered ? POINT_HOVER_STROKE_COLOR : POINT_STROKE_COLOR);
+    : (isHovered ? POINT_HOVER_STROKE_COLOR : deltaStroke);
   return {
     radius,
-    fill: POINT_FILL_COLOR,
+    fill: deltaFill,
     stroke,
     strokeWidth: POINT_STROKE_WIDTH_PX,
     opacity,
@@ -408,7 +411,9 @@ function _renderPointCloud() {
   layer.innerHTML = '';
   const count = eligible.length;
   if (!count) return;
-  const volLadder = computeMatrixSqrtVolumeLadder(getLoadedBarsForMatrixVolumeLadder());
+  const ladderBars = getLoadedBarsForMatrixVolumeLadder();
+  const volLadder = computeMatrixSqrtVolumeLadder(ladderBars);
+  const deltaLadder = computeMatrixAbsDeltaLadder(ladderBars);
   for (let i = 0; i < count; i++) {
     const point = eligible[i];
     const age = (count - 1) - i;
@@ -436,7 +441,7 @@ function _renderPointCloud() {
     const pulseBull = !_isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBull);
     const baseRadiusPx = matrixVolumeBaseRadiusPx(point.bar, volLadder, POINT_RADIUS_PX);
     const style = resolvePointStyle(point.bar, {
-      isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx,
+      isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx, deltaLadder,
     });
 
     const el = document.createElement('button');
