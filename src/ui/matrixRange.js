@@ -12,8 +12,8 @@
 // State writes always end with `repaintMatrix()` which recomputes
 // scores, runs canonical evaluators, and calls renderMatrix(). Heavier
 // downstream effects (priceChart, eventLog) are *not* triggered by
-// matrix-range changes — the range only affects the matrix and its
-// diagnostic.
+// matrix-range changes — the range drives occupancy, heatmap, diagnostics,
+// and the point cloud (`resolveOccupancyWindow()`).
 // ───────────────────────────────────────────────────────────
 import { state } from '../state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';

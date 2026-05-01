@@ -1,90 +1,76 @@
-# Cursor Prompt: Migrate from UTC-aligned to Session-anchored Bar Binning
+The information is all there and accurate— what is implemented the substantive feedback well. But you're right that readability is suffering. The tooltip has gone from undersharing to oversharing, and the visual hierarchy isn't doing enough work to help users parse it quickly.
 
-Read this prompt and produce a detailed implementation plan as a markdown file (`PLAN.md`) before writing any code. Do not implement yet.
 
-## Problem
 
-The current Phase 5 partial-bar handling drops any bar whose UTC-aligned bin window is not fully inside `[rth_open, rth_close)`. For RTH (09:30–16:00 ET), this works fine for 1m and 15m (which divide the session evenly) but produces only 6 hourly bars per session (10:00, 11:00, 12:00, 13:00, 14:00, 15:00 ET), silently dropping the 09:30–10:00 opening window.
+**What's hurting readability:**
 
-This is wrong for two reasons:
+**Density without hierarchy.** Every line has the same visual weight. The eye has nowhere to land first, so it has to read everything to figure out what's important. Compare to a well-designed tooltip where the most important fact pops, supporting facts are secondary, and reference details are tertiary.
 
-1. **Analytical:** the opening 30 minutes is the most informative part of the trading day. Dropping it on the 1h timeframe makes 1h regime, volume, and morphology analysis blind to opening dynamics.
+**Run-on measurement lines.** "Rejection: Exhaustion at upper wick · liquidity 0.39 · open ring (exhaustion · liquidity 0.39 · fill threshold 0.55) · moderate" is a single line containing five separate facts. The parenthetical actually repeats "exhaustion · liquidity 0.39" which is redundant. The eye can't process that in one pass.
 
-2. **Cross-timeframe consistency:** 1m and 15m timeframes have data for 09:30–10:00, but 1h does not. Any correlation, regime mapping, or matrix work that crosses timeframes has an undefined 1h state for the first 30 minutes of every session. That breaks the regime matrix and morphology correlation work downstream.
+**Self-referential meta-commentary in the body.** "Marker uses the side with the higher pipeline rejection score (vs the other extreme)." This is implementation explanation that probably doesn't belong in a hover tooltip—it's the kind of thing that goes in the legend or docs. Users hovering a candle want to know what the candle is showing, not how the rendering decision was made.
 
-It also diverges from industry convention. TradingView, Webull, ThinkOrSwim, and similar platforms session-anchor their bins, not UTC-anchor them. Users expect the first bar of an RTH session to start at the open, not at the next UTC top-of-hour after the open.
+**The "Bands use visible bars only" footnote** is similar—it's a meta-explanation about how the encoding works, which clutters the analytical content.
 
-## Goal
+**The interpretation sentence is buried at the bottom.** "Sell pressure held through a wick test at the extreme" is the plain-language gestalt and arguably the most useful single line for a quick read. It should be more prominent, not the second-to-last line.
 
-Migrate the bar aggregator to **session-anchored binning** so the first bar of every RTH session always starts at `rth_open` (09:30 ET), and bins proceed forward from there at the configured `bin_ns` interval.
+**Suggested redesign:**
 
-## Design
+Here's a structure that preserves all the information but creates real visual hierarchy:
 
-### Binning rule change
+```
+B-SHAPE · LOWER HALF · Wide body
+"Sell pressure held through a wick test at the extreme"
 
-Current: `bin_start_ns = floor(ts_ns / bin_ns) * bin_ns`
+Imbalance     1.51   strong (gate 0.30)
+Delta         -925   matrix point red
+Rejection     Upper wick · exhaustion · open ring
+              Liquidity 0.39 (below 0.55 fill threshold) · moderate
 
-New: `bin_start_ns = rth_open_ns + floor((ts_ns - rth_open_ns) / bin_ns) * bin_ns`
+PHAT READ IS DESCRIPTIVE, NOT PREDICTIVE
+```
 
-This anchors bin grid to the session open instead of the UTC clock.
+Three changes are doing the work:
 
-### Trailing partial handling
+1. **Lift the interpretation sentence to the top**, right under the header, in italic or quoted style. That's the gestalt; it should be the first thing the eye lands on after the title.
 
-When `bin_ns` does not evenly divide the RTH session length (e.g. 1h on a 6.5-hour session), the final bin will be shorter than `bin_ns`. Two reasonable strategies — please evaluate both in the plan and recommend one:
+2. **Convert measurement lines to a label/value table format.** Aligned columns let the eye scan down the labels (Imbalance, Delta, Rejection) and then dip into the values when one matters. This is way easier to parse than prose-style "Imbalance: 1.51 (gate 0.30 · strong)".
 
-**Strategy A — Emit trailing partial as a shorter bar.**
-- Final bar covers `[rth_open + N*bin_ns, rth_close)` and is allowed to be shorter than `bin_ns`.
-- Result for 1h on RTH: 7 bars (09:30, 10:30, 11:30, 12:30, 13:30, 14:30, 15:30), with the last covering only 30 minutes.
-- Pros: no data loss, matches TradingView behavior, preserves cross-timeframe coverage.
-- Cons: bars are not all the same duration; downstream code that assumes uniform bar duration may need adjustment.
+3. **Drop the meta-commentary** ("Marker uses the side..." and "Bands use visible bars only..."). These belong in the legend, not in every hover tooltip. If users want to know how the encoding works, they'll consult the legend (which already has this info). The tooltip should focus on what *this specific candle* is telling them.
 
-**Strategy B — Merge trailing partial into the previous bar.**
-- Final bar covers `[rth_open + (N-1)*bin_ns, rth_close)` and is longer than `bin_ns`.
-- Result for 1h on RTH: 6 bars (09:30, 10:30, 11:30, 12:30, 13:30, 14:30), with the last covering 90 minutes.
-- Pros: bin count is what users see in retail tools that fold partials backward.
-- Cons: the merged bar is non-uniform in the other direction (longer than `bin_ns`).
+**For the neutral case specifically:**
 
-Recommended default: **Strategy A**. It preserves cross-timeframe analytical consistency (every minute of RTH is covered exactly once at every timeframe), and downstream consumers can branch on `bin.duration_ns` if they need to. Strategy B should be available as a config option but not the default.
+The neutral tooltip has its own readability problem—the explanation of why it's neutral ("inside flow never cleared the gate for two-tone P/b shading") is doing the job of the gestalt sentence but in technical language. Suggest:
 
-### Cross-timeframe invariant to preserve
+```
+NEUTRAL · Below P/b gate · Wide body
+"Auction tested one side at the wick; flow stayed mixed inside the bar"
 
-After migration, this invariant must hold for any timeframe `t` and any RTH session:
+Imbalance     0.04   below gate (0.30)
+Delta         -439   matrix point red
+Rejection     Lower wick · exhaustion · open ring
+              Liquidity 0.34 (below 0.55 fill threshold) · moderate
 
-> The union of bar windows at timeframe `t` covers exactly `[rth_open, rth_close)` with no gaps and no overlaps.
+PHAT READ IS DESCRIPTIVE, NOT PREDICTIVE
+```
 
-This is the property that makes cross-timeframe analysis sound. The current implementation violates it for 1h. The new implementation must satisfy it for all supported timeframes.
+Same structure, just adapted to the neutral case. The interpretation line ("Auction tested one side at the wick; flow stayed mixed inside the bar") is plain-language and tells the user the analytical story; the measurements section gives them the numbers if they want them.
 
-## Files likely to touch
+**On layout/typography:**
 
-- The Phase 5 partial-bar logic in the aggregator (please find the exact file)
-- Any tests that assert the current 6-bar behavior or UTC-aligned bin starts
-- The pipeline tests covering bin grid alignment for 1h
-- Possibly `requirements.md` if there is a section documenting the binning contract
+If Cursor can implement the label/value alignment, that's the biggest single readability win. Monospace already helps; explicit column alignment makes scanning trivial. If true table layout is too much, even just consistent indentation and bold labels would help:
 
-## Compatibility considerations
+```
+Imbalance     1.51   strong (gate 0.30)
+Delta         -925   matrix point red
+```
 
-- Existing cached or persisted bars at 1h will have different `bin_start_ns` values after this change. The plan should specify whether existing data needs reprocessing, invalidation, or coexistence.
-- If the regime matrix, morphology classifier, or any other downstream system has stored references to specific `bin_start_ns` values, those references will become stale. The plan should enumerate any such dependencies.
-- Front-end timeframe controls and any UI that displays bin counts per session will see different numbers. Update copy or labels if needed.
+Where "Imbalance" and "Delta" might be slightly muted/smaller and the values are normal weight. The eye learns to scan the label column, then jump to the value when interested.
 
-## Out of scope
+**Optional: progressive disclosure.**
 
-- Changing how non-RTH sessions are handled (overnight, ETH, etc.) unless they currently use the same UTC-aligned rule and are also affected.
-- Changing the `bin_ns` interval choices themselves.
-- Any changes to the regime matrix, morphology, or PHAT pipelines beyond what's required to consume the new bin grid.
+If the tooltip is still too dense even after this, consider a two-tier approach: hover shows the header + interpretation + key measurement (imbalance and delta only), and a "more" affordance reveals rejection details. That keeps the immediate hover lightweight while preserving access to the full data. But I'd try the restructure first before adding interaction complexity.
 
-## Deliverable
+Summarizing "Restructure for visual hierarchy. Lift interpretation sentence to top under header. Convert measurements to aligned label/value format. Remove meta-commentary about marker selection logic and viewport-relative band derivation—that's legend material, not hover material. Same information, better scannability."
 
-A `PLAN.md` covering:
-
-- Current behavior recap (one paragraph) and the specific files implementing it
-- Proposed new binning algorithm in pseudocode
-- Strategy A vs Strategy B comparison and your recommendation
-- The cross-timeframe coverage invariant and how the new code enforces it
-- All files and tests that need changes, with brief notes on what changes
-- Migration plan for existing cached/persisted 1h bars
-- List of downstream consumers that reference `bin_start_ns` and how they're affected
-- Test plan: include a test that explicitly verifies the cross-timeframe coverage invariant for 1m, 15m, and 1h on a standard RTH session
-- Any open questions or decisions that need my input before implementation
-
-Keep the plan tight. Once I approve it, you'll implement.
+The information density is right; the presentation just needs work. This is a CSS and copy edit, not a redesign.

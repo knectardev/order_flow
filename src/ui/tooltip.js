@@ -67,15 +67,7 @@ function _hideTooltip() {
 function _showTooltipForHit(hit, mouseX, mouseY) {
   const tt = document.getElementById('chartTooltip');
   if (!tt) return;
-  const _phatRejectionLabel = (r) => {
-    if (!r?.hasRejection) return 'None';
-    const typeLabel = r.rejectionType === 'absorption'
-      ? 'Absorption'
-      : (r.rejectionType === 'exhaustion' ? 'Exhaustion' : 'Rejection');
-    const strengthLabel = r.strengthLabel || 'weak';
-    return `${typeLabel} (${strengthLabel})`;
-  };
-  const _phatTemplate = (shape, hasRejection) => {
+  const _phatTemplate = (shape, hasRejection, neutralReason) => {
     if (shape === 'P') {
       return hasRejection
         ? {
@@ -98,6 +90,34 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
           line3: 'Sell pressure dominated the body, but no wick-level rejection printed',
         };
     }
+    if (neutralReason === 'below_gate') {
+      return hasRejection
+        ? {
+          line1: 'Neutral body · Imbalance below P/b gate',
+          line3: 'Auction tested one side at the wick; flow stayed mixed inside the bar',
+        }
+        : {
+          line1: 'Neutral body · Imbalance below P/b gate',
+          line3: 'No directional split · flow stayed inside the gate for this bar',
+        };
+    }
+    if (neutralReason === 'disagreement') {
+      return hasRejection
+        ? {
+          line1: 'Neutral body · Flow vs close disagree',
+          line3: 'High imbalance but norms oppose bar direction; wick still shows a rejection read',
+        }
+        : {
+          line1: 'Neutral body · Flow vs close disagree',
+          line3: 'High imbalance fighting bar direction — Option A locks the body to neutral-only',
+        };
+    }
+    if (neutralReason === 'no_norms') {
+      return {
+        line1: 'Neutral body · CVD norms unavailable',
+        line3: 'Top/bottom norm fields missing — P/b shading unavailable on this bar',
+      };
+    }
     return hasRejection
       ? {
         line1: 'Neutral body · Inside flow is balanced, wick shows response',
@@ -108,6 +128,47 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
         line3: 'No strong side showed control inside this candle',
       };
   };
+
+  const _phatVolThird = (volNorm) => {
+    if (!Number.isFinite(volNorm)) return '—';
+    if (volNorm < 1 / 3) return 'lower third';
+    if (volNorm < 2 / 3) return 'middle third';
+    return 'upper third';
+  };
+
+  const _phatImbalanceBandLabel = (I, G) => {
+    if (!Number.isFinite(I) || !Number.isFinite(G)) return '';
+    if (G >= 0.5) return I < G ? 'below gate' : 'at or above gate';
+    if (I < G) return 'below gate';
+    if (I < 0.5) return 'near gate';
+    return 'strong';
+  };
+
+  const _phatMatrixPointWord = (delta) => {
+    if (!Number.isFinite(delta)) return 'neutral gray';
+    if (delta === 0) return 'neutral gray';
+    return delta > 0 ? 'green' : 'red';
+  };
+
+  const _phatEsc = (s) => String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  /** Compact scan-friendly title (notes.txt hierarchy). */
+  const _phatCompactHead = (p, narrowLabel) => {
+    const nb = narrowLabel;
+    if (p.shape === 'P') return `P-SHAPE · UPPER HALF · ${nb}`;
+    if (p.shape === 'b') return `B-SHAPE · LOWER HALF · ${nb}`;
+    if (p.shape === 'neutral') {
+      if (p.neutralReason === 'below_gate') return `NEUTRAL · Below P/b gate · ${nb}`;
+      if (p.neutralReason === 'disagreement') return `NEUTRAL · Flow vs close · ${nb}`;
+      if (p.neutralReason === 'no_norms') return `NEUTRAL · Norms unavailable · ${nb}`;
+      return `NEUTRAL · ${nb}`;
+    }
+    return `${p.shapeLabel || 'PHAT'} · ${nb}`;
+  };
+
   let info, meta;
   if (hit.kind === 'event') {
     info = TOOLTIP_INFO[hit.payload.type];
@@ -132,15 +193,101 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     meta = biasLabel;
   } else if (hit.kind === 'phatCandle') {
     const p = hit.payload || {};
-    const imbalanceText = Number.isFinite(p.imbalance) ? p.imbalance.toFixed(2) : 'n/a';
-    const rejectionText = _phatRejectionLabel(p.rejection);
-    const tpl = _phatTemplate(p.shape, !!p.rejection?.hasRejection);
+    const tpl = _phatTemplate(p.shape, !!p.rejection?.hasRejection, p.neutralReason);
+    const narrowLabel = p.layout?.narrowBody ? 'Narrow body (≤1 tick)' : 'Wide body (>1 tick)';
+    const headName = _phatCompactHead(p, narrowLabel);
+    const G = Number.isFinite(p.gate) ? p.gate : (Number(state.phatBodyImbalanceThreshold) || 0.30);
+    const I = p.imbalance;
+    const band = _phatImbalanceBandLabel(I, G);
+    const imbNum = Number.isFinite(I) ? I.toFixed(2) : '—';
+    const imbMeta = Number.isFinite(I) && band
+      ? `${band} (gate ${G.toFixed(2)})`
+      : (Number.isFinite(I) ? `gate ${G.toFixed(2)}` : '');
+    const vn = p.layout?.volNorm;
+    const volThird = _phatVolThird(vn);
+    const d = p.delta;
+    const deltaNum = Number.isFinite(d) ? String(Math.round(d)) : '—';
+    const deltaMeta = Number.isFinite(d)
+      ? `matrix point ${_phatMatrixPointWord(d)}`
+      : 'matrix point neutral gray';
+    const thrEx = Number(state.phatExhaustionRingLiquidityThreshold);
+    const thrStr = Number.isFinite(thrEx) ? thrEx.toFixed(2) : '0.55';
+    const rj = p.rejection;
+
+    let rejPrimary = '';
+    let rejSub = '';
+    if (rj?.hasRejection) {
+      const sideShort = rj.rejectionSide === 'high' ? 'Upper wick' : 'Lower wick';
+      const typeShort = rj.rejectionType === 'absorption'
+        ? 'absorption'
+        : (rj.rejectionType === 'exhaustion' ? 'exhaustion' : 'rejection');
+      let ringShort = 'open ring';
+      if (rj.rejectionType === 'absorption') ringShort = 'filled ring';
+      else if (p.rejectionRingFilled) ringShort = 'filled ring';
+      rejPrimary = `${sideShort} · ${typeShort} · ${ringShort}`;
+      const liqTxt = Number.isFinite(rj.sideLiquidity) ? rj.sideLiquidity.toFixed(2) : 'n/a';
+      const st = rj.strengthLabel || 'weak';
+      if (rj.rejectionType === 'absorption') {
+        rejSub = `Liquidity ${liqTxt} · ${st}`;
+      } else if (p.rejectionRingFilled) {
+        rejSub = `Liquidity ${liqTxt} (≥ ${thrStr} fill threshold) · ${st}`;
+      } else {
+        rejSub = `Liquidity ${liqTxt} (below ${thrStr} fill threshold) · ${st}`;
+      }
+    }
+
+    const kvCore = ''
+      + `<div class="tt-phat-kv-row">`
+      + `<span class="tt-phat-kv-label">Vol. (view)</span>`
+      + `<span class="tt-phat-kv-num">${_phatEsc(volThird)}</span>`
+      + `<span class="tt-phat-kv-meta"></span></div>`
+      + `<div class="tt-phat-kv-row">`
+      + `<span class="tt-phat-kv-label">Imbalance</span>`
+      + `<span class="tt-phat-kv-num">${_phatEsc(imbNum)}</span>`
+      + `<span class="tt-phat-kv-meta">${_phatEsc(imbMeta)}</span></div>`
+      + `<div class="tt-phat-kv-row">`
+      + `<span class="tt-phat-kv-label">Delta</span>`
+      + `<span class="tt-phat-kv-num">${_phatEsc(deltaNum)}</span>`
+      + `<span class="tt-phat-kv-meta">${_phatEsc(deltaMeta)}</span></div>`;
+
+    let rejHtml = '';
+    if (rj?.hasRejection) {
+      rejHtml = `<div class="tt-phat-kv-row">`
+        + `<span class="tt-phat-kv-label">Rejection</span>`
+        + `<span class="tt-phat-kv-num"></span>`
+        + `<div class="tt-phat-kv-meta tt-phat-kv-meta--stack">`
+        + `<span>${_phatEsc(rejPrimary)}</span>`
+        + `<span class="tt-phat-kv-rej-sub">${_phatEsc(rejSub)}</span>`
+        + `</div></div>`;
+    } else {
+      rejHtml = `<div class="tt-phat-kv-row">`
+        + `<span class="tt-phat-kv-label">Rejection</span>`
+        + `<span class="tt-phat-kv-num">—</span>`
+        + `<span class="tt-phat-kv-meta">none</span></div>`;
+    }
+
+    const warnHtml = p.disagreementFlag
+      ? '<div class="tt-phat-warn">⚠ High imbalance opposes bar direction (neutral body · Option A)</div>'
+      : '';
+
+    const kvHtml = `<div class="tt-phat-kv">${kvCore}${rejHtml}</div>`;
+
     info = {
       variant: 'breakout',
       glyph: '▌',
-      name: tpl.line1,
-      desc: `Imbalance: ${imbalanceText} · Rejection: ${rejectionText}`,
-      detail: tpl.line3,
+      name: headName,
+      desc: '',
+      detail: '',
+      _phatHtml: ''
+        + `<div class="tt-head">`
+        + `<span class="tt-glyph">▌</span>`
+        + `<span class="tt-name">${_phatEsc(headName)}</span>`
+        + `<span class="tt-meta">${_phatEsc(p.shapeLabel || 'PHAT')}</span>`
+        + `</div>`
+        + `<p class="tt-phat-lede">“${_phatEsc(tpl.line3)}”</p>`
+        + warnHtml
+        + kvHtml
+        + `<div class="tt-hint tt-phat-disclaimer">PHAT read is descriptive, not predictive</div>`,
     };
     meta = p.shapeLabel || 'PHAT';
   } else if (hit.kind === 'candle') {
@@ -161,19 +308,23 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
   tt.className = 'chart-tooltip visible variant-' + info.variant;
   tt.setAttribute('aria-hidden', 'false');
   const hint = hit.kind === 'phatCandle'
-    ? 'PHAT read is descriptive, not predictive'
+    ? ''
     : hit.kind === 'candle'
       ? 'Click to highlight on regime matrix'
       : 'Shift+click for at-fire criteria · click to select bar range';
-  tt.innerHTML =
-    `<div class="tt-head">` +
-      `<span class="tt-glyph">${info.glyph}</span>` +
-      `<span class="tt-name">${info.name}</span>` +
-      `<span class="tt-meta">${meta}</span>` +
-    `</div>` +
-    `<div class="tt-desc">${info.desc}</div>` +
-    `${info.detail ? `<div class="tt-desc">${info.detail}</div>` : ''}` +
-    `<div class="tt-hint">${hint}</div>`;
+  if (hit.kind === 'phatCandle' && info._phatHtml) {
+    tt.innerHTML = info._phatHtml;
+  } else {
+    tt.innerHTML =
+      `<div class="tt-head">` +
+        `<span class="tt-glyph">${info.glyph}</span>` +
+        `<span class="tt-name">${info.name}</span>` +
+        `<span class="tt-meta">${meta}</span>` +
+      `</div>` +
+      `<div class="tt-desc">${info.desc}</div>` +
+      `${info.detail ? `<div class="tt-desc">${info.detail}</div>` : ''}` +
+      `<div class="tt-hint">${hint}</div>`;
+  }
 
   // Position: prefer right-of-cursor; flip if it would clip the chart.
   const wrap = priceCanvas.parentElement.getBoundingClientRect();

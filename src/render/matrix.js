@@ -316,6 +316,43 @@ function _getViewedBarsForMatrix() {
   return forming ? [...base, forming] : base;
 }
 
+function _barTimeMsForMatrix(bar) {
+  if (!bar?.time) return NaN;
+  return bar.time instanceof Date ? bar.time.getTime() : Date.parse(bar.time);
+}
+
+/** Bars whose ranks paint the matrix point cloud — same time bounds as occupancy (`resolveOccupancyWindow`). */
+function _getBarsForMatrixPointCloud() {
+  const win = resolveOccupancyWindow();
+  if (!win) {
+    return _getViewedBarsForMatrix();
+  }
+  const fromMs = Date.parse(win.from);
+  const toMs = Date.parse(win.to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return _getViewedBarsForMatrix();
+  }
+  const replay = state.replay;
+  if (replay.mode !== 'real' || !replay.allBars?.length) {
+    return _getViewedBarsForMatrix();
+  }
+  const out = [];
+  for (const bar of replay.allBars) {
+    const t = _barTimeMsForMatrix(bar);
+    if (!Number.isFinite(t) || t < fromMs || t > toMs) continue;
+    out.push(bar);
+  }
+  const forming = state.formingBar;
+  if (forming?.time != null) {
+    const ft = _barTimeMsForMatrix(forming);
+    if (Number.isFinite(ft) && ft >= fromMs && ft <= toMs) {
+      const dup = out.some(b => _barTimeMsForMatrix(b) === ft);
+      if (!dup) out.push(forming);
+    }
+  }
+  return out;
+}
+
 function _resolvePointFrame(inner) {
   const cells = Array.from(document.querySelectorAll('.matrix-cell'));
   if (!cells.length) return null;
@@ -389,7 +426,7 @@ function _renderPointCloud() {
     return;
   }
 
-  const viewedBars = _getViewedBarsForMatrix();
+  const pointBars = _getBarsForMatrixPointCloud();
   const eligible = [];
   let formingMs = null;
   if (state.formingBar?.time != null) {
@@ -398,7 +435,7 @@ function _renderPointCloud() {
       : Date.parse(state.formingBar.time);
     if (Number.isFinite(ft)) formingMs = ft;
   }
-  for (const bar of viewedBars) {
+  for (const bar of pointBars) {
     const vRank = Number(bar?.vRank);
     const dRank = Number(bar?.dRank);
     if (!Number.isInteger(vRank) || !Number.isInteger(dRank)) continue;

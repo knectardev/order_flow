@@ -1087,7 +1087,7 @@
     z-index: 5;
     display: none;
     min-width: 180px;
-    max-width: 280px;
+    max-width: 340px;
     background: var(--panel-2);
     border: 1px solid var(--border-2);
     border-radius: 3px;
@@ -1102,7 +1102,9 @@
   .chart-tooltip .tt-head {
     display: flex;
     align-items: baseline;
+    flex-wrap: wrap;
     gap: 8px;
+    row-gap: 4px;
     margin-bottom: 4px;
     border-bottom: 1px solid var(--border);
     padding-bottom: 4px;
@@ -1130,6 +1132,62 @@
     color: var(--muted-2);
     letter-spacing: 0.4px;
     text-transform: uppercase;
+  }
+  /* PHAT tooltip: gestalt first, then label/value scan grid (notes.txt hierarchy). */
+  .chart-tooltip .tt-phat-lede {
+    margin: 8px 0 0;
+    padding: 0 0 2px;
+    font-size: 10px;
+    font-style: italic;
+    color: var(--text);
+    line-height: 1.45;
+    letter-spacing: 0.02em;
+  }
+  .chart-tooltip .tt-phat-kv {
+    display: grid;
+    grid-template-columns: minmax(5rem, auto) minmax(3.5rem, auto) minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 6px;
+    margin-top: 10px;
+    font-size: 9.5px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    align-items: start;
+  }
+  .chart-tooltip .tt-phat-kv-row {
+    display: contents;
+  }
+  .chart-tooltip .tt-phat-kv-label {
+    color: var(--muted-2);
+    font-size: 9px;
+    padding-top: 1px;
+  }
+  .chart-tooltip .tt-phat-kv-num {
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .chart-tooltip .tt-phat-kv-meta {
+    color: var(--muted);
+    font-size: 9.5px;
+    line-height: 1.35;
+  }
+  .chart-tooltip .tt-phat-kv-meta--stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .chart-tooltip .tt-phat-kv-rej-sub {
+    display: block;
+    color: var(--muted-2);
+    font-size: 9px;
+  }
+  .chart-tooltip .tt-phat-warn {
+    margin-top: 8px;
+    font-size: 9px;
+    color: var(--warn);
+    line-height: 1.35;
+  }
+  .chart-tooltip .tt-phat-disclaimer {
+    margin-top: 12px;
   }
 
   /* Tooltip variant accent borders (mirror .glossary-list li accents). */

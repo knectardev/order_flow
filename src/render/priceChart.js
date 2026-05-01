@@ -330,6 +330,9 @@ function _classifyPhatBody(bar, isUp) {
   };
 }
 
+/** Both wick liquidity above this ⇒ tooltip explains winner-vs-other-extreme (see phat.py). */
+const PHAT_WICK_LIQ_EPS = 0.02;
+
 function _classifyPhatRejection(bar) {
   const rejectionSide = String(bar?.rejectionSide || 'none');
   const rejectionType = String(bar?.rejectionType || 'none');
@@ -356,18 +359,59 @@ function _classifyPhatRejection(bar) {
   };
 }
 
-function _buildPhatHoverPayload(bar, isUp) {
+function _phatRejectionRingFilled(bar) {
+  const rj = _classifyPhatRejection(bar);
+  if (!rj.hasRejection) return false;
+  const type = String(rj.rejectionType || 'none');
+  if (type === 'absorption') return true;
+  const liq = Number(rj.sideLiquidity);
+  const thr = Number(state.phatExhaustionRingLiquidityThreshold);
+  if (type === 'exhaustion' && Number.isFinite(liq) && Number.isFinite(thr) && liq >= thr) return true;
+  return false;
+}
+
+function _buildPhatHoverPayload(bar, isUp, layout = null) {
+  const G = Math.max(0, Math.min(2, Number(state.phatBodyImbalanceThreshold) || 0.30));
   const body = _classifyPhatBody(bar, isUp);
   const rejection = _classifyPhatRejection(bar);
   const shapeLabel = body.shape === 'P' ? 'P-shape' : (body.shape === 'b' ? 'b-shape' : 'Neutral body');
+
+  let neutralReason = null;
+  if (body.shape === 'neutral') {
+    if (!body.hasNorms) neutralReason = 'no_norms';
+    else if (body.imbalance < G) neutralReason = 'below_gate';
+    else neutralReason = 'disagreement';
+  }
+  const disagreementFlag = body.shape === 'neutral' && body.hasNorms && body.imbalance >= G;
+
+  const uLiq = Number(bar?.upperWickLiquidity);
+  const lLiq = Number(bar?.lowerWickLiquidity);
+  const bothWicksLiquidity =
+    Number.isFinite(uLiq) && uLiq > PHAT_WICK_LIQ_EPS
+    && Number.isFinite(lLiq) && lLiq > PHAT_WICK_LIQ_EPS;
+
+  const d = Number(bar?.delta);
+  const delta = Number.isFinite(d) ? d : null;
+
+  const rejectionRingFilled = rejection.hasRejection ? _phatRejectionRingFilled(bar) : null;
+
   return {
     shape: body.shape,
     shapeLabel,
+    gate: G,
     imbalance: body.hasNorms ? body.imbalance : null,
     topNorm: body.hasNorms ? body.topNorm : null,
     bottomNorm: body.hasNorms ? body.botNorm : null,
     hasNorms: body.hasNorms,
+    neutralReason,
+    disagreementFlag,
     rejection,
+    rejectionRingFilled,
+    bothWicksLiquidity,
+    delta,
+    layout: layout && typeof layout.volNorm === 'number'
+      ? { volNorm: layout.volNorm, narrowBody: !!layout.narrowBody }
+      : null,
   };
 }
 
@@ -449,7 +493,8 @@ function _drawPhatCandle(ctx, {
   const rejectionSide = rejection.rejectionSide;
   const rejectionStrength = rejection.rejectionStrength;
   const rejectionType = rejection.rejectionType;
-  const ringCol = isUp ? _candleUpRgba(0.9) : _candleDownRgba(0.9);
+  const ringDimMul = dim ? 0.45 : 1.0;
+  const ringCol = isUp ? _candleUpRgba(0.9 * ringDimMul) : _candleDownRgba(0.9 * ringDimMul);
   const chartBg = CHART_CANVAS_BG;
   const _wickLiqAtSide = () => {
     if (rejectionSide === 'high') return Number(bar.upperWickLiquidity);
@@ -1157,7 +1202,10 @@ function drawPriceChart() {
           y0: top,
           y1: top + bodyH,
           kind: 'phatCandle',
-          payload: { ..._buildPhatHoverPayload(b, isUp), barTimeMs },
+          payload: {
+            ..._buildPhatHoverPayload(b, isUp, { volNorm, narrowBody: narrowPhatBody }),
+            barTimeMs,
+          },
         });
       }
     } else if (isForming) {
