@@ -260,7 +260,6 @@
             </select>
           sessions</button>
         </span>
-        <button class="matrix-range-btn" data-kind="all">All loaded</button>
         <button class="matrix-range-btn" data-kind="custom">Custom…</button>
       </div>
       <div class="matrix-range-row matrix-range-custom" id="matrixRangeCustomRow" style="display:none;">
@@ -360,7 +359,7 @@
             <span class="phat-swatch-flat phat-swatch-flat-down"></span>
           </span>
           <span class="bias-name">Neutral (no P/b split)</span>
-          <span class="bias-vote">Translucent green or red body (swatches: up · down), matching chart neutral candles with no two-tone split. When |topNorm − botNorm| is below the gate, or when imbalance is high but fights bar direction — <strong>disagreement</strong>, Option A — the chart shows this same neutral look (not a separate visual).</span>
+          <span class="bias-vote">Translucent green or red body (swatches: up · down), matching chart neutral candles with no two-tone split. When |topNorm − botNorm| is below the gate, or when imbalance is high but <strong>opposes bar direction</strong> (disagreement) — the chart keeps a single neutral body (flow vs price conflict, not a separate two-tone visual).</span>
         </li>
         <li><span class="bias-swatch phat-swatch-body phat-swatch-split phat-swatch-p phat-swatch-border-up"></span><span class="bias-name">P-shape</span><span class="bias-vote">Up candle · darker top half — buyers pressed the upper body</span></li>
         <li><span class="bias-swatch phat-swatch-body phat-swatch-split phat-swatch-b phat-swatch-border-down"></span><span class="bias-name">b-shape</span><span class="bias-vote">Down candle · darker bottom half — sellers pressed the lower body</span></li>
@@ -390,18 +389,24 @@
           <span class="bias-vote">PHAT bodies map <strong>bar volume</strong> to width using the <strong>min and max volume among bars currently visible</strong> on the price chart (linear scale, with a floor so bodies never vanish). A bar near the bottom of that range looks <strong>narrow</strong>; near the top looks <strong>wide</strong>. <strong>Panning or zooming</strong> changes the visible window, so min/max shift and the same historical bar can look wider or narrower — that trades cross-pan stability for legibility of what’s on screen. Bodies ≤ <strong>one price tick</strong> still use the tighter width tier before volume is applied.</span>
         </li>
       </ul>
-      <div class="phat-legend-section-label">Wick-tip rejection (at most one per bar)</div>
+      <div class="phat-legend-section-label">Wicks (on chart)</div>
       <ul>
-        <li><span class="phat-ring-cell"><span class="phat-ring-demo phat-ring-demo--filled" aria-hidden="true"></span></span><span class="bias-name">Filled circle</span><span class="bias-vote"><strong>Absorption</strong> — heavy prints at the extreme; volume held the level</span></li>
-        <li><span class="phat-ring-cell"><span class="phat-ring-demo phat-ring-demo--open" aria-hidden="true"></span></span><span class="bias-name">Open circle</span><span class="bias-vote"><strong>Exhaustion</strong> — aggressive flow faded at the extreme; hollow unless wick liquidity also clears <code>phatExhaustionRingLiquidityThreshold</code> (0.55), in which case it fills.</span></li>
-        <li><span class="phat-ring-cell"><span class="phat-ring-demo phat-ring-demo--size" aria-hidden="true"></span></span><span class="bias-name">Circle diameter</span><span class="bias-vote">Strength of the rejection — larger = more decisive; at most one circle per bar.</span></li>
+        <li>
+          <span class="phat-legend-no-swatch-gap" aria-hidden="true"></span>
+          <span class="bias-name">Geometry & strokes</span>
+          <span class="bias-vote">Upper and lower wicks run from the body to the bar’s high and low at a <strong>uniform</strong> line weight. Each wick meets the body on the edge that matches sweep order—which extreme printed first—which is why the two wicks often look asymmetric.</span>
+        </li>
       </ul>
-      <div class="bias-legend-foot">
+      <div class="bias-legend-foot phat-legend-foot--active">
+        <strong>What the chart renders</strong><br>
         Threshold default: <strong>0.30</strong> on imbalance (see <code>phatBodyImbalanceThreshold</code>).<br>
-        Exhaustion can fill when wick liquidity ≥ <code>phatExhaustionRingLiquidityThreshold</code> (default <strong>0.55</strong>).<br>
-        Also: ≤1-tick bodies use the tighter width tier before volume · asymmetric wicks by extreme order · thicker wick stroke when liquidity concentrates at the tip.<br>
+        ≤1-tick bodies use the tighter width tier before volume · asymmetric wicks by extreme order · uniform wick stroke.<br>
         Matrix regime dots: radius scales with volume (stable ladder); fill color encodes bar delta sign and magnitude vs loaded bars — independent from candle OHLC color (§6.1). Not the same scale as chart PHAT width.<br>
         PHAT requires API bars with PHAT fields populated.
+      </div>
+      <div class="phat-legend-foot-research" role="note">
+        <div class="phat-legend-foot-research-label">PHAT fields & docs</div>
+        <p class="phat-legend-foot-research-body">Full column list and semantics for PHAT payloads (including liquidity and rejection metadata on <code>/bars</code>): <strong>requirements.md §7.1</strong> · <code>docs/phat_wick_liquidity_research.md</code>.</p>
       </div>
     </div>
   </div>

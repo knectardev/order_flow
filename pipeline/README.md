@@ -3,6 +3,15 @@
 Decode Databento DBN/Trades files for the front-month ES future and aggregate
 them into 1-minute OHLCV+delta bars consumable by `orderflow_dashboard.html`.
 
+## Regime ranks and scatter scores
+
+Integer **`v_rank` / `d_rank`** and continuous **`vol_score` / `depth_score`**
+are computed only in **`regime.compute_ranks`** and stamped in **`cli._stamp_ranks`**.
+Scatter uses a **mid-rank** percentile (open **(1, 5)**); integer ranks use an
+**endpoint** percentile. See **`requirements.md` §4.3** before changing import,
+ETL, or DB backfill logic — do not reintroduce endpoint-only scatter or a second
+rolling pass per series.
+
 ## Install
 
 ```bash

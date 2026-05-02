@@ -15,9 +15,9 @@ Coverage matrix:
 
 3. test_identical_bars_rank_3
    100 identical bars (constant range, vpt, concentration) must produce
-   v_rank == 3 and d_rank == 3 for every bar past warmup. The mid-rank
-   tiebreaker in `_last_pct` puts a constant series at percentile 0.5,
-   which the linear stretch maps to bucket 3.
+   v_rank == 3 and d_rank == 3 for every bar past warmup. The endpoint
+   `(n-1)` percentile maps a constant window to 0.5 → raw bucket 3 before
+   smoothing.
 
 4. test_monotonically_increasing_range_high_v_rank
    When range_pct increases monotonically, the most recent bar should
@@ -30,13 +30,19 @@ Coverage matrix:
    without loss (regime-DB plan §1b/§1e). Verify the field is rounded
    in-place.
 
-6. test_clip_range_to_1_5
-   range_pct values that would map outside [1, 5] (after percentile
-   stretch) must clip cleanly. With pure-monotonic data the smoothed
-   percentile reaches 1.0 → bucket 5 — not e.g. 6.
+6. test_rank_integer_and_scatter_ranges
+   Integer v_rank/d_rank ∈ {1..5}. Continuous vol_score/depth_score use a
+   mid-rank track → strictly inside (1, 5) for any window with more than
+   one valid sample (no artificial mass exactly at 1 or 5).
 
-These cases pin the externally-visible behavior. Internal helpers
-(`_rolling_z`, `_rolling_pct_rank_to_bucket`) are tested transitively;
+7. test_scatter_scores_avoid_exact_endpoints
+   On a long random session, zero vol_score/depth_score values equal
+   exactly 1.0 or 5.0 (at 1e-9 tolerance).
+
+8. test_empty_dataframe
+   Empty input returns columns without crashing.
+ the externally-visible behavior. Internal helpers
+(`_rolling_z`, `_rolling_dual_pct_to_buckets`) are tested transitively;
 direct tests on them would over-couple to implementation details that
 may change as we tune the classifier in Phase 5+.
 """
@@ -195,9 +201,9 @@ def test_anti_jitter_range_pct_rounding():
 
 
 # ───────────────────────────────────────────────────────────
-# 6. Clip ensures rank ∈ {1, 2, 3, 4, 5}.
+# 6. Integer ranks clipped; scatter coords strictly interior (1, 5).
 # ───────────────────────────────────────────────────────────
-def test_rank_values_clipped_to_1_5():
+def test_rank_integer_and_scatter_ranges():
     df = _make_random_session(n=200, seed=11)
     out = regime.compute_ranks(df)
     for col in ("v_rank", "d_rank"):
@@ -206,17 +212,37 @@ def test_rank_values_clipped_to_1_5():
                 continue
             iv = int(v)
             assert 1 <= iv <= 5, f"{col} value {iv} out of [1,5]"
+    for col in ("vol_score", "depth_score"):
+        for v in out[col]:
+            if v is None:
+                continue
+            fv = float(v)
+            assert 1.0 < fv < 5.0, f"{col} value {fv} not in open interval (1,5)"
+
+
+def test_scatter_scores_avoid_exact_endpoints():
+    df = _make_random_session(n=800, seed=17)
+    out = regime.compute_ranks(df)
+    warm = regime.REGIME_PARAMS["1m"]["warmup"]
+    for col in ("vol_score", "depth_score"):
+        for i in range(warm, len(out)):
+            v = out[col].iloc[i]
+            if v is None:
+                continue
+            fv = float(v)
+            assert not math.isclose(fv, 1.0, abs_tol=1e-9), f"{col}[{i}]==1.0"
+            assert not math.isclose(fv, 5.0, abs_tol=1e-9), f"{col}[{i}]==5.0"
 
 
 # ───────────────────────────────────────────────────────────
-# 7. Empty input: function must not crash and must return columns.
+# 8. Empty input: function must not crash and must return columns.
 # ───────────────────────────────────────────────────────────
 def test_empty_dataframe():
     df = pd.DataFrame(columns=["high", "low", "volume", "vpt", "concentration"])
     out = regime.compute_ranks(df)
     assert list(out.columns) == [
         "high", "low", "volume", "vpt", "concentration",
-        "range_pct", "v_rank", "d_rank",
+        "range_pct", "v_rank", "d_rank", "vol_score", "depth_score",
     ]
     assert len(out) == 0
 

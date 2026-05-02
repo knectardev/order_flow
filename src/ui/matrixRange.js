@@ -1,8 +1,8 @@
 // ───────────────────────────────────────────────────────────
 // Matrix occupancy range selector + heatmap toggle (regime-DB plan §3b/§3c).
 //
-// Owns the four `range.kind` reducers (Current session / Last hour /
-// Last N / All loaded / Custom) that resolve `state.matrixState.range`
+// Owns `range.kind` reducers (Current session / Last hour / Last N /
+// Custom) that resolve `state.matrixState.range`
 // down to a concrete (from, to[, sessionDate]) trio for /occupancy.
 // `resolveOccupancyWindow()` is called every render — it's pure,
 // deterministic in `(cursor, range, replay.sessions)`, and cheap.
@@ -74,12 +74,18 @@ function resolveOccupancyWindow() {
     };
   }
 
+  // Legacy / defensive: `all` is no longer selectable in the UI; treat as
+  // capped trailing sessions so occupancy stays bounded.
   if (range.kind === 'all') {
+    const cap = 20;
+    const n = Math.min(cap, sessions.length);
+    const slice = sessions.slice(Math.max(0, sessions.length - n));
+    if (slice.length === 0) return null;
     return {
       sessionDate: null,
-      from: sessions[0].sessionStart,
-      to:   sessions[sessions.length - 1].sessionEnd,
-      label: `All loaded (${sessions.length} session${sessions.length === 1 ? '' : 's'})`,
+      from: slice[0].sessionStart,
+      to: slice[slice.length - 1].sessionEnd,
+      label: `Last ${slice.length} session${slice.length === 1 ? '' : 's'} (capped)`,
     };
   }
 
@@ -165,6 +171,16 @@ function repaintMatrix() {
 }
 
 function bindMatrixRangeUI() {
+  // "All loaded" was removed from the UI (unbounded occupancy); migrate stale state.
+  if (state.matrixState.range?.kind === 'all') {
+    state.matrixState.range = {
+      kind: 'lastN',
+      n: 5,
+      from: null,
+      to: null,
+      label: 'Last 5 sessions',
+    };
+  }
   document.querySelectorAll('.matrix-range-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const kind = btn.dataset.kind;

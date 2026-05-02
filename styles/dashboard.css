@@ -856,6 +856,38 @@
     font-size: 9px;
     color: var(--text-2);
   }
+  /* Reserve the swatch column when a row has no candle swatch — keeps label + body copy aligned with P/b/width rows. */
+  .phat-legend-no-swatch-gap {
+    display: block;
+    width: 76px;
+    min-height: 1px;
+    justify-self: center;
+    align-self: start;
+  }
+  .phat-legend-foot-research {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid #2a3142;
+    font-size: 9.5px;
+    color: var(--muted);
+    line-height: 1.5;
+    letter-spacing: 0.25px;
+  }
+  .phat-legend-foot-research-label {
+    font-size: 8.5px;
+    font-weight: 600;
+    letter-spacing: 0.75px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .phat-legend-foot-research-body {
+    margin: 0;
+  }
+  .phat-legend-foot-research-body code {
+    font-size: 9px;
+    color: var(--text-2);
+  }
   .phat-swatch-body {
     width: 46px;
     height: 58px;
@@ -1777,57 +1809,21 @@
   }
   .matrix-inner.warmup .matrix-warmup { display: flex; }
 
-  /* Regime point cloud overlay: one point per visible settled candle with
-     rank-valid vRank/dRank, rendered above cell fills. */
   .matrix-point-layer {
     position: absolute;
     inset: 0;
     pointer-events: none;
     z-index: 4;
+    isolation: isolate;
   }
-  .matrix-point {
-    position: absolute;
-    transform: translate(-50%, -50%);
-    border-radius: 50%;
+
+  /* Regime matrix scatter canvas: vol×depth mapped across the 5×5 cell block. */
+  .matrix-scatter-canvas {
+    display: block;
     pointer-events: auto;
     cursor: pointer;
-    padding: 0;
-    margin: 0;
-    outline: none;
-  }
-  .matrix-point:focus {
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
-  }
-
-  /* Bearish candle: pulse matrix dot in chart-link red (hover, selection, or live forming). */
-  /* Halo spread uses --pulse-ring-* set per-dot from JS so pulses scale with volume-sized radius. */
-  @keyframes matrix-point-bear-pulse {
-    0%, 100% {
-      background: rgba(255, 59, 48, 0.45);
-      box-shadow: 0 0 0 var(--pulse-ring-min, 1px) rgba(255, 59, 48, 0.35);
-    }
-    50% {
-      background: rgba(255, 59, 48, 0.95);
-      box-shadow: 0 0 0 var(--pulse-ring-max, 4px) rgba(255, 59, 48, 0.5);
-    }
-  }
-  .matrix-point.matrix-point--bear-flash {
-    animation: matrix-point-bear-pulse 0.85s ease-in-out infinite;
-  }
-
-  /* Bullish candle: same pulse/halo language as bear-flash, chart-up green. */
-  @keyframes matrix-point-bull-pulse {
-    0%, 100% {
-      background: rgba(0, 192, 135, 0.45);
-      box-shadow: 0 0 0 var(--pulse-ring-min, 1px) rgba(0, 192, 135, 0.4);
-    }
-    50% {
-      background: rgba(0, 192, 135, 0.95);
-      box-shadow: 0 0 0 var(--pulse-ring-max, 4px) rgba(0, 192, 135, 0.55);
-    }
-  }
-  .matrix-point.matrix-point--bull-flash {
-    animation: matrix-point-bull-pulse 0.85s ease-in-out infinite;
+    border-radius: 0;
+    touch-action: none;
   }
 
   /* Heatmap layer (regime-DB plan §3c). Sits beneath all other cell

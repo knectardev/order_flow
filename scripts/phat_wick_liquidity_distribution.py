@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import os
 import sys
 from pathlib import Path
@@ -390,6 +389,95 @@ def main() -> int:
         f"    ...of which wick length on rejection side <=2 ticks: {fe_short:,} ({_fmt_pct(fe_short, fe_total) if fe_total else '-'})"
     )
 
+    # --- E: absorption vs exhaustion by rejection-side wick length (pre-implementation check) ---
+    def _rej_side_ticks(r: dict) -> int | None:
+        rs = (r.get("rejection_side") or "").strip().lower()
+        if rs not in ("high", "low"):
+            return None
+        o, h, lo, c = float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])
+        uw, lw = _wick_ticks(o, h, lo, c, tick_size)
+        return uw if rs == "high" else lw
+
+    def _wick_bucket(t: int | None) -> str | None:
+        if t is None:
+            return None
+        if t <= 0:
+            return "0"
+        if t == 1:
+            return "1"
+        if t == 2:
+            return "2"
+        if t <= 5:
+            return "3-5"
+        if t <= 10:
+            return "6-10"
+        return "11+"
+
+    abs_rows = []
+    exh_rows = []
+    for r in rows:
+        rt = (r.get("rejection_type") or "").strip().lower()
+        if rt == "absorption":
+            abs_rows.append(r)
+        elif rt == "exhaustion":
+            exh_rows.append(r)
+
+    def _bucket_counts(rows_subset: list[dict]) -> dict[str, int]:
+        out = {"0": 0, "1": 0, "2": 0, "3-5": 0, "6-10": 0, "11+": 0}
+        for r in rows_subset:
+            w = _rej_side_ticks(r)
+            b = _wick_bucket(w)
+            if b:
+                out[b] += 1
+        return out
+
+    def _short_frac(rows_subset: list[dict]) -> tuple[float, int]:
+        ok = sh = 0
+        for r in rows_subset:
+            w = _rej_side_ticks(r)
+            if w is None:
+                continue
+            ok += 1
+            if w <= 2:
+                sh += 1
+        return (sh / ok if ok else 0.0, ok)
+
+    bc_abs = _bucket_counts(abs_rows)
+    bc_exh = _bucket_counts(exh_rows)
+    sf_abs, n_abs = _short_frac(abs_rows)
+    sf_exh, n_exh = _short_frac(exh_rows)
+
+    print("\n### E. Rejection-side wick length by classification (absorption vs exhaustion)")
+    print(f"  Absorption bars (rejection typed): {len(abs_rows):,}; with valid side: {n_abs:,}")
+    print(f"  Exhaustion bars (rejection typed): {len(exh_rows):,}; with valid side: {n_exh:,}")
+    rows_e: list[tuple] = []
+    for lab in ("0", "1", "2", "3-5", "6-10", "11+"):
+        a, e = bc_abs[lab], bc_exh[lab]
+        rows_e.append((lab, a, _fmt_pct(a, len(abs_rows)) if abs_rows else "-", e, _fmt_pct(e, len(exh_rows)) if exh_rows else "-"))
+    _print_table(
+        "Bucket (rejection-side wick ticks)",
+        ("bucket", "abs_n", "abs_%", "exh_n", "exh_%"),
+        rows_e,
+    )
+    print(
+        "  Fraction rejection-side wick length <= 2 ticks: absorption "
+        f"{100.0 * sf_abs:.2f}% (n={n_abs}) vs exhaustion {100.0 * sf_exh:.2f}% (n={n_exh})"
+    )
+    # Recommend symmetric wick-length gate for absorption rings if short-wick concentration is comparable or worse than exhaustion.
+    sym_msg = "UNDECIDED (insufficient absorption or exhaustion samples)"
+    if n_abs >= 30 and n_exh >= 30:
+        if sf_abs >= sf_exh - 0.02:
+            sym_msg = (
+                "YES - apply the same min-wick-ticks gate to absorption ring fill as exhaustion "
+                "(absorption short-wick share is not materially lower than exhaustion; parallel artifact risk)."
+            )
+        else:
+            sym_msg = (
+                "OPTIONAL - absorption appears less concentrated on short wicks than exhaustion; "
+                "you may gate absorption rings only after manual review, or keep asymmetric v1."
+            )
+    print(f"\n  Recommendation (symmetric absorption ring gating): {sym_msg}")
+
     # --- CSV ---
     csv_rows: list[dict[str, str]] = []
 
@@ -420,6 +508,14 @@ def main() -> int:
         lower_eq1_short_wick_frac=l1_short / l1_ok if l1_ok else "",
         filled_exhaustion_n=fe_total,
         filled_exhaustion_short_wick_frac=fe_short / fe_total if fe_total else "",
+    )
+    cr(
+        "E_absorption_exhaustion",
+        absorption_n=len(abs_rows),
+        exhaustion_n=len(exh_rows),
+        absorption_short_wick_frac=sf_abs,
+        exhaustion_short_wick_frac=sf_exh,
+        symmetric_gate_recommended=("yes" if n_abs >= 30 and n_exh >= 30 and sf_abs >= sf_exh - 0.02 else "review"),
     )
 
     out_path = args.csv_out.expanduser()

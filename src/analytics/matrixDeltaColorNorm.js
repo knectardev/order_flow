@@ -1,5 +1,5 @@
 /**
- * Regime matrix point fill: signed bar delta with winsorized |delta| magnitude (HSL anchors).
+ * Signed-bar delta ladder + HSL fill (orthogonal to candle coloring). Scatter hue follows OHLC in matrix.js + CHART_*.
  * See requirements §6.1 — orthogonal to volume-based radius (matrixVolumeRadiusNorm.js).
  */
 

@@ -33,6 +33,10 @@ Endpoints (regime-DB plan §1c, §1b'; Phase 5 timeframe extension):
         - `cell=v,d` (repeatable, capped at 25 pairs) filters via DuckDB
           tuple-IN on (v_rank, d_rank). Composite index `idx_bars_tf_rank`
           on (timeframe, v_rank, d_rank) makes this an index probe.
+        - JSON keys `volScore` / `depthScore` mirror DB `vol_score` /
+          `depth_score` (scatter mid-rank track from `regime.compute_ranks`;
+          requirements §4.3). Read-only: never derived in the API from
+          `vRank`/`dRank`.
 
     GET /events?from=&to=&timeframe=&types=sweep,divergence&bar_times=t1,t2,...
         Optional `types` filters `event_type` (sweep, absorption, divergence,
@@ -352,6 +356,8 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "rangePct":        b["range_pct"],
         "vRank":           b["v_rank"],
         "dRank":           b["d_rank"],
+        "volScore":        b.get("vol_score"),
+        "depthScore":      b.get("depth_score"),
         "vwap":            b.get("vwap"),
         "topCvd":          b.get("top_cvd"),
         "bottomCvd":       b.get("bottom_cvd"),
@@ -362,6 +368,8 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "bottomBodyVolumeRatio": b.get("bottom_body_volume_ratio"),
         "upperWickLiquidity": b.get("upper_wick_liquidity"),
         "lowerWickLiquidity": b.get("lower_wick_liquidity"),
+        "upperWickTicks":   b.get("upper_wick_ticks"),
+        "lowerWickTicks":   b.get("lower_wick_ticks"),
         "highBeforeLow":   b.get("high_before_low"),
         "rejectionSide":   b.get("rejection_side"),
         "rejectionStrength": b.get("rejection_strength"),

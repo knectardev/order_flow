@@ -1059,13 +1059,21 @@ function _snapCursorToTimeframe(prevBarTimeMs, tf) {
 
 function _adjustMatrixRangeForTfSwitch(prevTf, newTf) {
   // Phase 5 heatmap auto-bump: switching to '1h' saves the prior range
-  // and forces 'all'; switching back to 1m / 15m restores. 15m never
+  // and sets matrix window to last N sessions (not unbounded — full-timeline
+  // occupancy was too heavy). Switching back to 1m / 15m restores. 15m never
   // auto-bumps — the user's selection is preserved across the
   // 1m ↔ 15m boundary. The saved-range slot is shared because there's
   // only ever one "before-1h" snapshot at a time.
   if (newTf === '1h' && prevTf !== '1h') {
     state.savedMatrixRangeBeforeTf1h = JSON.parse(JSON.stringify(state.matrixState.range));
-    state.matrixState.range = { kind: 'all', n: null, from: null, to: null, label: 'All loaded' };
+    const n = 5;
+    state.matrixState.range = {
+      kind: 'lastN',
+      n,
+      from: null,
+      to: null,
+      label: `Last ${n} sessions`,
+    };
     return;
   }
   if (newTf !== '1h' && prevTf === '1h') {

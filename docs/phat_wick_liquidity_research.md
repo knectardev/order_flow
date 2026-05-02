@@ -4,6 +4,12 @@ Research brief derived from the codebase. For histograms on your DuckDB, run:
 
 `python scripts/phat_wick_liquidity_distribution.py` (see `docs/cursor-prompt-wick-liquidity-histogram.md` for the full spec; default DB `data/orderflow.duckdb`, optional `--max-rows` to sample).
 
+## UI status (dashboard)
+
+Wick-level **absorption vs exhaustion** classification and ring-fill logic were researched and implemented in pipeline + API, but **wick-tip rejection disks** are **not shown** in the default product UI (`state.phatShowWickRejectionRings` is **false**): the signal was not validated for predictive utility as a primary chart read; the feature is **shelved** pending backtest evidence. **Liquidity → wick stroke thickness** is also **off** by default (`state.phatShowWickLiquidityStrokeScaling` is **false**) — flip to **true** in `src/state.js` to re-enable the scaled stroke (still Option A semantics in §7.1 when on). **Data retained:** `rejection_*`, `upper_wick_ticks`, wick liquidity columns remain in DuckDB and `/bars`; hover payload still includes rejection fields so enabling circles later does not require a parallel data path.
+
+**Historical ring rules** (when UI disks are enabled): minimum rejection-side wick length for filled disks (default **2** ticks); exhaustion also needs side liquidity ≥ threshold; absorption wick gate without liquidity fill threshold when configured; no 0-tick geometric wick on the chosen side — see `requirements.md` §7.1 and **`PLAN.md`**.
+
 ---
 
 ## 1. What “wick liquidity” is (and the clamp)
@@ -47,7 +53,7 @@ Ring fill is **not** “liquidity > threshold” in isolation. In `src/render/pr
 
 `rejection_type` in the pipeline is driven by **average volume near the extreme** vs **overall average bar volume** (not by liquidity alone): if `vol_ratio > 1.1` at the zone near the wick tip, the type is **absorption**, else **exhaustion**.
 
-Tightening **ring fill** in the UI is usually about **`phatExhaustionRingLiquidityThreshold`** and/or changing absorption/exhaustion classification in Python—not the wick line thickness (which uses liquidity to modulate stroke width on the chart).
+Tightening **ring fill** in the UI is usually about **`phatExhaustionRingLiquidityThreshold`** and/or changing absorption/exhaustion classification in Python—not PHAT **wick line thickness**, which scales with liquidity **only when** **`phatShowWickLiquidityStrokeScaling`** is **true**.
 
 ---
 

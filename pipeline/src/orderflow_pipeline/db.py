@@ -26,8 +26,11 @@ Tables (Phase 5):
         range_pct                    DOUBLE      - filled by regime.py
         vpt                          DOUBLE      - volume / distinct_prices
         concentration                DOUBLE      - modal_volume / volume
-        v_rank                       SMALLINT    - 1..5, NULL during warmup
-        d_rank                       SMALLINT    - 1..5, NULL during warmup
+        v_rank                       SMALLINT    - 1..5, NULL during warmup (integer ranks).
+        d_rank                       SMALLINT    - 1..5, NULL during warmup.
+        vol_score                    DOUBLE      - scatter abscissa from regime.compute_ranks
+                                       (mid-rank track; open (1,5) typical — not duplicate of v_rank).
+        depth_score                  DOUBLE      - scatter ordinate (same contract as vol_score).
         vwap                         DOUBLE      - Phase 6 running session VWAP at bar close
         bias_state                   VARCHAR     - Phase 6 7-level bias for THIS bar's timeframe
         parent_1h_bias               VARCHAR     - Phase 6 denormalized 1h bias covering this bar
@@ -122,6 +125,8 @@ _SCHEMA_SQL: tuple[str, ...] = (
         bottom_body_volume_ratio DOUBLE,
         upper_wick_liquidity DOUBLE,
         lower_wick_liquidity DOUBLE,
+        upper_wick_ticks  SMALLINT,
+        lower_wick_ticks  SMALLINT,
         high_before_low   BOOLEAN,
         rejection_side    VARCHAR,
         rejection_strength DOUBLE,
@@ -270,6 +275,8 @@ _PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bottom_body_volume_ratio", "DOUBLE"),
     ("upper_wick_liquidity", "DOUBLE"),
     ("lower_wick_liquidity", "DOUBLE"),
+    ("upper_wick_ticks", "SMALLINT"),
+    ("lower_wick_ticks", "SMALLINT"),
     ("high_before_low", "BOOLEAN"),
     ("rejection_side", "VARCHAR"),
     ("rejection_strength", "DOUBLE"),
@@ -277,6 +284,11 @@ _PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bias_state",      "VARCHAR"),
     ("parent_1h_bias",  "VARCHAR"),
     ("parent_15m_bias", "VARCHAR"),
+)
+# Continuous 1..5 regime coordinates for matrix / API (upgrade-safe ALTER).
+_BAR_REGIME_CONTINUOUS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("vol_score", "DOUBLE"),
+    ("depth_score", "DOUBLE"),
 )
 _BAR_SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bar_end_time", "TIMESTAMP"),
@@ -318,6 +330,8 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     # Phase 6 in-place upgrade for pre-existing databases.
     for col_name, col_type in _PHASE6_BAR_COLUMNS:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    for col_name, col_type in _BAR_REGIME_CONTINUOUS_COLUMNS:
+        con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _FIRE_DIAGNOSTIC_COLUMNS:
         con.execute(f"ALTER TABLE fires ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _BACKTEST_TRADE_COLUMNS:
@@ -347,7 +361,7 @@ def write_session(
         bars_df:    session_date, bar_time, bar_end_time, timeframe, open, high, low,
                     close, volume, delta, trade_count, large_print_count,
                     distinct_prices, range_pct, vpt, concentration, v_rank,
-                    d_rank, vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type, bias_state, parent_1h_bias,
+                    d_rank, vol_score, depth_score, vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type, bias_state, parent_1h_bias,
                     parent_15m_bias  (Phase 6 cols may be empty strings or
                     NULL during ingest; the bias-stamp pass + denorm pass
                     fill them after this write completes)
@@ -407,7 +421,7 @@ def write_session(
             # NULL so a partially-stamped frame still writes cleanly. The
             # cli.py rebuild always populates them, so this fallback is
             # only exercised by tests / direct API users.
-            for col in ("bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias"):
+            for col in ("bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "upper_wick_ticks", "lower_wick_ticks", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias", "vol_score", "depth_score"):
                 if col not in bars_df.columns:
                     bars_df[col] = None
             con.execute(
@@ -416,14 +430,14 @@ def write_session(
                     (session_date, bar_time, bar_end_time, timeframe, open, high, low, close,
                      volume, delta, trade_count, large_print_count,
                      distinct_prices, range_pct, vpt, concentration,
-                     v_rank, d_rank,
-                     vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type,
+                     v_rank, d_rank, vol_score, depth_score,
+                     vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type,
                      bias_state, parent_1h_bias, parent_15m_bias)
                 SELECT session_date, bar_time, bar_end_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
-                       v_rank, d_rank,
-                       vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, high_before_low, rejection_side, rejection_strength, rejection_type,
+                       v_rank, d_rank, vol_score, depth_score,
+                       vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type,
                        bias_state, parent_1h_bias, parent_15m_bias
                 FROM bars_df
                 """

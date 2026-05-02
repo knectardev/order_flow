@@ -7,7 +7,7 @@ entries while preserving Value Edge performance parity.
 
 ## Steps
 
-1. Rebuild DB so pipeline-generated fires are refreshed:
+1. Rebuild DB so pipeline-generated bars (including regime **`vol_score` / `depth_score`** — see `requirements.md` §4.3) and fires are refreshed:
    - `python -m orderflow_pipeline.cli rebuild --raw-dir <raw> --out-dir <out> --db-path data/orderflow.duckdb`
 2. Confirm Value Edge fire count in DB for the target window:
    - `SELECT COUNT(*) FROM fires WHERE timeframe='1m' AND watch_id='valueEdgeReject' AND bar_time BETWEEN ...`

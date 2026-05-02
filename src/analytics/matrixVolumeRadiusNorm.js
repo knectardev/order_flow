@@ -1,7 +1,7 @@
 /**
  * Stable sqrt(volume) ladder for regime-matrix point radii (decoupled from chart viewport).
- * Winsorize at MATRIX_LADDER_LO_PCT / HI_PCT on sqrt(volume) over loaded bars — same band as
- * abs(delta) coloring (`matrixLadderConstants.js`). Spike-heavy days compress extremes.
+ * Winsorize at MATRIX_LADDER_LO_PCT / HI_PCT on sqrt(volume) over loaded bars — same percentile
+ * band as ladders in `matrixLadderConstants.js` (used by delta norms and similar). Spike-heavy days compress extremes.
  */
 
 import { state } from '../state.js';

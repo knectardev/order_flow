@@ -269,9 +269,14 @@ def _stamp_ranks(bars: list, session_date: date, timeframe: str, seed_df) -> Non
     Builds a small pandas DataFrame from the bar-level scalars the
     classifier needs (`high`, `low`, `volume`, `vpt`, `concentration`),
     delegates to `regime.compute_ranks`, then copies the resulting
-    `range_pct` / `v_rank` / `d_rank` columns back onto each `Bar`
-    instance. After this call returns, `Bar.to_json()` and
+    `range_pct` / `v_rank` / `d_rank` / `vol_score` / `depth_score` columns
+    back onto each `Bar` instance. After this call returns, `Bar.to_json()` and
     `Bar.to_dict()` both expose the regime fields uniformly.
+
+    **Scatter scores:** `vol_score` and `depth_score` must always come from
+    `regime.compute_ranks` (mid-rank track, single rolling pass with ints).
+    Do not repopulate them from endpoint-only percentiles, from smoothed
+    `v_rank`, or from a second rolling pass — see `requirements.md` §4.3.
 
     Phase 5: passes the active timeframe + optional seed history so the
     classifier can use per-timeframe windows / hybrid warmup.
@@ -287,25 +292,31 @@ def _stamp_ranks(bars: list, session_date: date, timeframe: str, seed_df) -> Non
     range_pct_col = bars_df["range_pct"].tolist()
     v_rank_col    = bars_df["v_rank"].tolist()
     d_rank_col    = bars_df["d_rank"].tolist()
+    vol_sc_col    = bars_df["vol_score"].tolist()
+    dep_sc_col    = bars_df["depth_score"].tolist()
 
     for i, b in enumerate(bars):
         rp = range_pct_col[i]
         vr = v_rank_col[i]
         dr = d_rank_col[i]
+        vs = vol_sc_col[i]
+        ds = dep_sc_col[i]
         # pandas may emit numpy.float64; downcast to native float so
         # json.dumps doesn't write `NaN`. v_rank/d_rank are integers
         # (numpy.int64) which we cast to native int.
         b.range_pct = float(rp) if rp is not None else None
         b.v_rank    = int(vr) if vr is not None else None
         b.d_rank    = int(dr) if dr is not None else None
+        b.vol_score = float(vs) if vs is not None else None
+        b.depth_score = float(ds) if ds is not None else None
 
 
 def _write_session_to_db(con, result, session_date: date, timeframe: str) -> None:
     """Build the four DataFrames the DB writer expects and dispatch.
 
-    `range_pct` / `v_rank` / `d_rank` were stamped onto each Bar by
-    `_stamp_ranks` before this call, so `to_dict()` rows already carry
-    the regime classifier output (NULL only for warmup / zero-volume).
+    `range_pct` / `v_rank` / `d_rank` / `vol_score` / `depth_score` were stamped
+    onto each Bar by `_stamp_ranks` before this call, so `to_dict()` rows already
+    carry the regime classifier output (NULL only for warmup / zero-volume).
     `events_df` and `fires_df` are still empty here — events are computed
     client-side from bars today; the DB-side detection backfill is a
     separate task. The empty DataFrames still carry the right column

@@ -41,6 +41,8 @@ def test_compute_phat_features_wick_liquidity_outer_half():
     assert abs(feats["upper_wick_liquidity"] - 0.75) < 1e-9
     # lower wick ticks: 99..96 => outer half = 97,96 => (5+5)/(5+5+5+5) = 0.5
     assert abs(feats["lower_wick_liquidity"] - 0.5) < 1e-9
+    assert feats["upper_wick_ticks"] == 4  # high 104 vs body top 100
+    assert feats["lower_wick_ticks"] == 4  # body low 100 vs low 96
     assert feats["top_body_volume_ratio"] > feats["bottom_body_volume_ratio"]
     assert -1.0 <= feats["top_cvd_norm"] <= 1.0
     assert -1.0 <= feats["bottom_cvd_norm"] <= 1.0
@@ -89,3 +91,23 @@ def test_compute_phat_features_handles_no_wicks():
     )
     assert feats["upper_wick_liquidity"] == 0.0
     assert feats["lower_wick_liquidity"] == 0.0
+    assert feats["upper_wick_ticks"] == 0
+    assert feats["lower_wick_ticks"] == 0
+    assert feats["lower_wick_ticks"] == 0
+
+
+def test_compute_phat_features_suppresses_rejection_when_chosen_side_has_zero_wick():
+    # Body touches the high (0-tick upper wick) but microstructure still scores "high" rejection.
+    feats = compute_phat_features(
+        open_price=105.0,
+        close_price=100.0,
+        high_price=105.0,
+        low_price=100.0,
+        tick_size=1.0,
+        price_volume={100: 50, 103: 5, 104: 5, 105: 30},
+        price_delta={100: 0, 103: 1, 104: 1, 105: 1},
+    )
+    assert feats["upper_wick_ticks"] == 0
+    assert feats["rejection_side"] == "none"
+    assert feats["rejection_strength"] == 0.0
+    assert feats["rejection_type"] == "none"

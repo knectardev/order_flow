@@ -37,6 +37,7 @@ import { drawFlowChart } from '../render/flowChart.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { _refreshMatrixForView } from './pan.js';
 import { repaintMatrix } from './matrixRange.js';
+import { pickMatrixScatterBarTime, pickMatrixCellFromScatterCanvas } from '../render/matrix.js';
 
 // Length of the fire-anchored highlight window, expressed as a count of
 // bars including the fire bar itself. Plan says "fire bar + next 30
@@ -362,29 +363,32 @@ function bindSelectionUI() {
   const pointLayer = document.getElementById('matrixPointLayer');
   if (pointLayer) {
     pointLayer.addEventListener('mousemove', (e) => {
-      const target = e.target.closest('.matrix-point');
-      if (!target) {
-        hoverBar(null, 'matrix-point-layer');
-        return;
-      }
-      const ms = Number(target.dataset.barTime);
-      hoverBar(Number.isFinite(ms) ? ms : null, 'matrix-point-layer');
+      const ms = pickMatrixScatterBarTime(e.clientX, e.clientY);
+      if (ms == null) hoverBar(null, 'matrix-point-layer');
+      else hoverBar(ms, 'matrix-point-layer');
     });
     pointLayer.addEventListener('mouseleave', () => {
       hoverBar(null, 'matrix-point-layer-leave');
     });
     pointLayer.addEventListener('click', (e) => {
-      const target = e.target.closest('.matrix-point');
-      if (!target) return;
+      if (!e.target.closest('#matrixScatterCanvas')) return;
+      const ms = pickMatrixScatterBarTime(e.clientX, e.clientY);
       e.stopPropagation();
-      const ms = Number(target.dataset.barTime);
-      if (!Number.isFinite(ms)) return;
-      selectBar(ms, 'matrix-point-click');
+      if (ms != null && Number.isFinite(ms)) {
+        selectBar(ms, 'matrix-point-click');
+        return;
+      }
+      const cell = pickMatrixCellFromScatterCanvas(e.clientX, e.clientY);
+      if (cell) {
+        selectCell(cell.r, cell.c, { shift: e.shiftKey });
+        return;
+      }
+      clearSelection();
     });
   }
   if (grid) {
     grid.addEventListener('click', (e) => {
-      if (e.target.closest('.matrix-point')) return;
+      if (e.target.closest('#matrixScatterCanvas')) return;
       const cell = e.target.closest('.matrix-cell');
       if (!cell) {
         // Click in the matrix area but outside any cell → clear.

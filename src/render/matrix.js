@@ -1,12 +1,20 @@
-import { ABSORPTION_WALL_CELL, BREAKOUT_CELL, DEPTH_LABELS, FADE_CELL, isAbsorptionWallRegime, isValueEdgeRejectRegime, MATRIX_COLS, MATRIX_ROWS, VOL_LABELS } from '../config/constants.js';
+import {
+  ABSORPTION_WALL_CELL,
+  BREAKOUT_CELL,
+  CHART_CANDLE_DOWN,
+  CHART_CANDLE_UP,
+  DEPTH_LABELS,
+  FADE_CELL,
+  isAbsorptionWallRegime,
+  isValueEdgeRejectRegime,
+  MATRIX_COLS,
+  MATRIX_ROWS,
+  VOL_LABELS,
+} from '../config/constants.js';
 import { state } from '../state.js';
 import { computeConfidence, topCells } from '../analytics/regime.js';
 import { getCachedOccupancy, requestOccupancy } from '../data/occupancyApi.js';
 import { resolveOccupancyWindow } from '../ui/matrixRange.js';
-import {
-  computeMatrixAbsDeltaLadder,
-  matrixDeltaFillAndStroke,
-} from '../analytics/matrixDeltaColorNorm.js';
 import {
   computeMatrixSqrtVolumeLadder,
   getLoadedBarsForMatrixVolumeLadder,
@@ -19,14 +27,31 @@ const POINT_RADIUS_PX = 2.5;
 /** Hover / selected radii multiply volume-derived base — keep rank ordering under interaction. */
 const MATRIX_POINT_HOVER_RADIUS_MULT = 1.3;
 const MATRIX_POINT_SELECTED_RADIUS_MULT = 1.5;
-const JITTER_RADIUS_NORM = 0.075;
 const POINT_STROKE_WIDTH_PX = 1;
 const POINT_HOVER_STROKE_COLOR = 'rgba(255,255,255,0.9)';
 const POINT_SELECTED_STROKE_COLOR = 'rgba(255,255,255,1)';
 
-function _isBearBar(bar) {
-  if (!bar || bar.open == null || bar.close == null) return false;
-  return bar.close < bar.open;
+/** Scatter disk fill matches price chart candles: `close < open` → down red, else up green (`CHART_*`). */
+function _matrixScatterCandleFillAndStroke(bar) {
+  if (!bar || bar.open == null || bar.close == null) {
+    return {
+      fill: 'hsl(210, 12%, 64%)',
+      stroke: 'hsl(210, 12%, 46%)',
+    };
+  }
+  const o = Number(bar.open);
+  const c = Number(bar.close);
+  if (!Number.isFinite(o) || !Number.isFinite(c)) {
+    return {
+      fill: 'hsl(210, 12%, 64%)',
+      stroke: 'hsl(210, 12%, 46%)',
+    };
+  }
+  const bear = c < o;
+  return {
+    fill: bear ? CHART_CANDLE_DOWN : CHART_CANDLE_UP,
+    stroke: bear ? 'rgba(255,59,48,0.55)' : 'rgba(0,192,135,0.55)',
+  };
 }
 
 function buildMatrix() {
@@ -83,7 +108,21 @@ function buildMatrix() {
     const pointLayer = document.createElement('div');
     pointLayer.className = 'matrix-point-layer';
     pointLayer.id = 'matrixPointLayer';
+    const cnv = document.createElement('canvas');
+    cnv.id = 'matrixScatterCanvas';
+    cnv.className = 'matrix-scatter-canvas';
+    cnv.setAttribute('aria-hidden', 'true');
+    pointLayer.appendChild(cnv);
     inner.appendChild(pointLayer);
+  } else if (inner) {
+    const pl = inner.querySelector('#matrixPointLayer');
+    if (pl && !pl.querySelector('#matrixScatterCanvas')) {
+      const cnv = document.createElement('canvas');
+      cnv.id = 'matrixScatterCanvas';
+      cnv.className = 'matrix-scatter-canvas';
+      cnv.setAttribute('aria-hidden', 'true');
+      pl.appendChild(cnv);
+    }
   }
 }
 
@@ -276,18 +315,95 @@ function _renderOccupancyDiagnostic(topCell) {
   el.textContent = `[${cellName}] occupied ${pct.toFixed(1)}% of selected window (${v.toLocaleString()} / ${occ.totalBars.toLocaleString()} bars)`;
 }
 
-function _hashJitter(ms) {
-  let h = (Number(ms) >>> 0) || 1;
+function _clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function _coerceMatrixDepthAxis1to5(raw) {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const r = Math.round(n);
+  if (Math.abs(n - r) > 1e-4) return null;
+  if (r < 1 || r > 5) return null;
+  return r;
+}
+
+function _coerceMatrixContinuous1to5(raw) {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const EPS = 1e-9;
+  if (n < 1 - EPS || n > 5 + EPS) return null;
+  return n;
+}
+
+function _stableUnitPair(seedMs) {
+  let h = (Number(seedMs) >>> 0) || 1;
   h ^= h << 13;
   h ^= h >>> 17;
   h ^= h << 5;
-  const x = ((h & 0xffff) / 0xffff) * 2 - 1;
-  const y = (((h >>> 16) & 0xffff) / 0xffff) * 2 - 1;
-  return { x, y };
+  const u = Math.min(1 - 1e-9, Math.max(1e-9, (h >>> 0) / 4294967296));
+  let h2 = Math.imul((h >>> 16) ^ (seedMs | 0), 0x85ebca6b) >>> 0;
+  h2 ^= h2 << 13;
+  h2 ^= h2 >>> 17;
+  h2 ^= h2 << 5;
+  const v = Math.min(1 - 1e-9, Math.max(1e-9, (h2 >>> 0) / 4294967296));
+  return { u, v };
 }
 
-function _clamp01(v) {
-  return Math.max(0, Math.min(1, v));
+/** Scatter sample: pipeline `volScore`/`depthScore` (open (1,5) typical) when present; else rank-band spread (±0.5) from [1,5]. */
+function _scatterVolDepthForBar(bar) {
+  const t = _barTimeMsForMatrix(bar);
+  if (!Number.isFinite(t)) return null;
+  const vsRaw = bar?.volScore ?? bar?.vol_score;
+  const dsRaw = bar?.depthScore ?? bar?.depth_score;
+  const vc = _coerceMatrixContinuous1to5(vsRaw);
+  const dc = _coerceMatrixContinuous1to5(dsRaw);
+  if (vc != null && dc != null) {
+    return { vol: vc, depth: dc, barTimeMs: t };
+  }
+  const vr = _coerceMatrixDepthAxis1to5(bar?.vRank ?? bar?.v_rank);
+  const dr = _coerceMatrixDepthAxis1to5(bar?.dRank ?? bar?.d_rank);
+  if (vr == null || dr == null) return null;
+  const { u, v } = _stableUnitPair(t);
+  const vol = Math.min(5, Math.max(1, vr - 0.5 + u));
+  const depth = Math.min(5, Math.max(1, dr - 0.5 + v));
+  return { vol, depth, barTimeMs: t };
+}
+
+/** Fixed [1,5] → [0,1] maps (score 5 → top): axis fallback when cloud has no spread on that dimension */
+function _normFromVolDepth(vol, depth) {
+  const xNorm = _clamp01((depth - 1) / 4);
+  const yNorm = _clamp01((5 - vol) / 4);
+  return { xNorm, yNorm };
+}
+
+/** Stretch each axis independently vs batch min/max; fixed-scale fallback per axis when span ~ 0 */
+function _normScatterToFrame(vol, depth, agg) {
+  const SPAN_EPS = 1e-6;
+  const fixed = _normFromVolDepth(vol, depth);
+  const xNorm = agg.dSpan < SPAN_EPS ? fixed.xNorm : _clamp01((depth - agg.dMin) / agg.dSpan);
+  const yNorm = agg.vSpan < SPAN_EPS ? fixed.yNorm : _clamp01((agg.vMax - vol) / agg.vSpan);
+  return { xNorm, yNorm };
+}
+
+function _aggregateScatterExtents(eligible) {
+  let dMin = Infinity;
+  let dMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+  for (let i = 0; i < eligible.length; i++) {
+    const p = eligible[i];
+    const { depth: d, vol: v } = p;
+    if (d < dMin) dMin = d;
+    if (d > dMax) dMax = d;
+    if (v < vMin) vMin = v;
+    if (v > vMax) vMax = v;
+  }
+  const dSpan = Number.isFinite(dMin) ? dMax - dMin : 0;
+  const vSpan = Number.isFinite(vMin) ? vMax - vMin : 0;
+  return { dMin, dMax, vMin, vMax, dSpan, vSpan };
 }
 
 function _getViewedBarsForMatrix() {
@@ -321,35 +437,85 @@ function _barTimeMsForMatrix(bar) {
   return bar.time instanceof Date ? bar.time.getTime() : Date.parse(bar.time);
 }
 
-/** Bars whose ranks paint the matrix point cloud — same time bounds as occupancy (`resolveOccupancyWindow`). */
+/** Session index span for `range.kind === 'session'` — matches `resolveOccupancyWindow` session pick. */
+function _matrixSessionBarIndices() {
+  const range = state.matrixState.range;
+  if (!range || range.kind !== 'session') return null;
+  const sessions = state.replay.sessions;
+  if (!sessions.length) return null;
+  const effEnd = state.chartViewEnd !== null ? state.chartViewEnd : state.replay.cursor;
+  const idx = Math.max(0, Math.min(state.replay.allBars.length - 1, effEnd - 1));
+  for (const s of sessions) {
+    if (idx >= s.startIdx && idx < s.endIdx) {
+      return { startIdx: s.startIdx, endIdx: s.endIdx };
+    }
+  }
+  const last = sessions[sessions.length - 1];
+  return last ? { startIdx: last.startIdx, endIdx: last.endIdx } : null;
+}
+
+/**
+ * Time bounds aligned with `/occupancy` when cache is warm: response `from`/`to`
+ * are server-resolved (critical for `session_date` queries vs client session meta).
+ */
+function _pointCloudTimeBoundsMs(win) {
+  const occ = state.matrixState?.occupancy;
+  if (occ?.from && occ?.to) {
+    const fromMs = Date.parse(occ.from);
+    const toMs = Date.parse(occ.to);
+    if (Number.isFinite(fromMs) && Number.isFinite(toMs)) {
+      return { fromMs, toMs };
+    }
+  }
+  if (!win?.from || !win?.to) return null;
+  const fromMs = Date.parse(win.from);
+  const toMs = Date.parse(win.to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
+  return { fromMs, toMs };
+}
+
+function _appendFormingBarIfInTimeWindow(out, fromMs, toMs) {
+  const forming = state.formingBar;
+  if (forming?.time == null) return;
+  const ft = _barTimeMsForMatrix(forming);
+  if (!Number.isFinite(ft) || ft < fromMs || ft > toMs) return;
+  if (out.some(b => _barTimeMsForMatrix(b) === ft)) return;
+  out.push(forming);
+}
+
+/** Bars for the point cloud — same universe as occupancy (session slice or server time window). */
 function _getBarsForMatrixPointCloud() {
   const win = resolveOccupancyWindow();
   if (!win) {
-    return _getViewedBarsForMatrix();
-  }
-  const fromMs = Date.parse(win.from);
-  const toMs = Date.parse(win.to);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
     return _getViewedBarsForMatrix();
   }
   const replay = state.replay;
   if (replay.mode !== 'real' || !replay.allBars?.length) {
     return _getViewedBarsForMatrix();
   }
+
+  const span = _matrixSessionBarIndices();
+  if (span != null) {
+    const out = replay.allBars.slice(span.startIdx, span.endIdx);
+    const bounds = _pointCloudTimeBoundsMs(win);
+    if (bounds) {
+      _appendFormingBarIfInTimeWindow(out, bounds.fromMs, bounds.toMs);
+    }
+    return out;
+  }
+
+  const bounds = _pointCloudTimeBoundsMs(win);
+  if (!bounds) {
+    return _getViewedBarsForMatrix();
+  }
+  const { fromMs, toMs } = bounds;
   const out = [];
   for (const bar of replay.allBars) {
     const t = _barTimeMsForMatrix(bar);
     if (!Number.isFinite(t) || t < fromMs || t > toMs) continue;
     out.push(bar);
   }
-  const forming = state.formingBar;
-  if (forming?.time != null) {
-    const ft = _barTimeMsForMatrix(forming);
-    if (Number.isFinite(ft) && ft >= fromMs && ft <= toMs) {
-      const dup = out.some(b => _barTimeMsForMatrix(b) === ft);
-      if (!dup) out.push(forming);
-    }
-  }
+  _appendFormingBarIfInTimeWindow(out, fromMs, toMs);
   return out;
 }
 
@@ -372,41 +538,19 @@ function _resolvePointFrame(inner) {
   return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
 }
 
-function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx, deltaLadder }) {
+function resolvePointStyle(bar, { isSelected, isHovered, opacity, baseRadiusPx }) {
   const base = Number.isFinite(baseRadiusPx) && baseRadiusPx > 0 ? baseRadiusPx : POINT_RADIUS_PX;
   let radius = base;
   if (isSelected) radius = base * MATRIX_POINT_SELECTED_RADIUS_MULT;
   else if (isHovered) radius = base * MATRIX_POINT_HOVER_RADIUS_MULT;
   const zIndex = isSelected ? 4 : (isHovered ? 3 : 2);
-  if (pulseBear && _isBearBar(bar)) {
-    return {
-      radius,
-      fill: null,
-      stroke: null,
-      strokeWidth: 0,
-      opacity,
-      zIndex,
-      pulseKind: 'bear',
-    };
-  }
-  if (pulseBull && !_isBearBar(bar)) {
-    return {
-      radius,
-      fill: null,
-      stroke: null,
-      strokeWidth: 0,
-      opacity,
-      zIndex,
-      pulseKind: 'bull',
-    };
-  }
-  const { fill: deltaFill, stroke: deltaStroke } = matrixDeltaFillAndStroke(bar, deltaLadder);
+  const { fill: candleFill, stroke: candleStroke } = _matrixScatterCandleFillAndStroke(bar);
   const stroke = isSelected
     ? POINT_SELECTED_STROKE_COLOR
-    : (isHovered ? POINT_HOVER_STROKE_COLOR : deltaStroke);
+    : (isHovered ? POINT_HOVER_STROKE_COLOR : candleStroke);
   return {
     radius,
-    fill: deltaFill,
+    fill: candleFill,
     stroke,
     strokeWidth: POINT_STROKE_WIDTH_PX,
     opacity,
@@ -418,99 +562,172 @@ function resolvePointStyle(bar, { isSelected, isHovered, opacity, pulseBear, pul
 function _renderPointCloud() {
   const inner = document.querySelector('.matrix-inner');
   if (!inner) return;
-  const layer = inner.querySelector('#matrixPointLayer');
-  if (!layer) return;
+  const canvas = document.getElementById('matrixScatterCanvas');
+  if (!canvas) return;
+  state.matrixScatterHits = [];
+
   const frame = _resolvePointFrame(inner);
   if (!frame) {
-    layer.innerHTML = '';
+    canvas.style.display = 'none';
     return;
   }
 
   const pointBars = _getBarsForMatrixPointCloud();
   const eligible = [];
-  let formingMs = null;
-  if (state.formingBar?.time != null) {
-    const ft = state.formingBar.time instanceof Date
-      ? state.formingBar.time.getTime()
-      : Date.parse(state.formingBar.time);
-    if (Number.isFinite(ft)) formingMs = ft;
-  }
   for (const bar of pointBars) {
-    const vRank = Number(bar?.vRank);
-    const dRank = Number(bar?.dRank);
-    if (!Number.isInteger(vRank) || !Number.isInteger(dRank)) continue;
-    if (vRank < 1 || vRank > 5 || dRank < 1 || dRank > 5) continue;
-    const t = bar.time instanceof Date ? bar.time.getTime() : Date.parse(bar.time);
-    if (!Number.isFinite(t)) continue;
-    eligible.push({ bar, barTimeMs: t, vRank, dRank });
+    const sample = _scatterVolDepthForBar(bar);
+    if (!sample) continue;
+    eligible.push({
+      bar,
+      barTimeMs: sample.barTimeMs,
+      vol: sample.vol,
+      depth: sample.depth,
+    });
   }
 
-  layer.innerHTML = '';
+  canvas.style.display = 'block';
+  canvas.style.position = 'absolute';
+  canvas.style.left = `${frame.x.toFixed(2)}px`;
+  canvas.style.top = `${frame.y.toFixed(2)}px`;
+  canvas.style.width = `${frame.w.toFixed(2)}px`;
+  canvas.style.height = `${frame.h.toFixed(2)}px`;
+
+  const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+  canvas.width = Math.round(frame.w * dpr);
+  canvas.height = Math.round(frame.h * dpr);
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, frame.w, frame.h);
+
   const count = eligible.length;
   if (!count) return;
+
+  const scatterAgg = _aggregateScatterExtents(eligible);
+
   const ladderBars = getLoadedBarsForMatrixVolumeLadder();
   const volLadder = computeMatrixSqrtVolumeLadder(ladderBars);
-  const deltaLadder = computeMatrixAbsDeltaLadder(ladderBars);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const accent = [];
+  /** Hovered/selected disks: redrawn source-over so hue is stable under `lighter` + larger hover radius. */
+  const pinnedScatterOverlays = [];
   for (let i = 0; i < count; i++) {
     const point = eligible[i];
     const age = (count - 1) - i;
-    const t = age / Math.max(count - 1, 1);
-    const opacity = POINT_MAX_OPACITY - t * (POINT_MAX_OPACITY - POINT_MIN_OPACITY);
-    const xCenter = (point.dRank - 0.5) / 5;
-    const yCenter = (5 - point.vRank + 0.5) / 5;
-    const jitter = _hashJitter(point.barTimeMs);
-    const xNorm = _clamp01(xCenter + jitter.x * JITTER_RADIUS_NORM);
-    const yNorm = _clamp01(yCenter + jitter.y * JITTER_RADIUS_NORM);
-    const x = frame.x + xNorm * frame.w;
-    const y = frame.y + yNorm * frame.h;
+    const tAge = age / Math.max(count - 1, 1);
+    const opacity = POINT_MAX_OPACITY - tAge * (POINT_MAX_OPACITY - POINT_MIN_OPACITY);
+    const { xNorm, yNorm } = _normScatterToFrame(point.vol, point.depth, scatterAgg);
+    const px = xNorm * frame.w;
+    const py = yNorm * frame.h;
     const isSelected = state.selection.barTimes?.has(point.barTimeMs) || false;
     const isHovered = state.selection.hoverBarTime != null && state.selection.hoverBarTime === point.barTimeMs;
-    const isFormingBar = state.formingBar != null && point.bar === state.formingBar;
-    const ambientLiveBear = isFormingBar
-      && _isBearBar(point.bar)
-      && formingMs != null
-      && (state.selection.hoverBarTime == null || state.selection.hoverBarTime === formingMs);
-    const ambientLiveBull = isFormingBar
-      && !_isBearBar(point.bar)
-      && formingMs != null
-      && (state.selection.hoverBarTime == null || state.selection.hoverBarTime === formingMs);
-    const pulseBear = _isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBear);
-    const pulseBull = !_isBearBar(point.bar) && (isSelected || isHovered || ambientLiveBull);
     const baseRadiusPx = matrixVolumeBaseRadiusPx(point.bar, volLadder, POINT_RADIUS_PX);
     const style = resolvePointStyle(point.bar, {
-      isSelected, isHovered, opacity, pulseBear, pulseBull, baseRadiusPx, deltaLadder,
+      isSelected,
+      isHovered,
+      opacity,
+      baseRadiusPx,
     });
 
-    const el = document.createElement('button');
-    el.type = 'button';
-    let pulseClass = '';
-    if (style.pulseKind === 'bear') pulseClass = ' matrix-point--bear-flash';
-    else if (style.pulseKind === 'bull') pulseClass = ' matrix-point--bull-flash';
-    el.className = 'matrix-point' + pulseClass;
-    el.tabIndex = -1;
-    el.dataset.barTime = String(point.barTimeMs);
-    el.dataset.isBear = _isBearBar(point.bar) ? '1' : '0';
-    el.setAttribute('aria-label', `Candle ${new Date(point.barTimeMs).toISOString()}`);
-    el.style.left = `${x.toFixed(2)}px`;
-    el.style.top = `${y.toFixed(2)}px`;
-    el.style.width = `${(style.radius * 2).toFixed(2)}px`;
-    el.style.height = `${(style.radius * 2).toFixed(2)}px`;
-    el.style.opacity = style.opacity.toFixed(3);
-    el.style.zIndex = String(style.zIndex);
-    if (style.pulseKind) {
-      const r = style.radius;
-      const ringMin = Math.max(1, r * 0.35);
-      const ringMax = Math.max(ringMin + 0.5, r * 1.75);
-      el.style.setProperty('--pulse-ring-min', `${ringMin}px`);
-      el.style.setProperty('--pulse-ring-max', `${ringMax}px`);
-      el.style.background = 'transparent';
-      el.style.border = 'none';
-    } else {
-      el.style.background = style.fill;
-      el.style.border = `${style.strokeWidth}px solid ${style.stroke}`;
+    state.matrixScatterHits.push({
+      x: px,
+      y: py,
+      r: style.radius,
+      barTimeMs: point.barTimeMs,
+    });
+
+    const pinFill = isSelected || isHovered;
+    if (pinFill) {
+      pinnedScatterOverlays.push({ px, py, r: style.radius, opacity, bar: point.bar });
+    } else if (style.fill) {
+      ctx.globalAlpha = opacity;
+      ctx.beginPath();
+      ctx.arc(px, py, style.radius, 0, Math.PI * 2);
+      ctx.fillStyle = style.fill;
+      ctx.fill();
     }
-    layer.appendChild(el);
+    if (isSelected || isHovered) {
+      accent.push({ px, py, r: style.radius, stroke: isSelected ? POINT_SELECTED_STROKE_COLOR : POINT_HOVER_STROKE_COLOR });
+    }
   }
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  for (const pin of pinnedScatterOverlays) {
+    const { fill } = _matrixScatterCandleFillAndStroke(pin.bar);
+    ctx.globalAlpha = pin.opacity;
+    ctx.beginPath();
+    ctx.arc(pin.px, pin.py, pin.r, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  for (const a of accent) {
+    ctx.beginPath();
+    ctx.arc(a.px, a.py, a.r, 0, Math.PI * 2);
+    ctx.strokeStyle = a.stroke;
+    ctx.lineWidth = Math.max(1, POINT_STROKE_WIDTH_PX);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
-export { buildMatrix, renderMatrix };
+/**
+ * Canvas pointer pick (CSS px coords inside `#matrixScatterCanvas`). Prefers chronologically newer hits when stacked.
+ *
+ * @param {number} clientX  viewport X
+ * @param {number} clientY  viewport Y
+ * @returns {number|null}   bar_time ms
+ */
+function pickMatrixScatterBarTime(clientX, clientY) {
+  const canvas = document.getElementById('matrixScatterCanvas');
+  if (!canvas || canvas.style.display === 'none') return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const lx = clientX - rect.left;
+  const ly = clientY - rect.top;
+  const hits = state.matrixScatterHits || [];
+  let bestMs = null;
+  let bestD = Infinity;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const h = hits[i];
+    const dx = lx - h.x;
+    const dy = ly - h.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= h.r * h.r && d2 <= bestD) {
+      bestD = d2;
+      bestMs = h.barTimeMs;
+    }
+  }
+  return Number.isFinite(bestMs) ? bestMs : null;
+}
+
+/**
+ * Map a viewport click to the matrix cell (r,c) under the scatter canvas (same
+ * grid as `.matrix-cell` dataset). The canvas stacks above cells; hits that
+ * miss scatter disks still fall in a cell for regime brushing.
+ *
+ * @returns {{ r: number, c: number } | null}
+ */
+function pickMatrixCellFromScatterCanvas(clientX, clientY) {
+  const canvas = document.getElementById('matrixScatterCanvas');
+  if (!canvas || canvas.style.display === 'none') return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const lx = clientX - rect.left;
+  const ly = clientY - rect.top;
+  if (lx < 0 || ly < 0 || lx > rect.width || ly > rect.height) return null;
+  const c = Math.min(MATRIX_COLS - 1, Math.max(0, Math.floor((lx / rect.width) * MATRIX_COLS)));
+  const r = Math.min(MATRIX_ROWS - 1, Math.max(0, Math.floor((ly / rect.height) * MATRIX_ROWS)));
+  return { r, c };
+}
+
+export { buildMatrix, renderMatrix, pickMatrixScatterBarTime, pickMatrixCellFromScatterCanvas };

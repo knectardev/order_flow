@@ -219,7 +219,7 @@ export const state = {
   },
 
   // Matrix occupancy heatmap state (regime-DB plan §3a-d).
-  //   range.kind   — 'session' | 'lastHour' | 'lastN' | 'all' | 'custom'
+  //   range.kind   — 'session' | 'lastHour' | 'lastN' | 'custom' ('all' legacy → migrate in matrixRange)
   //   range.n      — when kind='lastN', number of trailing sessions
   //   range.from / .to — Unix ms (custom only; the other kinds derive
   //                       these on each render from cursor + sessions)
@@ -238,6 +238,9 @@ export const state = {
     displayMode: 'posterior',
     occupancy: null,
   },
+
+  /** Scatter hit targets for matrix canvas `{ xLocal, yLocal, rPx, barTimeMs }[]` — CSS px in canvas coords. */
+  matrixScatterHits: [],
 
   // Regime warmup flag (regime-DB plan §2c-d). True when the bar at the
   // current cursor / right-edge has NULL v_rank/d_rank — i.e. it's inside
@@ -276,8 +279,19 @@ export const state = {
   // PHAT body imbalance gate for P/b shading:
   // imbalance = |topCvdNorm - bottomCvdNorm|. Below threshold => neutral flat body.
   phatBodyImbalanceThreshold: 0.30,
+  // Wick-tip rejection disks (filled/hollow circles). Default off — shelved from primary UI; hover
+  // payload still computes ring fill so flipping this on does not require data-layer changes.
+  phatShowWickRejectionRings: false,
+  // When true, PHAT wick segment stroke width scales with upper/lower wick liquidity (~1px–~1.85px).
+  // Default off — code path retained in `priceChart.js` `_drawPhatCandle`.
+  phatShowWickLiquidityStrokeScaling: false,
+  // Ring-fill tuning (used only when phatShowWickRejectionRings is true; still drive hover payload fields).
   // PHAT exhaustion-ring liquidity threshold. Values >= threshold render filled ring.
   phatExhaustionRingLiquidityThreshold: 0.55,
+  // Minimum rejection-side wick length (ticks) for a filled ring. Default 2 excludes 1-tick geometry artifacts.
+  phatMinWickTicksForRingFill: 2,
+  // When true, absorption rings use the same min-wick gate (hollow if span below minimum).
+  phatGateAbsorptionRingsByWickLength: true,
   // Saved matrix-range selection from the timeframe the user was on
   // before switching to '1h'. Used to restore the selection when they
   // switch back to 1m/15m. null ⇒ no saved selection (first paint).

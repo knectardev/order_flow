@@ -47,13 +47,26 @@ equality required.
 Output columns (added to the input DataFrame)
 ---------------------------------------------
 - `range_pct`  : float | None  — already rounded to 6 decimals
-- `v_rank`     : int   | None  — 1..5
-- `d_rank`     : int   | None  — 1..5
+- `v_rank`     : int   | None  — 1..5 (3-bar smoothed / rounded)
+- `d_rank`     : int   | None  — 1..5 (3-bar smoothed / rounded)
+- `vol_score`  : float | None  — regime-matrix scatter **abscissa**: same rolling window
+                 as `v_rank` but **average-rank** percentile `(less + 0.5*eq)/n` → **open**
+                 **(1, 5)** for window size > 1 (no artificial mass **exactly** at 1 or 5).
+- `depth_score`: float | None  — scatter ordinate; analogous mid-rank percentile for depth.
 
 Public API
 ----------
 - compute_ranks(bars_df, timeframe='1m', seed_history_df=None)
 - REGIME_PARAMS, SEED_SESSIONS_BY_TF (canonical config dicts)
+
+Maintainers / imports
+---------------------
+Changing how ranks or scatter scores are computed requires updating
+``requirements.md`` §4.3 and ``pipeline/tests/test_regime.py``. Any new
+code path that writes ``vol_score``/``depth_score`` must call
+``compute_ranks`` (or explicitly document incompatible semantics). Do not
+revert scatter to endpoint-only ``(n-1)`` percentiles or clip scatter
+values to ``[1, 5]`` — that restores false mass at **1.0** / **5.0**.
 """
 from __future__ import annotations
 
@@ -91,6 +104,10 @@ SEED_SESSIONS_BY_TF: dict[str, int] = {
 
 ROUND_DECIMALS = 6        # range_pct anti-jitter rounding
 
+# `rolling().apply` must return a real scalar; we pack two bucket floats (µ-units) per window.
+_PACK_SCALE = 1_000_000
+_PACK_MUL = 1_000_000_000
+
 
 def compute_ranks(
     bars_df: "pd.DataFrame",
@@ -106,8 +123,8 @@ def compute_ranks(
     written back into the output; only `bars_df` rows receive ranks.
 
     Mutates and returns `bars_df` (caller passes in a single-session
-    frame; we add three columns and hand it back). Empty input returns
-    unchanged but with the columns present.
+    frame; we add `range_pct`, `v_rank`, `d_rank`, `vol_score`, `depth_score`
+    and hand it back). Empty input returns unchanged but with the columns present.
 
     Required input columns (all from `Bar.to_dict()` / aggregate.py):
         high, low, volume, vpt, concentration
@@ -132,6 +149,10 @@ def compute_ranks(
         bars_df["v_rank"] = pd.Series([None] * len(bars_df), dtype="object")
     if "d_rank" not in bars_df.columns:
         bars_df["d_rank"] = pd.Series([None] * len(bars_df), dtype="object")
+    if "vol_score" not in bars_df.columns:
+        bars_df["vol_score"] = pd.Series([None] * len(bars_df), dtype="object")
+    if "depth_score" not in bars_df.columns:
+        bars_df["depth_score"] = pd.Series([None] * len(bars_df), dtype="object")
 
     n_current = len(bars_df)
     if n_current == 0:
@@ -158,12 +179,16 @@ def compute_ranks(
         seeded_range = ranks_seeded["range_pct"].iloc[seed_len:].reset_index(drop=True)
         seeded_v     = ranks_seeded["v_rank"].iloc[seed_len:].reset_index(drop=True)
         seeded_d     = ranks_seeded["d_rank"].iloc[seed_len:].reset_index(drop=True)
+        seeded_vol_sc = ranks_seeded["vol_score"].iloc[seed_len:].reset_index(drop=True)
+        seeded_dep_sc = ranks_seeded["depth_score"].iloc[seed_len:].reset_index(drop=True)
     else:
         # No seed available (1m, or first sessions of dataset for higher
         # TFs). Run the classifier directly on current-session bars.
         seeded_range = None
         seeded_v = None
         seeded_d = None
+        seeded_vol_sc = None
+        seeded_dep_sc = None
 
     # ── Pass 2: compute ranks on current-session-only ──
     # Used both as the (non-seeded) primary path and as the post-K
@@ -173,12 +198,16 @@ def compute_ranks(
     current_range = ranks_current["range_pct"].reset_index(drop=True)
     current_v     = ranks_current["v_rank"].reset_index(drop=True)
     current_d     = ranks_current["d_rank"].reset_index(drop=True)
+    current_vol_sc = ranks_current["vol_score"].reset_index(drop=True)
+    current_dep_sc = ranks_current["depth_score"].reset_index(drop=True)
 
     # ── Stitch: pre-K = seeded, post-K = current-only (when seeded) ──
     if has_seed and K > 0:
         out_range = seeded_range.copy()
         out_v     = seeded_v.copy()
         out_d     = seeded_d.copy()
+        out_vol_sc = seeded_vol_sc.copy()
+        out_dep_sc = seeded_dep_sc.copy()
         # Replace positions K..end with current-only values. If the
         # current session is shorter than K, the entire output stays
         # seeded (no transition needed).
@@ -186,12 +215,16 @@ def compute_ranks(
             out_range.iloc[K:] = current_range.iloc[K:].values
             out_v.iloc[K:]     = current_v.iloc[K:].values
             out_d.iloc[K:]     = current_d.iloc[K:].values
+            out_vol_sc.iloc[K:] = current_vol_sc.iloc[K:].values
+            out_dep_sc.iloc[K:] = current_dep_sc.iloc[K:].values
     elif has_seed:
         # K=0 is a degenerate "always seeded" config; for completeness
         # but not used by any real timeframe.
         out_range, out_v, out_d = seeded_range, seeded_v, seeded_d
+        out_vol_sc, out_dep_sc = seeded_vol_sc, seeded_dep_sc
     else:
         out_range, out_v, out_d = current_range, current_v, current_d
+        out_vol_sc, out_dep_sc = current_vol_sc, current_dep_sc
 
     # Stamp results back onto bars_df. Convert numpy object arrays into
     # Python None for the JSON path's `int | None` typing literal.
@@ -203,6 +236,12 @@ def compute_ranks(
     )
     bars_df["d_rank"] = pd.Series(
         out_d.to_numpy(dtype="object"), index=bars_df.index, dtype="object"
+    )
+    bars_df["vol_score"] = pd.Series(
+        out_vol_sc.to_numpy(dtype="object"), index=bars_df.index, dtype="object"
+    )
+    bars_df["depth_score"] = pd.Series(
+        out_dep_sc.to_numpy(dtype="object"), index=bars_df.index, dtype="object"
     )
     return bars_df
 
@@ -229,11 +268,11 @@ def _compute_ranks_internal(
     bars_df: "pd.DataFrame",
     params: dict,
 ) -> "pd.DataFrame":
-    """Core math: compute range_pct / v_rank / d_rank in place.
+    """Core math: compute range_pct, integer ranks, and scatter scores.
 
     Operates on a working frame produced by `_frame_for_calc`. Returns a
-    new DataFrame with the three rank columns appended. Caller is
-    responsible for stitching the result back into the original frame.
+    new DataFrame with regime columns appended. Caller is responsible for
+    stitching the result back into the original frame.
     """
     import numpy as np
     import pandas as pd
@@ -244,6 +283,8 @@ def _compute_ranks_internal(
         out["range_pct"] = pd.Series(dtype="object")
         out["v_rank"]    = pd.Series(dtype="object")
         out["d_rank"]    = pd.Series(dtype="object")
+        out["vol_score"] = pd.Series(dtype="object")
+        out["depth_score"] = pd.Series(dtype="object")
         return out
 
     ema_span         = params["ema_span"]
@@ -267,20 +308,32 @@ def _compute_ranks_internal(
         range_pct = np.where(range_ema > 0, rng / range_ema, np.nan)
     range_pct = np.round(range_pct, ROUND_DECIMALS)
 
-    # ── Depth input: depth_score = z(vpt) + z(concentration) ──
+    # ── Depth input: z(vpt) + z(concentration) → percentile bucket ──
     vpt_s  = pd.Series(vpt_arr)
     conc_s = pd.Series(conc_arr)
     z_vpt  = _rolling_z(vpt_s,  depth_win, depth_min_per)
     z_conc = _rolling_z(conc_s, depth_win, depth_min_per)
-    depth_score = z_vpt + z_conc                 # NaN propagates through +
+    depth_z_sum = z_vpt + z_conc                 # NaN propagates through +
 
-    # ── Percentile rank in a trailing window, then 1..5 bucket ──
-    v_rank_raw = _rolling_pct_rank_to_bucket(pd.Series(range_pct),   pct_win, 1)
-    d_rank_raw = _rolling_pct_rank_to_bucket(pd.Series(depth_score), pct_win, 1)
+    # ── Single rolling pass: endpoint percentile (for v_rank/d_rank raw) + mid-rank
+    # (for vol_score/depth_score). `less` / `eq` computed once per window — see
+    # `_rolling_dual_pct_to_buckets`.
+    v_rank_raw_np, vol_score_arr = _rolling_dual_pct_to_buckets(
+        pd.Series(range_pct), pct_win, 1
+    )
+    d_rank_raw_np, depth_score_arr = _rolling_dual_pct_to_buckets(
+        pd.Series(depth_z_sum), pct_win, 1
+    )
+    v_rank_raw = pd.Series(v_rank_raw_np, index=bars_df.index)
+    d_rank_raw = pd.Series(d_rank_raw_np, index=bars_df.index)
 
-    # ── 3-bar smoothing → round → clip to [1, 5] ──
+    # ── 3-bar smoothing → round → clip to [1, 5] (integer ranks only) ──
     v_rank = _smooth_round_clip(v_rank_raw, smooth_win)
     d_rank = _smooth_round_clip(d_rank_raw, smooth_win)
+
+    # Continuous scatter coords: **mid-rank** track only — not smoothed.
+    vol_score_arr = np.where(np.isnan(vol_score_arr), np.nan, vol_score_arr)
+    depth_score_arr = np.where(np.isnan(depth_score_arr), np.nan, depth_score_arr)
 
     # ── Warmup mask: first N bars OR zero-volume bars ⇒ NULL ranks ──
     warmup_mask = np.arange(n) < warmup
@@ -300,11 +353,23 @@ def _compute_ranks_internal(
 
     v_rank_out = np.where(null_mask, None, v_rank)
     d_rank_out = np.where(null_mask, None, d_rank)
+    vol_score_out = np.where(
+        null_mask,
+        None,
+        np.where(np.isnan(vol_score_arr), None, vol_score_arr),
+    )
+    depth_score_out = np.where(
+        null_mask,
+        None,
+        np.where(np.isnan(depth_score_arr), None, depth_score_arr),
+    )
 
     out = bars_df.copy()
     out["range_pct"] = pd.Series(range_pct_out, index=bars_df.index, dtype="object")
     out["v_rank"]    = pd.Series(v_rank_out,    index=bars_df.index, dtype="object")
     out["d_rank"]    = pd.Series(d_rank_out,    index=bars_df.index, dtype="object")
+    out["vol_score"] = pd.Series(vol_score_out, index=bars_df.index, dtype="object")
+    out["depth_score"] = pd.Series(depth_score_out, index=bars_df.index, dtype="object")
     return out
 
 
@@ -325,33 +390,75 @@ def _rolling_z(s: "pd.Series", win: int, min_periods: int) -> "pd.Series":
     return z.fillna(0.0).where(~mean.isna())   # mask: NaN where mean is NaN
 
 
-def _rolling_pct_rank_to_bucket(s: "pd.Series", win: int, min_periods: int):
-    """Trailing percentile rank ∈ [0, 1] mapped to a continuous 1..5 bucket.
-
-    For each bar, look at the trailing `win` window of values (including
-    self), compute s_today's percentile rank in that window, then linearly
-    map [0, 1] → [1, 5]. The mapped value is left as float here so the
-    3-bar smoother can average before rounding.
-    """
+def _pack_dual_bucket_floats(br: float, bm: float) -> float:
+    """Pack two ~[1,5] bucket values into one float for rolling.apply."""
     import numpy as np
 
-    def _last_pct(arr) -> float:
-        last = arr[-1]
-        if np.isnan(last):
-            return np.nan
-        valid = arr[~np.isnan(arr)]
-        n = valid.size
-        if n == 0:
-            return np.nan
-        # Mid-rank to avoid 0 / 1 endpoints which would map to bucket 1 / 5
-        # off a single sample. (count_lt + 0.5 * count_eq) / n keeps the
-        # output in (0, 1).
-        less = (valid < last).sum()
-        eq   = (valid == last).sum()
-        return (less + 0.5 * eq) / n
+    if np.isnan(br) or np.isnan(bm):
+        return float("nan")
+    ir = int(round(br * _PACK_SCALE))
+    im = int(round(bm * _PACK_SCALE))
+    return float(ir * _PACK_MUL + im)
 
-    pct = s.rolling(window=win, min_periods=min_periods).apply(_last_pct, raw=True)
-    return 1.0 + pct * 4.0
+
+def _unpack_dual_rolling(packed: "np.ndarray") -> tuple["np.ndarray", "np.ndarray"]:
+    """Split packed rolling output into rank-raw buckets vs scatter mid-rank buckets."""
+    import numpy as np
+
+    rank_b = np.full(packed.shape, np.nan, dtype=np.float64)
+    mid_b = np.full(packed.shape, np.nan, dtype=np.float64)
+    valid = np.isfinite(packed)
+    if not np.any(valid):
+        return rank_b, mid_b
+    p_int = np.round(packed[valid].astype(np.float64)).astype(np.int64)
+    rank_b[valid] = (p_int // _PACK_MUL).astype(np.float64) / _PACK_SCALE
+    mid_b[valid] = (p_int % _PACK_MUL).astype(np.float64) / _PACK_SCALE
+    return rank_b, mid_b
+
+
+def _dual_last_packed(arr) -> float:
+    """One window: endpoint pct → integer-rank raw bucket; mid-rank pct → scatter bucket."""
+    import numpy as np
+
+    last = arr[-1]
+    if np.isnan(last):
+        return float("nan")
+    valid = arr[~np.isnan(arr)]
+    n = int(valid.size)
+    if n == 0:
+        return float("nan")
+    less = int((valid < last).sum())
+    eq = int((valid == last).sum())
+    if n <= 1:
+        pct_rank = 0.5
+        pct_mid = 0.5
+    else:
+        # Endpoint-inclusive: strict window midpoint → percentile 0.5 → bucket 3 (v_rank/d_rank raw).
+        pct_rank = (less + 0.5 * eq - 0.5) / (n - 1)
+        # Average-rank: open (0,1) interior — scatter coords avoid exact 1 / 5 mass.
+        pct_mid = (less + 0.5 * eq) / n
+    br = 1.0 + 4.0 * pct_rank
+    bm = 1.0 + 4.0 * pct_mid
+    return _pack_dual_bucket_floats(br, bm)
+
+
+def _rolling_dual_pct_to_buckets(s: "pd.Series", win: int, min_periods: int):
+    """Trailing window: return (rank_raw_1to5, scatter_mid_rank_1to5) per bar, single apply pass."""
+    import numpy as np
+
+    packed = s.rolling(window=win, min_periods=min_periods).apply(
+        _dual_last_packed, raw=True
+    )
+    pv = packed.to_numpy(dtype=np.float64)
+    return _unpack_dual_rolling(pv)
+
+
+def _smooth_mean_array(raw, smooth_win: int):
+    """N-bar rolling mean of raw 1..5 bucket series (pre-round continuous path)."""
+    import pandas as pd
+
+    s = pd.Series(raw)
+    return s.rolling(window=smooth_win, min_periods=1).mean().to_numpy(dtype="float64")
 
 
 def _smooth_round_clip(raw, smooth_win: int):
@@ -363,11 +470,8 @@ def _smooth_round_clip(raw, smooth_win: int):
     one place.
     """
     import numpy as np
-    import pandas as pd
 
-    s = pd.Series(raw)
-    smooth = s.rolling(window=smooth_win, min_periods=1).mean()
-    out = smooth.to_numpy(dtype="float64")
+    out = _smooth_mean_array(raw, smooth_win)
     nan_mask = np.isnan(out)
     out_int = np.where(nan_mask, np.nan, np.clip(np.round(out), 1, 5))
     return out_int

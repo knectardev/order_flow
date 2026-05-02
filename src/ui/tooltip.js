@@ -76,7 +76,7 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
         }
         : {
           line1: 'P-shape · Buyers pressed the upper half',
-          line3: 'Buy pressure dominated the body, but no wick-level rejection printed',
+          line3: 'Buy pressure dominated the body, but no wick-level rejection detected',
         };
     }
     if (shape === 'b') {
@@ -87,7 +87,7 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
         }
         : {
           line1: 'b-shape · Sellers pressed the lower half',
-          line3: 'Sell pressure dominated the body, but no wick-level rejection printed',
+          line3: 'Sell pressure dominated the body, but no wick-level rejection detected',
         };
     }
     if (neutralReason === 'below_gate') {
@@ -109,7 +109,7 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
         }
         : {
           line1: 'Neutral body · Flow vs close disagree',
-          line3: 'High imbalance fighting bar direction — Option A locks the body to neutral-only',
+          line3: 'High imbalance fighting bar direction — body locks to neutral classification when flow opposes price',
         };
     }
     if (neutralReason === 'no_norms') {
@@ -142,12 +142,6 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     if (I < G) return 'below gate';
     if (I < 0.5) return 'near gate';
     return 'strong';
-  };
-
-  const _phatMatrixPointWord = (delta) => {
-    if (!Number.isFinite(delta)) return 'neutral gray';
-    if (delta === 0) return 'neutral gray';
-    return delta > 0 ? 'green' : 'red';
   };
 
   const _phatEsc = (s) => String(s)
@@ -193,7 +187,8 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     meta = biasLabel;
   } else if (hit.kind === 'phatCandle') {
     const p = hit.payload || {};
-    const tpl = _phatTemplate(p.shape, !!p.rejection?.hasRejection, p.neutralReason);
+    const showRejRingsUi = !!state.phatShowWickRejectionRings;
+    const tpl = _phatTemplate(p.shape, !!p.rejection?.hasRejection && showRejRingsUi, p.neutralReason);
     const narrowLabel = p.layout?.narrowBody ? 'Narrow body (≤1 tick)' : 'Wide body (>1 tick)';
     const headName = _phatCompactHead(p, narrowLabel);
     const G = Number.isFinite(p.gate) ? p.gate : (Number(state.phatBodyImbalanceThreshold) || 0.30);
@@ -207,32 +202,34 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     const volThird = _phatVolThird(vn);
     const d = p.delta;
     const deltaNum = Number.isFinite(d) ? String(Math.round(d)) : '—';
-    const deltaMeta = Number.isFinite(d)
-      ? `matrix point ${_phatMatrixPointWord(d)}`
-      : 'matrix point neutral gray';
-    const thrEx = Number(state.phatExhaustionRingLiquidityThreshold);
-    const thrStr = Number.isFinite(thrEx) ? thrEx.toFixed(2) : '0.55';
+    const deltaMeta = typeof p.isUp === 'boolean'
+      ? `scatter ${p.isUp ? 'green' : 'red'} · matches chart OHLC`
+      : 'scatter hue —';
     const rj = p.rejection;
 
     let rejPrimary = '';
     let rejSub = '';
-    if (rj?.hasRejection) {
+    if (showRejRingsUi && rj?.hasRejection) {
+      const thrEx = Number(state.phatExhaustionRingLiquidityThreshold);
+      const thrStr = Number.isFinite(thrEx) ? thrEx.toFixed(2) : '0.55';
       const sideShort = rj.rejectionSide === 'high' ? 'Upper wick' : 'Lower wick';
       const typeShort = rj.rejectionType === 'absorption'
         ? 'absorption'
         : (rj.rejectionType === 'exhaustion' ? 'exhaustion' : 'rejection');
-      let ringShort = 'open ring';
-      if (rj.rejectionType === 'absorption') ringShort = 'filled ring';
-      else if (p.rejectionRingFilled) ringShort = 'filled ring';
+      const ringShort = p.rejectionRingFilled ? 'filled ring' : 'open ring';
       rejPrimary = `${sideShort} · ${typeShort} · ${ringShort}`;
       const liqTxt = Number.isFinite(rj.sideLiquidity) ? rj.sideLiquidity.toFixed(2) : 'n/a';
       const st = rj.strengthLabel || 'weak';
+      const wtk = p.rejectionSideWickTicks;
+      const spanTxt = Number.isFinite(wtk)
+        ? ` · Wick span ${wtk} tick${wtk === 1 ? '' : 's'} (rejection side)`
+        : '';
       if (rj.rejectionType === 'absorption') {
-        rejSub = `Liquidity ${liqTxt} · ${st}`;
+        rejSub = `Liquidity ${liqTxt}${spanTxt} · ${st}`;
       } else if (p.rejectionRingFilled) {
-        rejSub = `Liquidity ${liqTxt} (≥ ${thrStr} fill threshold) · ${st}`;
+        rejSub = `Liquidity ${liqTxt}${spanTxt} (≥ ${thrStr} fill threshold) · ${st}`;
       } else {
-        rejSub = `Liquidity ${liqTxt} (below ${thrStr} fill threshold) · ${st}`;
+        rejSub = `Liquidity ${liqTxt}${spanTxt} (below ${thrStr} fill threshold) · ${st}`;
       }
     }
 
@@ -251,7 +248,7 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
       + `<span class="tt-phat-kv-meta">${_phatEsc(deltaMeta)}</span></div>`;
 
     let rejHtml = '';
-    if (rj?.hasRejection) {
+    if (showRejRingsUi && rj?.hasRejection) {
       rejHtml = `<div class="tt-phat-kv-row">`
         + `<span class="tt-phat-kv-label">Rejection</span>`
         + `<span class="tt-phat-kv-num"></span>`
@@ -267,7 +264,7 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     }
 
     const warnHtml = p.disagreementFlag
-      ? '<div class="tt-phat-warn">⚠ High imbalance opposes bar direction (neutral body · Option A)</div>'
+      ? '<div class="tt-phat-warn">⚠ High imbalance opposes bar direction — neutral body when flow conflicts with price</div>'
       : '';
 
     const kvHtml = `<div class="tt-phat-kv">${kvCore}${rejHtml}</div>`;

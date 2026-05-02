@@ -115,6 +115,8 @@ def compute_phat_features(
         body_edge_tick=bot_body_tick,
         wick_extreme_tick=low_tick,
     )
+    upper_wick_ticks = max(0, high_tick - top_body_tick)
+    lower_wick_ticks = max(0, bot_body_tick - low_tick)
 
     body_total = top_body_vol + bottom_body_vol
     if body_total <= 0:
@@ -163,6 +165,15 @@ def compute_phat_features(
         rejection_side = "low"
         rejection_strength = min(1.0, low_score * 1.3)
 
+    # Wick-tip rejection requires an actual geometric wick on the chosen side (body to extreme).
+    # Microstructure scores can still fire when high == body (0-tick wick); suppress those.
+    if rejection_side == "high" and upper_wick_ticks <= 0:
+        rejection_side = "none"
+        rejection_strength = 0.0
+    elif rejection_side == "low" and lower_wick_ticks <= 0:
+        rejection_side = "none"
+        rejection_strength = 0.0
+
     rejection_type = "none"
     if rejection_side != "none":
         zone_ticks = near_high_ticks if rejection_side == "high" else near_low_ticks
@@ -183,6 +194,8 @@ def compute_phat_features(
         "bottom_body_volume_ratio": round(float(bottom_body_ratio), 6),
         "upper_wick_liquidity": round(float(upper_wick_liq), 6),
         "lower_wick_liquidity": round(float(lower_wick_liq), 6),
+        "upper_wick_ticks": int(upper_wick_ticks),
+        "lower_wick_ticks": int(lower_wick_ticks),
         "rejection_side": rejection_side,
         "rejection_strength": round(float(rejection_strength), 6),
         "rejection_type": rejection_type,

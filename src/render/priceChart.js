@@ -342,7 +342,9 @@ function _classifyPhatRejection(bar) {
     : rejectionSide === 'low'
       ? Number(bar?.lowerWickLiquidity)
       : NaN;
-  const hasRejection = rejectionStrength > 0 && (rejectionSide === 'high' || rejectionSide === 'low');
+  const wTicks = _phatRejectionSideWickTicks(bar);
+  const noGeomWick = Number.isFinite(wTicks) && wTicks <= 0;
+  const hasRejection = rejectionStrength > 0 && (rejectionSide === 'high' || rejectionSide === 'low') && !noGeomWick;
   let strengthLabel = null;
   if (hasRejection) {
     if (rejectionStrength < 0.34) strengthLabel = 'weak';
@@ -359,14 +361,68 @@ function _classifyPhatRejection(bar) {
   };
 }
 
+function _phatWickTicksUpperFromOHLC(bar) {
+  const o = Number(bar?.open);
+  const h = Number(bar?.high);
+  const l = Number(bar?.low);
+  const c = Number(bar?.close);
+  if (![o, h, l, c].every(Number.isFinite)) return NaN;
+  const ts = ES_MIN_TICK;
+  const bodyHi = Math.max(o, c);
+  return Math.max(0, Math.round(h / ts) - Math.round(bodyHi / ts));
+}
+
+function _phatWickTicksLowerFromOHLC(bar) {
+  const o = Number(bar?.open);
+  const h = Number(bar?.high);
+  const l = Number(bar?.low);
+  const c = Number(bar?.close);
+  if (![o, h, l, c].every(Number.isFinite)) return NaN;
+  const ts = ES_MIN_TICK;
+  const bodyLo = Math.min(o, c);
+  return Math.max(0, Math.round(bodyLo / ts) - Math.round(l / ts));
+}
+
+/** Wick span on the rejection side (API ticks column or OHLC fallback). */
+function _phatRejectionSideWickTicks(bar) {
+  const rs = String(bar?.rejectionSide || '').toLowerCase();
+  if (rs === 'high') {
+    const x = Number(bar?.upperWickTicks);
+    if (Number.isFinite(x) && x >= 0) return x;
+    return _phatWickTicksUpperFromOHLC(bar);
+  }
+  if (rs === 'low') {
+    const x = Number(bar?.lowerWickTicks);
+    if (Number.isFinite(x) && x >= 0) return x;
+    return _phatWickTicksLowerFromOHLC(bar);
+  }
+  return NaN;
+}
+
+function _phatWickGatePasses(bar) {
+  const minW = Number(state.phatMinWickTicksForRingFill);
+  const need = Number.isFinite(minW) && minW > 0 ? minW : 0;
+  if (need <= 0) return true;
+  const wt = _phatRejectionSideWickTicks(bar);
+  return Number.isFinite(wt) && wt >= need;
+}
+
 function _phatRejectionRingFilled(bar) {
   const rj = _classifyPhatRejection(bar);
   if (!rj.hasRejection) return false;
   const type = String(rj.rejectionType || 'none');
-  if (type === 'absorption') return true;
-  const liq = Number(rj.sideLiquidity);
-  const thr = Number(state.phatExhaustionRingLiquidityThreshold);
-  if (type === 'exhaustion' && Number.isFinite(liq) && Number.isFinite(thr) && liq >= thr) return true;
+  const wickOk = _phatWickGatePasses(bar);
+
+  if (type === 'absorption') {
+    if (!state.phatGateAbsorptionRingsByWickLength) return true;
+    return wickOk;
+  }
+  if (type === 'exhaustion') {
+    const liq = Number(rj.sideLiquidity);
+    const thr = Number(state.phatExhaustionRingLiquidityThreshold);
+    if (!Number.isFinite(liq) || !Number.isFinite(thr) || liq < thr) return false;
+    return wickOk;
+  }
   return false;
 }
 
@@ -394,10 +450,14 @@ function _buildPhatHoverPayload(bar, isUp, layout = null) {
   const delta = Number.isFinite(d) ? d : null;
 
   const rejectionRingFilled = rejection.hasRejection ? _phatRejectionRingFilled(bar) : null;
+  const rticks = _phatRejectionSideWickTicks(bar);
+  const rejectionSideWickTicks = Number.isFinite(rticks) ? rticks : null;
 
   return {
     shape: body.shape,
     shapeLabel,
+    /** OHLC candle direction (`close >= open`); aligns regime matrix hue with chart body. */
+    isUp,
     gate: G,
     imbalance: body.hasNorms ? body.imbalance : null,
     topNorm: body.hasNorms ? body.topNorm : null,
@@ -407,6 +467,7 @@ function _buildPhatHoverPayload(bar, isUp, layout = null) {
     disagreementFlag,
     rejection,
     rejectionRingFilled,
+    rejectionSideWickTicks,
     bothWicksLiquidity,
     delta,
     layout: layout && typeof layout.volNorm === 'number'
@@ -431,17 +492,18 @@ function _drawPhatCandle(ctx, {
   // Prototype-aligned wick anchoring:
   // high-first -> upper wick on left edge, lower on right edge.
   // low-first  -> upper wick on right edge, lower on left edge.
-  // Liquidity scores thicken the segment slightly (tip participation).
+  // Liquidity scores can thicken each segment (tip participation) when `phatShowWickLiquidityStrokeScaling` is on.
   const uLiq = Math.min(1, Math.max(0, Number(bar.upperWickLiquidity) || 0));
   const lLiq = Math.min(1, Math.max(0, Number(bar.lowerWickLiquidity) || 0));
+  const wickW = (liq) => (state.phatShowWickLiquidityStrokeScaling ? 1 + 0.85 * liq : 1);
   ctx.strokeStyle = wickStrokeColor;
   ctx.save();
-  ctx.lineWidth = 1 + 0.85 * uLiq;
+  ctx.lineWidth = wickW(uLiq);
   ctx.beginPath();
   ctx.moveTo(xHigh, topY);
   ctx.lineTo(xHigh, top);
   ctx.stroke();
-  ctx.lineWidth = 1 + 0.85 * lLiq;
+  ctx.lineWidth = wickW(lLiq);
   ctx.beginPath();
   ctx.moveTo(xLow, top + bodyH);
   ctx.lineTo(xLow, botY);
@@ -492,28 +554,14 @@ function _drawPhatCandle(ctx, {
   const rejection = _classifyPhatRejection(bar);
   const rejectionSide = rejection.rejectionSide;
   const rejectionStrength = rejection.rejectionStrength;
-  const rejectionType = rejection.rejectionType;
   const ringDimMul = dim ? 0.45 : 1.0;
   const ringCol = isUp ? _candleUpRgba(0.9 * ringDimMul) : _candleDownRgba(0.9 * ringDimMul);
   const chartBg = CHART_CANVAS_BG;
-  const _wickLiqAtSide = () => {
-    if (rejectionSide === 'high') return Number(bar.upperWickLiquidity);
-    if (rejectionSide === 'low') return Number(bar.lowerWickLiquidity);
-    return NaN;
-  };
-  const _ringFilled = () => {
-    if (rejectionType === 'absorption') return true;
-    const liq = _wickLiqAtSide();
-    if (rejectionType === 'exhaustion' && Number.isFinite(liq) && liq >= state.phatExhaustionRingLiquidityThreshold) {
-      return true;
-    }
-    return false;
-  };
   const drawRing = (x, y) => {
     const ringR = 2 + Math.max(0, Math.min(1, rejectionStrength)) * 3;
     ctx.beginPath();
     ctx.arc(x, y, ringR, 0, Math.PI * 2);
-    if (_ringFilled()) {
+    if (_phatRejectionRingFilled(bar)) {
       ctx.fillStyle = ringCol;
       ctx.fill();
     } else {
@@ -524,7 +572,7 @@ function _drawPhatCandle(ctx, {
       ctx.stroke();
     }
   };
-  if (rejectionStrength > 0) {
+  if (state.phatShowWickRejectionRings && rejectionStrength > 0) {
     if (rejectionSide === 'high') drawRing(xHigh, topY);
     else if (rejectionSide === 'low') drawRing(xLow, botY);
   }

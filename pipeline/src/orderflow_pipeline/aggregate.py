@@ -93,13 +93,16 @@ class Bar:
     # scalars) and `iter_profile_rows()` (for the bar_volume_profile rows).
     price_volume: dict[int, int] = field(default_factory=dict)
     price_delta:  dict[int, int] = field(default_factory=dict)
-    # Phase 2 regime classifier output. Populated by `regime.compute_ranks`
-    # after aggregation completes; left as None for the warmup window and
-    # zero-volume bars. The same already-rounded values flow into both
-    # writers (JSON via to_json; DuckDB via to_dict).
+    # Regime (Phase 5) classifier output. Populated only by regime.compute_ranks
+    # (see _stamp_ranks in cli.py). v_rank/d_rank: smoothed integers 1..5.
+    # vol_score/depth_score: scatter-only mid-rank track — open (1,5) for
+    # typical multi-bar windows — never smoothed, never endpoint-only.
+    # Do not assign from legacy endpoint-percentile scatter or np.clip stack.
     range_pct: float | None = None
     v_rank: int | None = None
     d_rank: int | None = None
+    vol_score: float | None = None
+    depth_score: float | None = None
     # Phase 6 VWAP-Anchor input. Running session VWAP at this bar's close,
     # computed once per session per timeframe in `_stamp_session_vwap`
     # using volume-weighted typical price. Empty bars carry forward the
@@ -115,6 +118,8 @@ class Bar:
     bottom_body_volume_ratio: float = 0.5
     upper_wick_liquidity: float = 0.0
     lower_wick_liquidity: float = 0.0
+    upper_wick_ticks: int = 0
+    lower_wick_ticks: int = 0
     high_before_low: bool = True
     rejection_side: str = "none"
     rejection_strength: float = 0.0
@@ -194,6 +199,8 @@ class Bar:
             "rangePct":        self.range_pct,
             "vRank":           self.v_rank,
             "dRank":           self.d_rank,
+            "volScore":        round(self.vol_score, 6) if self.vol_score is not None else None,
+            "depthScore":      round(self.depth_score, 6) if self.depth_score is not None else None,
             "vwap":            self.vwap,
             "topCvd":          self.top_cvd,
             "bottomCvd":       self.bottom_cvd,
@@ -243,6 +250,8 @@ class Bar:
             "concentration":     concentration,
             "v_rank":            self.v_rank,
             "d_rank":            self.d_rank,
+            "vol_score":         round(self.vol_score, 6) if self.vol_score is not None else None,
+            "depth_score":       round(self.depth_score, 6) if self.depth_score is not None else None,
             "vwap":              self.vwap,
             "top_cvd":           self.top_cvd,
             "bottom_cvd":        self.bottom_cvd,
@@ -400,6 +409,8 @@ def _stamp_phat_features(bars: list[Bar]) -> None:
         b.bottom_body_volume_ratio = feats["bottom_body_volume_ratio"]
         b.upper_wick_liquidity = feats["upper_wick_liquidity"]
         b.lower_wick_liquidity = feats["lower_wick_liquidity"]
+        b.upper_wick_ticks = int(feats["upper_wick_ticks"])
+        b.lower_wick_ticks = int(feats["lower_wick_ticks"])
         b.high_before_low = b.high_first_ns <= b.low_first_ns
         b.rejection_side = feats["rejection_side"]
         b.rejection_strength = feats["rejection_strength"]
