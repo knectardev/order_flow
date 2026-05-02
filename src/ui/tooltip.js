@@ -2,7 +2,8 @@ import { state } from '../state.js';
 import { _continuePan, consumePanMoved } from './pan.js';
 import { openModal } from './modal.js';
 import { selectFire, selectBar, hoverBar, clearSelection } from './selection.js';
-import { priceCanvas } from '../util/dom.js';
+import { priceCanvas, flowCanvas, cvdCanvas } from '../util/dom.js';
+import { barTimeMsFromSubchartX } from '../render/subchartHit.js';
 
 const TOOLTIP_INFO = {
   sweep:      { name: 'Sweep',      glyph: '▲▼', variant: 'sweep',
@@ -290,11 +291,26 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
   } else if (hit.kind === 'candle') {
     const p = hit.payload || {};
     const up = p.isUp !== false;
+    const bt = Number(p.barTimeMs);
+    let detail = '';
+    if (state.replay.mode === 'real' && Number.isFinite(bt) && state.replay.allDivergences?.length) {
+      const spans = state.replay.allDivergences.filter(d => {
+        const t0 = Date.parse(d.earlierTime);
+        const t1 = Date.parse(d.laterTime);
+        return bt >= Math.min(t0, t1) && bt <= Math.max(t0, t1);
+      });
+      if (spans.length) {
+        detail = spans.map(d =>
+          `CVD divergence (${d.kind}) · ${d.barsBetween} bars · size confirm ${d.sizeConfirmation}`
+        ).join('<br>');
+      }
+    }
     info = {
       variant: up ? 'sweep' : 'stop',
       glyph: up ? '▲' : '▼',
       name: up ? 'Bull bar (close ≥ open)' : 'Bear bar (close < open)',
       desc: `O ${Number(p.open).toFixed(2)} · H ${Number(p.high).toFixed(2)} · L ${Number(p.low).toFixed(2)} · C ${Number(p.close).toFixed(2)}`,
+      detail,
     };
     meta = 'OHLC';
   } else {
@@ -432,6 +448,21 @@ priceCanvas.addEventListener('click', (e) => {
   // hit.kind === 'bias' falls through intentionally — bias-ribbon hovers
   // are informational only, no click action.
 });
+
+function _wireSubchartHover(canvas) {
+  if (!canvas) return;
+  canvas.addEventListener('mousemove', (e) => {
+    if (state.isPanningChart) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ms = barTimeMsFromSubchartX(canvas, x);
+    hoverBar(Number.isFinite(ms) ? ms : null, 'subchart-hover');
+  });
+  canvas.addEventListener('mouseleave', () => hoverBar(null, 'subchart-leave'));
+}
+
+_wireSubchartHover(flowCanvas);
+_wireSubchartHover(cvdCanvas);
 
 // ───────────────────────────────────────────────────────────
 

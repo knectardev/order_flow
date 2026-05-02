@@ -2,9 +2,13 @@ const priceCanvas = document.getElementById('priceChart');
 
 const flowCanvas  = document.getElementById('flowChart');
 
+const cvdCanvas = document.getElementById('cvdChart');
+
 const pctx = priceCanvas.getContext('2d');
 
 const fctx = flowCanvas.getContext('2d');
+
+const cvdCtx = cvdCanvas ? cvdCanvas.getContext('2d') : null;
 
 function resizeCanvas(c) {
   const dpr = window.devicePixelRatio || 1;
@@ -15,4 +19,4 @@ function resizeCanvas(c) {
   return { w: r.width, h: r.height };
 }
 
-export { priceCanvas, flowCanvas, pctx, fctx, resizeCanvas };
+export { priceCanvas, flowCanvas, cvdCanvas, pctx, fctx, cvdCtx, resizeCanvas };

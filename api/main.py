@@ -375,6 +375,12 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "rejectionStrength": b.get("rejection_strength"),
         "rejectionType":   b.get("rejection_type"),
         "biasState":       b.get("bias_state"),
+        "sessionCvd":      b.get("session_cvd"),
+        "aggressiveBuyCount": b.get("aggressive_buy_count"),
+        "aggressiveSellCount": b.get("aggressive_sell_count"),
+        "avgAggressiveBuySize": b.get("avg_aggressive_buy_size"),
+        "avgAggressiveSellSize": b.get("avg_aggressive_sell_size"),
+        "sizeImbalanceRatio": b.get("size_imbalance_ratio"),
         "time":            bt.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "barEndTime": (
             b["bar_end_time"].strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -639,6 +645,103 @@ def get_events(
             for r in rows
         ]
     }
+
+
+@app.get("/swing-events")
+def get_swing_events(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
+) -> dict:
+    """Persisted fractal swings on price and session CVD (per pipeline ingest K)."""
+    tf = _validate_timeframe(timeframe)
+    con = _connect()
+    try:
+        lo = _parse_iso(from_)
+        hi = _parse_iso(to)
+        if lo is None or hi is None:
+            raise HTTPException(status_code=400, detail="Provide ?from= and ?to=.")
+        rows = _row_to_dict(
+            con.execute(
+                """
+                SELECT session_date, bar_time, timeframe, series_type, swing_value, swing_lookback
+                FROM swing_events
+                WHERE timeframe = ? AND bar_time BETWEEN ? AND ?
+                ORDER BY bar_time, series_type
+                """,
+                [tf, lo, hi],
+            )
+        )
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "sessionDate": str(r["session_date"]),
+                "time": r["bar_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "seriesType": r["series_type"],
+                "swingValue": r["swing_value"],
+                "swingLookback": int(r["swing_lookback"]),
+            }
+        )
+    return {"timeframe": tf, "swings": out}
+
+
+@app.get("/divergence-events")
+def get_divergence_events(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
+) -> dict:
+    """Persisted CVD–price divergence rows (bearish / bullish) with ingest thresholds."""
+    tf = _validate_timeframe(timeframe)
+    con = _connect()
+    try:
+        lo = _parse_iso(from_)
+        hi = _parse_iso(to)
+        if lo is None or hi is None:
+            raise HTTPException(status_code=400, detail="Provide ?from= and ?to=.")
+        rows = _row_to_dict(
+            con.execute(
+                """
+                SELECT session_date, timeframe, div_kind, earlier_bar_time, later_bar_time,
+                       earlier_price, later_price, earlier_cvd, later_cvd, bars_between,
+                       size_confirmation, swing_lookback, min_price_delta, min_cvd_delta,
+                       max_swing_bar_distance, earlier_size_imbalance_ratio, later_size_imbalance_ratio
+                FROM divergence_events
+                WHERE timeframe = ?
+                  AND later_bar_time BETWEEN ? AND ?
+                ORDER BY later_bar_time
+                """,
+                [tf, lo, hi],
+            )
+        )
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "sessionDate": str(r["session_date"]),
+                "kind": r["div_kind"],
+                "earlierTime": r["earlier_bar_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "laterTime": r["later_bar_time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "earlierPrice": r["earlier_price"],
+                "laterPrice": r["later_price"],
+                "earlierCvd": r["earlier_cvd"],
+                "laterCvd": r["later_cvd"],
+                "barsBetween": r["bars_between"],
+                "sizeConfirmation": bool(r["size_confirmation"]),
+                "swingLookback": int(r["swing_lookback"]),
+                "minPriceDelta": r["min_price_delta"],
+                "minCvdDelta": int(r["min_cvd_delta"]),
+                "maxSwingBarDistance": int(r["max_swing_bar_distance"]),
+                "earlierSizeImbalanceRatio": r.get("earlier_size_imbalance_ratio"),
+                "laterSizeImbalanceRatio": r.get("later_size_imbalance_ratio"),
+            }
+        )
+    return {"timeframe": tf, "divergences": out}
 
 
 @app.get("/fires")
@@ -1132,7 +1235,7 @@ def root() -> dict:
         "service": "orderflow-api",
         "db_path": str(DB_PATH),
         "endpoints": [
-            "/timeframes", "/sessions", "/date-range", "/bars", "/events",
+            "/timeframes", "/sessions", "/date-range", "/bars", "/swing-events", "/divergence-events", "/events",
             "/fires", "/profile", "/occupancy",
             "/api/backtest/run", "/api/backtest/stats", "/api/backtest/equity", "/api/backtest/trades",
             "/api/backtest/skipped-fires",

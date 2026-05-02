@@ -538,6 +538,27 @@ function _resolvePointFrame(inner) {
   return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
 }
 
+/**
+ * Spans `[earlier,later]` bar times from loaded `GET /divergence-events` rows whose interval
+ * contains `hoverMs`. Matrix scatter treats every bar in those spans as hovered when any bar
+ * in the span is the chart/matrix hover target (Phase 6 brush-link).
+ */
+function _cvdDivergenceHoverSpansContaining(hoverMs) {
+  if (!Number.isFinite(hoverMs) || state.replay.mode !== 'real') return [];
+  const divs = state.replay.allDivergences;
+  if (!divs?.length) return [];
+  const out = [];
+  for (const d of divs) {
+    const t0 = Date.parse(d.earlierTime);
+    const t1 = Date.parse(d.laterTime);
+    if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+    const lo = Math.min(t0, t1);
+    const hi = Math.max(t0, t1);
+    if (hoverMs >= lo && hoverMs <= hi) out.push({ lo, hi });
+  }
+  return out;
+}
+
 function resolvePointStyle(bar, { isSelected, isHovered, opacity, baseRadiusPx }) {
   const base = Number.isFinite(baseRadiusPx) && baseRadiusPx > 0 ? baseRadiusPx : POINT_RADIUS_PX;
   let radius = base;
@@ -624,7 +645,13 @@ function _renderPointCloud() {
     const px = xNorm * frame.w;
     const py = yNorm * frame.h;
     const isSelected = state.selection.barTimes?.has(point.barTimeMs) || false;
-    const isHovered = state.selection.hoverBarTime != null && state.selection.hoverBarTime === point.barTimeMs;
+    const hb = state.selection.hoverBarTime;
+    const divSpans = _cvdDivergenceHoverSpansContaining(hb);
+    const inCvdDivSpan = divSpans.some(
+      (span) => point.barTimeMs >= span.lo && point.barTimeMs <= span.hi,
+    );
+    const isHovered =
+      hb != null && (hb === point.barTimeMs || inCvdDivSpan);
     const baseRadiusPx = matrixVolumeBaseRadiusPx(point.bar, volLadder, POINT_RADIUS_PX);
     const style = resolvePointStyle(point.bar, {
       isSelected,

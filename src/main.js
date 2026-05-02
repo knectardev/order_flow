@@ -4,6 +4,7 @@ import { computeMatrixScores } from './analytics/regime.js';
 import { _syncCandleModeSelectorUI, bootstrapReplay, setActiveTimeframe } from './data/replay.js';
 import { fetchBacktestEquity, fetchBacktestSkippedFires, fetchBacktestTrades, runBacktest } from './data/backtestApi.js';
 import { drawFlowChart } from './render/flowChart.js';
+import { drawCvdChart } from './render/cvdChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { restoreDisplayStateFromUrl } from './render/eventInventory.js';
 import { drawPriceChart } from './render/priceChart.js';
@@ -33,10 +34,12 @@ renderAbsorptionWallWatch(initialAbsorptionWall);
 renderValueEdgeRejectWatch(initialValueEdgeReject);
 drawPriceChart();
 drawFlowChart();
+drawCvdChart();
 
 window.addEventListener('resize', () => {
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
 });
 
 // Try to load real-data sessions from the FastAPI/DuckDB stack; falls

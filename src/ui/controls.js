@@ -5,6 +5,7 @@ import { computeMatrixScores } from '../analytics/regime.js';
 import { jumpToNextFire, seek } from '../data/replay.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
+import { drawCvdChart } from '../render/cvdChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
@@ -125,7 +126,9 @@ function resetStream() {
   renderEventLog();
   drawPriceChart();
   drawFlowChart();
-  document.getElementById('cumDelta').textContent = 'cum Δ —';
+  drawCvdChart();
+  const el = document.getElementById('deltaWindowSum');
+  if (el) el.textContent = 'ΣΔ —';
 }
 
 function forceBreakoutScenario() {

@@ -256,6 +256,41 @@ _SCHEMA_SQL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_backtest_equity_run ON backtest_equity(run_id, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_bench_run ON backtest_benchmarks(run_id, strategy, bar_time)",
     "CREATE INDEX IF NOT EXISTS idx_skipped_fires_run ON skipped_fires(run_id, bar_time)",
+    """
+    CREATE TABLE IF NOT EXISTS swing_events (
+        session_date      DATE       NOT NULL,
+        bar_time          TIMESTAMP  NOT NULL,
+        timeframe         VARCHAR    NOT NULL,
+        series_type       VARCHAR    NOT NULL,
+        swing_value       DOUBLE     NOT NULL,
+        swing_lookback    INTEGER    NOT NULL,
+        PRIMARY KEY (bar_time, timeframe, series_type)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS divergence_events (
+        session_date             DATE       NOT NULL,
+        timeframe                VARCHAR    NOT NULL,
+        div_kind                 VARCHAR    NOT NULL,
+        earlier_bar_time         TIMESTAMP  NOT NULL,
+        later_bar_time           TIMESTAMP  NOT NULL,
+        earlier_price            DOUBLE,
+        later_price              DOUBLE,
+        earlier_cvd              BIGINT,
+        later_cvd                BIGINT,
+        bars_between             INTEGER    NOT NULL,
+        size_confirmation        BOOLEAN    NOT NULL,
+        swing_lookback           INTEGER    NOT NULL,
+        min_price_delta          DOUBLE     NOT NULL,
+        min_cvd_delta            BIGINT     NOT NULL,
+        max_swing_bar_distance   INTEGER    NOT NULL,
+        earlier_size_imbalance_ratio DOUBLE,
+        later_size_imbalance_ratio   DOUBLE,
+        PRIMARY KEY (timeframe, session_date, div_kind, earlier_bar_time, later_bar_time)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_swing_tf_time ON swing_events(timeframe, bar_time)",
+    "CREATE INDEX IF NOT EXISTS idx_div_tf_session ON divergence_events(timeframe, session_date)",
 )
 
 
@@ -289,6 +324,15 @@ _PHASE6_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
 _BAR_REGIME_CONTINUOUS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("vol_score", "DOUBLE"),
     ("depth_score", "DOUBLE"),
+)
+# Session CVD + aggressor size imbalance (upgrade-safe ALTER).
+_CVD_FLOW_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("session_cvd", "BIGINT"),
+    ("aggressive_buy_count", "INTEGER"),
+    ("aggressive_sell_count", "INTEGER"),
+    ("avg_aggressive_buy_size", "DOUBLE"),
+    ("avg_aggressive_sell_size", "DOUBLE"),
+    ("size_imbalance_ratio", "DOUBLE"),
 )
 _BAR_SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bar_end_time", "TIMESTAMP"),
@@ -332,6 +376,8 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _BAR_REGIME_CONTINUOUS_COLUMNS:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    for col_name, col_type in _CVD_FLOW_BAR_COLUMNS:
+        con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _FIRE_DIAGNOSTIC_COLUMNS:
         con.execute(f"ALTER TABLE fires ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _BACKTEST_TRADE_COLUMNS:
@@ -346,6 +392,8 @@ def write_session(
     events_df: "pd.DataFrame",
     fires_df: "pd.DataFrame",
     profile_df: "pd.DataFrame",
+    swing_df: "pd.DataFrame | None" = None,
+    divergence_df: "pd.DataFrame | None" = None,
 ) -> None:
     """Replace all rows for `(session_date, timeframe)` across the four tables.
 
@@ -411,6 +459,14 @@ def write_session(
                 "DELETE FROM fires  WHERE timeframe = ? AND bar_time BETWEEN ? AND ?",
                 [timeframe, t_lo, t_hi],
             )
+            con.execute(
+                "DELETE FROM swing_events WHERE timeframe = ? AND bar_time BETWEEN ? AND ?",
+                [timeframe, t_lo, t_hi],
+            )
+            con.execute(
+                "DELETE FROM divergence_events WHERE timeframe = ? AND session_date = ?",
+                [timeframe, session_date],
+            )
 
         # `bars_df` etc. are referenced by name from the SQL via DuckDB's
         # zero-copy DataFrame integration. The column-list keeps row order
@@ -421,7 +477,7 @@ def write_session(
             # NULL so a partially-stamped frame still writes cleanly. The
             # cli.py rebuild always populates them, so this fallback is
             # only exercised by tests / direct API users.
-            for col in ("bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "upper_wick_ticks", "lower_wick_ticks", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias", "vol_score", "depth_score"):
+            for col in ("bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "upper_wick_ticks", "lower_wick_ticks", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias", "vol_score", "depth_score", "session_cvd", "aggressive_buy_count", "aggressive_sell_count", "avg_aggressive_buy_size", "avg_aggressive_sell_size", "size_imbalance_ratio"):
                 if col not in bars_df.columns:
                     bars_df[col] = None
             con.execute(
@@ -432,13 +488,17 @@ def write_session(
                      distinct_prices, range_pct, vpt, concentration,
                      v_rank, d_rank, vol_score, depth_score,
                      vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type,
-                     bias_state, parent_1h_bias, parent_15m_bias)
+                     bias_state, parent_1h_bias, parent_15m_bias,
+                     session_cvd, aggressive_buy_count, aggressive_sell_count,
+                     avg_aggressive_buy_size, avg_aggressive_sell_size, size_imbalance_ratio)
                 SELECT session_date, bar_time, bar_end_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
                        v_rank, d_rank, vol_score, depth_score,
                        vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type,
-                       bias_state, parent_1h_bias, parent_15m_bias
+                       bias_state, parent_1h_bias, parent_15m_bias,
+                       session_cvd, aggressive_buy_count, aggressive_sell_count,
+                       avg_aggressive_buy_size, avg_aggressive_sell_size, size_imbalance_ratio
                 FROM bars_df
                 """
             )
@@ -468,6 +528,30 @@ def write_session(
                 """
                 INSERT INTO bar_volume_profile (bar_time, timeframe, price_tick, volume, delta)
                 SELECT bar_time, timeframe, price_tick, volume, delta FROM profile_df
+                """
+            )
+        if swing_df is not None and len(swing_df) > 0:
+            con.execute(
+                """
+                INSERT INTO swing_events
+                    (session_date, bar_time, timeframe, series_type, swing_value, swing_lookback)
+                SELECT session_date, bar_time, timeframe, series_type, swing_value, swing_lookback
+                FROM swing_df
+                """
+            )
+        if divergence_df is not None and len(divergence_df) > 0:
+            con.execute(
+                """
+                INSERT INTO divergence_events
+                    (session_date, timeframe, div_kind, earlier_bar_time, later_bar_time,
+                     earlier_price, later_price, earlier_cvd, later_cvd, bars_between,
+                     size_confirmation, swing_lookback, min_price_delta, min_cvd_delta,
+                     max_swing_bar_distance, earlier_size_imbalance_ratio, later_size_imbalance_ratio)
+                SELECT session_date, timeframe, div_kind, earlier_bar_time, later_bar_time,
+                       earlier_price, later_price, earlier_cvd, later_cvd, bars_between,
+                       size_confirmation, swing_lookback, min_price_delta, min_cvd_delta,
+                       max_swing_bar_distance, earlier_size_imbalance_ratio, later_size_imbalance_ratio
+                FROM divergence_df
                 """
             )
         con.execute("COMMIT")

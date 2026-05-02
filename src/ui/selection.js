@@ -34,6 +34,7 @@ import { isPhatLegendModalOpen } from './phatLegendModal.js';
 import { _syncCurrentSession } from '../data/replay.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { drawFlowChart } from '../render/flowChart.js';
+import { drawCvdChart } from '../render/cvdChart.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { _refreshMatrixForView } from './pan.js';
 import { repaintMatrix } from './matrixRange.js';
@@ -261,6 +262,7 @@ function _sameCellSet(a, b) {
 function _repaint() {
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   renderEventLog();
   repaintMatrix();
 }
@@ -268,6 +270,7 @@ function _repaint() {
 function _repaintLinked() {
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   repaintMatrix();
 }
 

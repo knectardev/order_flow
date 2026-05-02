@@ -4,6 +4,7 @@ import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFad
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { _syncCurrentSession, _renderReplayChrome, precomputeAllFires } from '../data/replay.js';
 import { drawFlowChart } from '../render/flowChart.js';
+import { drawCvdChart } from '../render/cvdChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { _hideTooltip } from './tooltip.js';
@@ -62,6 +63,7 @@ function _setViewEnd(idx) {
   }
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   if (state.replay.mode === 'real') _renderReplayChrome();
   // Keep the regime matrix synced to whatever bar the NOW line points at,
   // so the user can scroll through vol×depth states across the session.
@@ -72,6 +74,7 @@ function returnToLiveEdge() {
   state.chartViewEnd = null;
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   _refreshMatrixForView();   // resyncs matrix to live state on un-pan
   if (state.replay.mode === 'real') _renderReplayChrome();
 }
@@ -237,6 +240,7 @@ priceCanvas.addEventListener('wheel', (e) => {
   _clampChartVisibleBars();
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   if (state.replay.mode === 'real') _renderReplayChrome();
 }, { passive: false });
 

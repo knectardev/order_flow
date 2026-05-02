@@ -118,6 +118,12 @@ export const state = {
     dateRange: null,
     pendingSeekAbort: null,
     pendingSeekPromise: null,
+    /** Fractal swings from GET /swing-events (normalized). */
+    allSwings: [],
+    /** CVD divergence rows from GET /divergence-events. */
+    allDivergences: [],
+    /** First swing row's swingLookback for UI metadata (ingest K). */
+    swingLookbackDisplay: null,
   },
 
   // Backtest MVP state (existing-fire replay strategy).
@@ -162,6 +168,12 @@ export const state = {
   },
   /** How many candles to fit horizontally (wheel zoom); rolling buffer size remains MAX_BARS. */
   chartVisibleBars: MAX_BARS,
+
+  /** Lower-chart panels: delta histogram vs session CVD (separate canvases). */
+  chartUi: {
+    showDeltaPanel: true,
+    showCvdPanel: true,
+  },
 
   // Hit-test list rebuilt every drawPriceChart() call, used by the hover tooltip.
   // Each entry: {x, y, r, kind: 'event'|'fire', payload}

@@ -124,6 +124,12 @@ class Bar:
     rejection_side: str = "none"
     rejection_strength: float = 0.0
     rejection_type: str = "none"
+    # Session cumulative delta (contracts): stamped by `_stamp_session_cvd`.
+    session_cvd: int = 0
+    aggressive_buy_count: int = 0
+    aggressive_sell_count: int = 0
+    sum_aggressive_buy_size: int = 0
+    sum_aggressive_sell_size: int = 0
 
     @property
     def distinct_prices(self) -> int:
@@ -156,6 +162,15 @@ class Bar:
 
     def _avg_trade_size(self) -> float:
         return self.volume / self.trade_count if self.trade_count else 0.0
+
+    def _size_imbalance_ratio(self) -> float | None:
+        if self.aggressive_buy_count == 0 or self.aggressive_sell_count == 0:
+            return None
+        avg_buy = self.sum_aggressive_buy_size / self.aggressive_buy_count
+        avg_sell = self.sum_aggressive_sell_size / self.aggressive_sell_count
+        if avg_sell == 0:
+            return None
+        return round(avg_buy / avg_sell, 6)
 
     def _iso_time(self) -> str:
         return datetime.fromtimestamp(self.bin_start_ns / 1e9, tz=UTC).strftime(
@@ -215,6 +230,16 @@ class Bar:
             "rejectionSide":   self.rejection_side,
             "rejectionStrength": self.rejection_strength,
             "rejectionType":   self.rejection_type,
+            "sessionCvd":      int(self.session_cvd),
+            "aggressiveBuyCount": self.aggressive_buy_count,
+            "aggressiveSellCount": self.aggressive_sell_count,
+            "avgAggressiveBuySize": round(
+                self.sum_aggressive_buy_size / self.aggressive_buy_count, 4
+            ) if self.aggressive_buy_count else 0.0,
+            "avgAggressiveSellSize": round(
+                self.sum_aggressive_sell_size / self.aggressive_sell_count, 4
+            ) if self.aggressive_sell_count else 0.0,
+            "sizeImbalanceRatio": self._size_imbalance_ratio(),
             "time":            self._iso_time(),
             "barEnd":          self._iso_bar_end(),
         }
@@ -266,7 +291,20 @@ class Bar:
             "rejection_side":    self.rejection_side,
             "rejection_strength": self.rejection_strength,
             "rejection_type":    self.rejection_type,
+            "session_cvd":       int(self.session_cvd),
+            "aggressive_buy_count": int(self.aggressive_buy_count),
+            "aggressive_sell_count": int(self.aggressive_sell_count),
+            "avg_aggressive_buy_size": round(
+                self.sum_aggressive_buy_size / self.aggressive_buy_count, 4
+            ) if self.aggressive_buy_count else 0.0,
+            "avg_aggressive_sell_size": round(
+                self.sum_aggressive_sell_size / self.aggressive_sell_count, 4
+            ) if self.aggressive_sell_count else 0.0,
+            "size_imbalance_ratio": self._size_imbalance_ratio_db(),
         }
+
+    def _size_imbalance_ratio_db(self) -> float | None:
+        return self._size_imbalance_ratio()
 
     def iter_profile_rows(self, timeframe: str) -> Iterator[dict]:
         """Yield one row per (price_tick) for `bar_volume_profile` insertion.
@@ -343,6 +381,14 @@ def _signed_size(side: str, size: int) -> int:
     if side == "B":
         return -size
     return 0
+
+
+def _stamp_session_cvd(bars: list[Bar]) -> None:
+    """Cumulative session delta at each bar close (sum of bar deltas in order)."""
+    cum = 0
+    for b in bars:
+        cum += int(b.delta)
+        b.session_cvd = cum
 
 
 def _stamp_session_vwap(bars: list[Bar]) -> None:
@@ -509,6 +555,12 @@ def aggregate_trades(
         signed = _signed_size(t.side, t.size)
         cur.delta += signed
         cur.trade_count += 1
+        if t.side == "A":
+            cur.aggressive_buy_count += 1
+            cur.sum_aggressive_buy_size += t.size
+        elif t.side == "B":
+            cur.aggressive_sell_count += 1
+            cur.sum_aggressive_sell_size += t.size
         if t.size >= large_print_threshold:
             cur.large_print_count += 1
 
@@ -532,6 +584,7 @@ def aggregate_trades(
     # Phase 6: stamp running session VWAP after bars are finalized (trade
     # filtering already enforced RTH bounds).
     _stamp_session_vwap(bars)
+    _stamp_session_cvd(bars)
     _stamp_phat_features(bars)
 
     return AggregateResult(

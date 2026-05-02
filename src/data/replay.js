@@ -7,6 +7,7 @@ import { clearOccupancyCache } from './occupancyApi.js';
 import { clearProfileCache } from './profileApi.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
+import { drawCvdChart } from '../render/cvdChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { _getViewedBars, drawPriceChart } from '../render/priceChart.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
@@ -213,6 +214,7 @@ function _renderSeekOutputs() {
   const valueEdgeRejectCanonical = evaluateValueEdgeReject();
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical);
   renderBreakoutWatch(breakoutCanonical);
   renderFadeWatch(fadeCanonical);
@@ -343,12 +345,14 @@ function _syncChartPanSliderDOM() {
 function _renderReplayChrome() {
   if (state.replay.mode !== 'real') return;
   _syncChartPanSliderDOM();
-  // Cumulative-delta in the Delta section mirrors the visible bar window
-  // (panned history vs live edge + forming).
   const { viewedBars } = _getViewedBars();
-  const cumD = viewedBars.reduce((s, b) => s + b.delta, 0);
-  document.getElementById('cumDelta').textContent =
-    viewedBars.length ? `cum Δ ${cumD >= 0 ? '+' : ''}${cumD}` : 'cum Δ —';
+  const sumEl = document.getElementById('deltaWindowSum');
+  if (sumEl) {
+    const cumD = viewedBars.reduce((s, b) => s + (b.delta ?? 0), 0);
+    sumEl.textContent = viewedBars.length
+      ? `ΣΔ ${cumD >= 0 ? '+' : ''}${Math.round(cumD)} (window)`
+      : 'ΣΔ —';
+  }
 }
 
 function catalogKeyFromPrimitiveEvent(ev) {
@@ -445,6 +449,51 @@ async function loadEventsForActiveTypes() {
   drawPriceChart();
   renderEventLog();
   renderEventInventory();
+}
+
+async function _loadSwingsFromApi() {
+  state.replay.allSwings = [];
+  state.replay.swingLookbackDisplay = null;
+  if (state.replay.mode !== 'real' || !state.replay.apiBase) return;
+  const dr = state.replay.dateRange;
+  if (!dr?.min || !dr?.max) return;
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  const url = `${state.replay.apiBase}/swing-events?timeframe=${encodeURIComponent(tf)}`
+    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const rows = Array.isArray(data.swings) ? data.swings : [];
+    state.replay.allSwings = rows.map(r => ({
+      ...r,
+      barTimeMs: Date.parse(r.time),
+    }));
+    if (rows.length && rows[0].swingLookback != null) {
+      state.replay.swingLookbackDisplay = rows[0].swingLookback;
+    }
+  } catch (e) {
+    console.warn('[orderflow] /swing-events failed:', e.message);
+  }
+}
+
+async function _loadDivergencesFromApi() {
+  state.replay.allDivergences = [];
+  if (state.replay.mode !== 'real' || !state.replay.apiBase) return;
+  const dr = state.replay.dateRange;
+  if (!dr?.min || !dr?.max) return;
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  const url = `${state.replay.apiBase}/divergence-events?timeframe=${encodeURIComponent(tf)}`
+    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const rows = Array.isArray(data.divergences) ? data.divergences : [];
+    state.replay.allDivergences = rows;
+  } catch (e) {
+    console.warn('[orderflow] /divergence-events failed:', e.message);
+  }
 }
 
 async function _loadAllFiresFromApi() {
@@ -904,6 +953,9 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
   state.replay.cursor = 0;
   state.replay.allFires = [];
   state.replay.allEvents = [];
+  state.replay.allSwings = [];
+  state.replay.allDivergences = [];
+  state.replay.swingLookbackDisplay = null;
   state.chartViewEnd = null;
 
   const drMerged = drFetch
@@ -934,6 +986,8 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
     seek(allBars.length);
   }
   await _loadAllFiresFromApi();
+  await _loadSwingsFromApi();
+  await _loadDivergencesFromApi();
   await loadEventsForActiveTypes();
   window.dispatchEvent(new CustomEvent('orderflow:replay-ready'));
   _syncCandleModeSelectorUI();

@@ -1,56 +1,22 @@
-# PHAT wick-length gate + ticks columns (implemented)
+# CVD subchart, size imbalance, swings, and divergence — implementation plan
 
-## Empirical anchor (1m sample, `data/phat_wick_liquidity_analysis.csv`)
+This file summarizes the agreed roadmap (see `docs/cursor-prompt-cvd-divergence-size-imbalance.md`). **Pipeline computes, frontend renders.** Ingest parameters are stored on `swing_events` / `divergence_events` rows; changing K or divergence thresholds requires a **rebuild**.
 
-| Finding | Numbers |
-|--------|---------|
-| Bars analyzed | **22,440** |
-| Upper liquidity ~1.0 | **~17.8%** |
-| 1-tick upper wicks | **100%** liquidity 1.0 in bucket |
-| 2-tick upper | **~0%** at 1.0 |
-| Proxy “filled exhaustion” (exhaustion + liq ≥ 0.55) | **~90%** rejection-side wick ≤ 2 ticks |
+## Phases
 
-Short-wick geometry dominates bogus high liquidity and inflated filled exhaustion disks.
+1. **Session CVD** — `session_cvd` on bars; API `sessionCvd`; UI: separate **delta histogram** panel and **CVD line** panel (separate canvases, separate Y-axes); remove viewport-only cumulative sparkline; hover sync.
+2. **Size imbalance** — `aggressive_*` counts/averages, `size_imbalance_ratio` on bars; API only (no UI).
+3. **Swings** — `swing_events` table; fractal detection on price OHLC and `session_cvd`; `swing_lookback` column on every row; `GET /swing-events`.
+4. **Phase 3b** — Calibrate divergence thresholds from swing distributions (`scripts/calibrate_divergence_thresholds.py`); no fixed a priori defaults in code beyond pipeline CLI after analysis.
+5. **Divergences** — `divergence_events` with threshold columns + `size_confirmation`; `GET /divergence-events`; connecting lines on price + CVD panels.
+6. **Integration** — Bar tooltip mentions CVD divergences; matrix point highlight for selected divergence; queryable for backtest.
 
-## Absorption pre-check (script §E) — outcome and “asymmetry”
+## Schema notes
 
-Run `python scripts/phat_wick_liquidity_distribution.py`. Section **E** compares rejection-side wick length for **absorption** vs **exhaustion**. **Decision shipped:** with default `phatGateAbsorptionRingsByWickLength: true`, absorption uses the **same wick-length gate** as exhaustion for **fill vs hollow**, but **absorption still has no wick-liquidity threshold** (unlike exhaustion, which also needs `phatExhaustionRingLiquidityThreshold`). So screenshots that show **exhaustion · open ring** with **0.00** liquidity and **absorption · filled** with **0.09** liquidity and **2 ticks** are **consistent with the spec** — the wick gate passes (≥ **2**), and only exhaustion is liquidity-gated.
+- `bars.session_cvd`: BIGINT (session cumulative delta).
+- `swing_events`: includes `swing_lookback` (NOT NULL).
+- `divergence_events`: includes `swing_lookback`, `min_price_delta`, `min_cvd_delta`, `max_swing_bar_distance` (ingest stamps).
 
-## Zero-wick guard (rejection side)
+## UI layout (decided)
 
-Rejection **detection** (retreat × prints near extreme) is independent of geometric wick length, so the pipeline could label **high** with **upper_wick_ticks == 0**. **Rule:** if the chosen side’s geometric wick span is **0** ticks, clear **`rejection_side` / strength / type** in `phat.py`. The chart mirrors this so OHLC-only payloads do not show a ring at the body edge with “0 ticks” copy.
-
-## Defaults
-
-| Setting | Value | Rationale |
-|---------|-------|-----------|
-| `phatMinWickTicksForRingFill` | **2** | Data breaks at **1-tick vs 2+**; N=2 removes 1-tick artifacts without dropping 2-tick bars. |
-| `phatGateAbsorptionRingsByWickLength` | **true** | Symmetric gate when absorption shows parallel length skew (see §E). Set **false** only if pre-check shows materially fewer short-wick absorptions. |
-
-## Behavior / UX
-
-Filled rings **drop sharply** after deploy — mostly former **one-tick** false fills. **Not a regression:** classification unchanged; only fill-vs-hollow rendering tightened.
-
-**Release blurb:** Filled **exhaustion** circles need side liquidity ≥ threshold **and** wick span ≥ **N**; filled **absorption** circles use **wick span ≥ N** only (when absorption gating is on), not liquidity. Many previously filled **exhaustion** rings were one-tick liquidity artifacts.
-
-## Implementation map
-
-- **Pipeline:** [`pipeline/src/orderflow_pipeline/phat.py`](pipeline/src/orderflow_pipeline/phat.py) — `upper_wick_ticks`, `lower_wick_ticks`; [`aggregate.py`](pipeline/src/orderflow_pipeline/aggregate.py); [`db.py`](pipeline/src/orderflow_pipeline/db.py) schema + insert; [`api/main.py`](api/main.py) camelCase.
-- **UI:** [`src/state.js`](src/state.js); [`src/render/priceChart.js`](src/render/priceChart.js) `_phatRejectionRingFilled`; [`src/ui/tooltip.js`](src/ui/tooltip.js); [`orderflow_dashboard.html`](orderflow_dashboard.html) PHAT modal.
-- **Diagnostics:** [`scripts/phat_wick_liquidity_distribution.py`](scripts/phat_wick_liquidity_distribution.py) §E; [`scripts/backfill_phat_from_profiles.py`](scripts/backfill_phat_from_profiles.py) updates tick columns.
-- **Docs:** [`requirements.md`](requirements.md) §7.1.
-
-## Migration
-
-1. Deploy code + API.
-2. Run **`init_schema`** (or app startup that calls it) so DuckDB gets **`upper_wick_ticks` / `lower_wick_ticks`** (`ALTER ... IF NOT EXISTS`).
-3. **Re-aggregate** sessions or run **`scripts/backfill_phat_from_profiles.py`** so historical bars populate ticks (OHLC fallback works for live edge without DB columns, but stored bars should be backfilled for consistency).
-
-## Tests
-
-- [`pipeline/tests/test_phat.py`](pipeline/tests/test_phat.py)
-- [`pipeline/tests/test_aggregate.py`](pipeline/tests/test_aggregate.py) golden snapshot regenerated.
-
-## Calibration (optional)
-
-After backfill, re-run the histogram script and tune **`phatMinWickTicksForRingFill`** or **`phatExhaustionRingLiquidityThreshold`** if fill density is too low.
+Price chart → delta histogram (`flowChart`) → session CVD line (`cvdChart`); toggles in state for panel visibility.

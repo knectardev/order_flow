@@ -188,7 +188,17 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
                 }
 
             if db_con is not None:
-                _write_session_to_db(db_con, result, session_date, tf)
+                _write_session_to_db(
+                    db_con,
+                    result,
+                    session_date,
+                    tf,
+                    swing_lookback=args.swing_lookback,
+                    divergence_enabled=not args.skip_divergence,
+                    div_min_price=args.div_min_price,
+                    div_min_cvd=args.div_min_cvd,
+                    div_max_bars=args.div_max_bars,
+                )
                 # Phase 6: after the LTF rows land in the DB, stamp the
                 # denormalized parent_*_bias columns by joining back to
                 # the already-written HTF rows. The `for tf in (1h, 15m,
@@ -311,7 +321,18 @@ def _stamp_ranks(bars: list, session_date: date, timeframe: str, seed_df) -> Non
         b.depth_score = float(ds) if ds is not None else None
 
 
-def _write_session_to_db(con, result, session_date: date, timeframe: str) -> None:
+def _write_session_to_db(
+    con,
+    result,
+    session_date: date,
+    timeframe: str,
+    *,
+    swing_lookback: int = 5,
+    divergence_enabled: bool = True,
+    div_min_price: float = 0.25,
+    div_min_cvd: int = 1,
+    div_max_bars: int = 240,
+) -> None:
     """Build the four DataFrames the DB writer expects and dispatch.
 
     `range_pct` / `v_rank` / `d_rank` / `vol_score` / `depth_score` were stamped
@@ -409,8 +430,78 @@ def _write_session_to_db(con, result, session_date: date, timeframe: str) -> Non
     )
 
     from . import db as db_module
+    from . import divergence as divergence_module
+    from . import swings as swings_module
+
+    swing_rows = swings_module.detect_swings(
+        result.bars,
+        session_date=session_date,
+        timeframe=timeframe,
+        swing_lookback=swing_lookback,
+    )
+    swing_df = (
+        pd.DataFrame(swing_rows)
+        if swing_rows
+        else pd.DataFrame(
+            columns=[
+                "session_date",
+                "bar_time",
+                "timeframe",
+                "series_type",
+                "swing_value",
+                "swing_lookback",
+            ]
+        )
+    )
+
+    div_rows: list[dict] = []
+    if divergence_enabled and swing_rows:
+        div_rows = divergence_module.detect_divergences(
+            result.bars,
+            swing_rows,
+            session_date=session_date,
+            timeframe=timeframe,
+            swing_lookback=swing_lookback,
+            min_price_delta=div_min_price,
+            min_cvd_delta=div_min_cvd,
+            max_swing_bar_distance=div_max_bars,
+        )
+    divergence_df = (
+        pd.DataFrame(div_rows)
+        if div_rows
+        else pd.DataFrame(
+            columns=[
+                "session_date",
+                "timeframe",
+                "div_kind",
+                "earlier_bar_time",
+                "later_bar_time",
+                "earlier_price",
+                "later_price",
+                "earlier_cvd",
+                "later_cvd",
+                "bars_between",
+                "size_confirmation",
+                "swing_lookback",
+                "min_price_delta",
+                "min_cvd_delta",
+                "max_swing_bar_distance",
+                "earlier_size_imbalance_ratio",
+                "later_size_imbalance_ratio",
+            ]
+        )
+    )
+
     db_module.write_session(
-        con, session_date, timeframe, bars_df, events_df, fires_df, profile_df
+        con,
+        session_date,
+        timeframe,
+        bars_df,
+        events_df,
+        fires_df,
+        profile_df,
+        swing_df=swing_df,
+        divergence_df=divergence_df,
     )
 
 
@@ -669,6 +760,35 @@ def _add_aggregate_args(a: argparse.ArgumentParser, *, db_path_required: bool = 
     a.add_argument("--absorb-vol-mult",   type=float, default=None, help="Override tunings.absorbVolMult")
     a.add_argument("--absorb-range-mult", type=float, default=None, help="Override tunings.absorbRangeMult")
     a.add_argument("--divergence-flow-mult", type=float, default=None, help="Override tunings.divergenceFlowMult")
+    a.add_argument(
+        "--swing-lookback",
+        type=int,
+        default=5,
+        help="Fractal swing K (bars on each side); stored on every swing_events row.",
+    )
+    a.add_argument(
+        "--skip-divergence",
+        action="store_true",
+        help="Do not compute/persist CVD divergence_events (swings still written).",
+    )
+    a.add_argument(
+        "--div-min-price",
+        type=float,
+        default=0.25,
+        help="Min price delta between paired swings (ES points); override after calibration.",
+    )
+    a.add_argument(
+        "--div-min-cvd",
+        type=int,
+        default=1,
+        help="Min CVD delta between paired swings (contracts).",
+    )
+    a.add_argument(
+        "--div-max-bars",
+        type=int,
+        default=240,
+        help="Max bar index distance between paired swings.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

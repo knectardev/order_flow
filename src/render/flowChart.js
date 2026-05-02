@@ -6,6 +6,7 @@ import {
   CHART_CANDLE_UP_RGB,
 } from '../config/constants.js';
 import { state } from '../state.js';
+import { layoutViewportStripForSubchart } from './chartStripLayout.js';
 import { _getViewedBars } from './priceChart.js';
 import { fctx, flowCanvas, resizeCanvas } from '../util/dom.js';
 
@@ -15,38 +16,39 @@ function drawFlowChart() {
   fctx.fillStyle = CHART_CANVAS_BG;
   fctx.fillRect(0, 0, w, h);
 
-  // Use the SAME viewed-state.bars window as the price chart so the delta
-  // distribution + cumulative-delta sparkline scroll/update in lockstep
-  // with the candles above. When the user pans the price chart back across
-  // history, this panel now mirrors that slice instead of staying pinned to
-  // the live-edge rolling `state.bars` array.
-  const { viewedBars: allBars, isPanned } = _getViewedBars();
-  if (allBars.length === 0) return;
-  const PROFILE_W = Math.min(110, w * 0.22);
-  const PAD = { l: 6, r: PROFILE_W + 16, t: 4, b: 4 };
-  const chartW = w - PAD.l - PAD.r;
-  const chartH = h - PAD.t - PAD.b;
-  const slotW = chartW / Math.max(allBars.length, 12);
+  if (!state.chartUi.showDeltaPanel) {
+    const sumEl = document.getElementById('deltaWindowSum');
+    if (sumEl) sumEl.textContent = 'ΣΔ —';
+    return;
+  }
 
-  // Find max abs delta for scaling
+  const { viewedBars: allBars } = _getViewedBars();
+  if (allBars.length === 0) {
+    const sumEl = document.getElementById('deltaWindowSum');
+    if (sumEl) sumEl.textContent = 'ΣΔ —';
+    return;
+  }
+
+  const PAD = { t: 4, b: 4 };
+  const { padL: PAD_L, chartW, slotW } = layoutViewportStripForSubchart(w, allBars.length);
+  const chartH = h - PAD.t - PAD.b;
+
   let maxAbs = 1;
   for (const b of allBars) maxAbs = Math.max(maxAbs, Math.abs(b.delta));
 
   const midY = PAD.t + chartH / 2;
 
-  // Zero line
   fctx.strokeStyle = 'rgba(138,146,166,0.25)';
   fctx.lineWidth = 1;
   fctx.beginPath();
-  fctx.moveTo(PAD.l, midY);
-  fctx.lineTo(PAD.l + chartW, midY);
+  fctx.moveTo(PAD_L, midY);
+  fctx.lineTo(PAD_L + chartW, midY);
   fctx.stroke();
 
-  // Bars
   const candleW = Math.max(2, Math.min(slotW * 0.65, 14));
   for (let i = 0; i < allBars.length; i++) {
     const b = allBars[i];
-    const xCenter = PAD.l + (i + 0.5) * slotW;
+    const xCenter = PAD_L + (i + 0.5) * slotW;
     const isForming = (b === state.formingBar);
     const barH = (Math.abs(b.delta) / maxAbs) * (chartH / 2 - 2);
     const isPos = b.delta >= 0;
@@ -71,24 +73,28 @@ function drawFlowChart() {
     }
   }
 
-  // Cumulative delta sparkline
-  let cum = 0;
-  const cumPts = allBars.map(b => { cum += b.delta; return cum; });
-  const cumMax = Math.max(...cumPts.map(Math.abs), 1);
-  fctx.strokeStyle = 'rgba(33,160,149,0.55)';
-  fctx.lineWidth = 1.2;
-  fctx.beginPath();
-  for (let i = 0; i < cumPts.length; i++) {
-    const x = PAD.l + (i + 0.5) * slotW;
-    const y = midY - (cumPts[i] / cumMax) * (chartH / 2 - 2);
-    if (i === 0) fctx.moveTo(x, y);
-    else fctx.lineTo(x, y);
+  const winSum = allBars.reduce((s, b) => s + (b.delta ?? 0), 0);
+  const sumEl = document.getElementById('deltaWindowSum');
+  if (sumEl) {
+    sumEl.textContent = `ΣΔ ${winSum >= 0 ? '+' : ''}${Math.round(winSum).toLocaleString()} (window)`;
   }
-  fctx.stroke();
 
-  // Cumulative delta readout
-  document.getElementById('cumDelta').textContent =
-    'cum Δ ' + (cumPts[cumPts.length-1] >= 0 ? '+' : '') + Math.round(cumPts[cumPts.length-1]).toLocaleString();
+  const hb = state.selection.hoverBarTime;
+  if (hb != null) {
+    const hi = allBars.findIndex(b => {
+      const bt = b.time instanceof Date ? b.time.getTime() : Date.parse(b.time);
+      return bt === hb;
+    });
+    if (hi >= 0) {
+      const xh = PAD_L + (hi + 0.5) * slotW;
+      fctx.strokeStyle = 'rgba(0,191,165,0.45)';
+      fctx.lineWidth = 1;
+      fctx.beginPath();
+      fctx.moveTo(xh, PAD.t);
+      fctx.lineTo(xh, PAD.t + chartH);
+      fctx.stroke();
+    }
+  }
 }
 
 export { drawFlowChart };

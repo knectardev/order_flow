@@ -1707,6 +1707,69 @@ function drawPriceChart() {
     pctx.restore();
   }
 
+  // Pipeline swings on price + CVD divergence connectors (price panel) — API replay.
+  if (state.replay.mode === 'real' && allBars.length) {
+    const swings = state.replay.allSwings || [];
+    const winLo = _barTimeMs(allBars[0].time);
+    const winHi = _barTimeMs(allBars[allBars.length - 1].time);
+    for (const sw of swings) {
+      if (sw.seriesType !== 'price_high' && sw.seriesType !== 'price_low') continue;
+      const tms = sw.barTimeMs ?? Date.parse(sw.time);
+      if (tms < winLo || tms > winHi) continue;
+      const idx = allBars.findIndex(b => _barTimeMs(b.time) === tms);
+      if (idx < 0) continue;
+      const x = PAD.l + (idx + 0.5) * slotW;
+      const yHi = yScale(allBars[idx].high);
+      const yLo = yScale(allBars[idx].low);
+      const y = sw.seriesType === 'price_high' ? yHi : yLo;
+      pctx.fillStyle = sw.seriesType === 'price_high'
+        ? 'rgba(239,83,80,0.92)'
+        : 'rgba(38,166,154,0.92)';
+      pctx.beginPath();
+      if (sw.seriesType === 'price_high') {
+        pctx.moveTo(x, y - 4);
+        pctx.lineTo(x - 3, y + 2);
+        pctx.lineTo(x + 3, y + 2);
+      } else {
+        pctx.moveTo(x, y + 4);
+        pctx.lineTo(x - 3, y - 2);
+        pctx.lineTo(x + 3, y - 2);
+      }
+      pctx.closePath();
+      pctx.fill();
+    }
+    const divs = state.replay.allDivergences || [];
+    for (const d of divs) {
+      const t0 = Date.parse(d.earlierTime);
+      const t1 = Date.parse(d.laterTime);
+      if (t1 < winLo || t0 > winHi) continue;
+      const i0 = allBars.findIndex(b => _barTimeMs(b.time) === t0);
+      const i1 = allBars.findIndex(b => _barTimeMs(b.time) === t1);
+      if (i0 < 0 || i1 < 0) continue;
+      const x0 = PAD.l + (i0 + 0.5) * slotW;
+      const x1 = PAD.l + (i1 + 0.5) * slotW;
+      const bear = d.kind === 'bearish';
+      const y0 = yScale(
+        typeof d.earlierPrice === 'number'
+          ? d.earlierPrice
+          : (bear ? allBars[i0].high : allBars[i0].low),
+      );
+      const y1 = yScale(
+        typeof d.laterPrice === 'number'
+          ? d.laterPrice
+          : (bear ? allBars[i1].high : allBars[i1].low),
+      );
+      pctx.strokeStyle = bear ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)';
+      pctx.setLineDash(d.sizeConfirmation ? [] : [5, 4]);
+      pctx.lineWidth = d.sizeConfirmation ? 1.6 : 1;
+      pctx.beginPath();
+      pctx.moveTo(x0, y0);
+      pctx.lineTo(x1, y1);
+      pctx.stroke();
+      pctx.setLineDash([]);
+    }
+  }
+
   // Bottom axis strip (canvas area above HTML “Chart view” slider): US Eastern 12h clock + “ ET”.
   // 15m uses fewer candidate ticks + larger min gap so long date+time labels never overlap.
   // Mirrored session dates on a second row are skipped on 15m and when clock ticks already

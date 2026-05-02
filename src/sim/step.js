@@ -6,6 +6,7 @@ import { computeMatrixScores } from '../analytics/regime.js';
 import { _commitRealBar, _renderReplayChrome, _syncCurrentSession } from '../data/replay.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
+import { drawCvdChart } from '../render/cvdChart.js';
 import { renderMatrix } from '../render/matrix.js';
 import { drawPriceChart } from '../render/priceChart.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
@@ -62,6 +63,7 @@ function step() {
   // Render
   drawPriceChart();
   drawFlowChart();
+  drawCvdChart();
   renderMatrix(breakoutCanonical, fadeCanonical, absorptionWallCanonical, valueEdgeRejectCanonical);
   renderBreakoutWatch(breakoutCanonical);
   renderFadeWatch(fadeCanonical);

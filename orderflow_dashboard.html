@@ -128,21 +128,28 @@
     </div>
   </div>
 
-  <!-- Delta Lane -->
+  <!-- Delta + session CVD (separate canvases, separate Y-axes) -->
   <div class="section section--collapsible" data-section-key="delta">
     <div class="section-head section-head--collapsible">
-      <div class="section-title">Delta Distribution</div>
-      <div class="section-meta" id="cumDelta">cum Δ —</div>
-      <button type="button" class="section-collapse-btn" data-section-title="Delta Distribution" aria-expanded="true">
+      <div class="section-title">Delta &amp; session CVD</div>
+      <div class="section-meta">
+        <span id="deltaWindowSum">ΣΔ —</span>
+        <span class="meta-sep" aria-hidden="true"> · </span>
+        <span id="sessionCvdMeta">session CVD —</span>
+      </div>
+      <button type="button" class="section-collapse-btn" data-section-title="Delta and session CVD" aria-expanded="true">
         <span class="section-collapse-chevron" aria-hidden="true">▼</span>
       </button>
     </div>
     <div class="section-body">
-      <div class="price-wrap">
-        <canvas id="flowChart"></canvas>
+      <div class="price-wrap chart-stack-wrap">
+        <canvas id="flowChart" aria-label="Per-bar delta histogram"></canvas>
+      </div>
+      <div class="price-wrap chart-stack-wrap chart-stack-wrap--cvd">
+        <canvas id="cvdChart" aria-label="Session cumulative delta"></canvas>
       </div>
       <div class="design-note">
-        <strong>Per-bar Δ shown as a histogram</strong>, not a single classification verdict. Aggressor flow is mechanics, not intent — same print could be conviction, a stop, or a hedge. Distribution preserves what a single tag throws away.
+        <strong>Per-bar Δ</strong> is a histogram (contracts per bar). <strong>Session CVD</strong> is cumulative delta from the session open (from API bars). These are separate scales — not overlayed.
       </div>
     </div>
   </div>
