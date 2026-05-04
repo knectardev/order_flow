@@ -25,12 +25,13 @@ import argparse
 import json
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .aggregate import (
     BIN_NS_BY_TIMEFRAME,
     DEFAULT_LARGE_PRINT_THRESHOLD,
+    Bar,
     aggregate_trades,
 )
 from .decode import iter_trades
@@ -695,6 +696,226 @@ def cmd_recompute_fires(args: argparse.Namespace) -> int:
         con.close()
 
 
+def _bar_time_to_epoch_ns(bt: datetime) -> int:
+    """Interpret DuckDB naive timestamps as UTC wall times (matches ingest)."""
+    if bt.tzinfo is None:
+        bt = bt.replace(tzinfo=timezone.utc)
+    return int(bt.timestamp() * 1e9)
+
+
+def _bars_for_divergence_from_db_rows(rows: list[tuple], timeframe: str) -> list[Bar]:
+    """Rebuild minimal ``Bar`` instances for ``detect_divergences`` bar-index + ratio logic.
+
+    Aggressor sums are reconstructed from persisted ``avg_* × count``. Those averages
+    were rounded at ingest, so ``size_confirmation`` may differ slightly from a full
+    decode replay; persisting raw sums on ``bars`` would remove this drift (future).
+    """
+    bin_ns = BIN_NS_BY_TIMEFRAME.get(timeframe, 60 * 10**9)
+    out: list[Bar] = []
+    for r in rows:
+        bt = r[0]
+        session_cvd = int(r[1] or 0)
+        bc = int(r[2] or 0)
+        sc = int(r[3] or 0)
+        avg_b = float(r[4] or 0.0)
+        avg_s = float(r[5] or 0.0)
+        start_ns = _bar_time_to_epoch_ns(bt)
+        sum_b = int(round(avg_b * bc)) if bc else 0
+        sum_s = int(round(avg_s * sc)) if sc else 0
+        b = Bar(
+            open=0.0,
+            high=0.0,
+            low=0.0,
+            close=0.0,
+            volume=0,
+            delta=0,
+            trade_count=0,
+            large_print_count=0,
+            bin_start_ns=start_ns,
+            bar_end_ns=start_ns + bin_ns,
+            high_first_ns=start_ns,
+            low_first_ns=start_ns,
+        )
+        b.session_cvd = session_cvd
+        b.aggressive_buy_count = bc
+        b.aggressive_sell_count = sc
+        b.sum_aggressive_buy_size = sum_b
+        b.sum_aggressive_sell_size = sum_s
+        out.append(b)
+    return out
+
+
+def cmd_recompute_divergences(args: argparse.Namespace) -> int:
+    """Refresh divergence_events from swing_events + bars without re-ingesting."""
+    import pandas as pd
+
+    from . import db as db_module
+    from .divergence import detect_divergences
+
+    db_path = Path(args.db_path)
+    con = db_module.connect(db_path)
+    db_module.init_schema(con)
+    try:
+        tf = args.timeframe
+        lo = _parse_iso_utc(args.from_)
+        hi = _parse_iso_utc(args.to)
+        if (lo is None) != (hi is None):
+            print("Provide both --from and --to together, or neither.", file=sys.stderr)
+            return 2
+        if lo is None:
+            row = con.execute(
+                "SELECT MIN(bar_time), MAX(bar_time) FROM bars WHERE timeframe = ?",
+                [tf],
+            ).fetchone()
+            if row is None or row[0] is None:
+                print(f"No bars found for timeframe={tf}", file=sys.stderr)
+                return 2
+            lo, hi = row[0], row[1]
+
+        sess_rows = con.execute(
+            """
+            SELECT DISTINCT session_date FROM swing_events
+            WHERE timeframe = ? AND bar_time BETWEEN ? AND ?
+            ORDER BY session_date
+            """,
+            [tf, lo, hi],
+        ).fetchall()
+        session_dates = [r[0] for r in sess_rows]
+        if not session_dates:
+            print(f"No swing_events in window for timeframe={tf}; nothing to do.")
+            return 0
+
+        preview = bool(args.preview)
+        total_bearish = 0
+        total_bullish = 0
+        total_size_conf = 0
+        total_rows = 0
+
+        for sd in session_dates:
+            sd_date = sd.date() if isinstance(sd, datetime) else sd
+
+            swings_raw = con.execute(
+                """
+                SELECT session_date, bar_time, timeframe, series_type, swing_value, swing_lookback
+                FROM swing_events
+                WHERE timeframe = ? AND session_date = ?
+                ORDER BY bar_time, series_type
+                """,
+                [tf, sd_date],
+            ).fetchall()
+            swing_rows = [
+                {
+                    "session_date": r[0],
+                    "bar_time": r[1],
+                    "timeframe": r[2],
+                    "series_type": r[3],
+                    "swing_value": float(r[4]),
+                    "swing_lookback": int(r[5]),
+                }
+                for r in swings_raw
+            ]
+
+            if args.swing_lookback is not None:
+                lookback = int(args.swing_lookback)
+            else:
+                ks = {int(r[5]) for r in swings_raw}
+                if len(ks) > 1:
+                    print(
+                        f"Multiple swing_lookback values in swing_events for "
+                        f"session_date={sd_date.isoformat()} timeframe={tf}: {sorted(ks)}. "
+                        "Pass --swing-lookback explicitly.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                lookback = ks.pop() if ks else 5
+
+            bar_rows = con.execute(
+                """
+                SELECT bar_time, session_cvd, aggressive_buy_count, aggressive_sell_count,
+                       avg_aggressive_buy_size, avg_aggressive_sell_size
+                FROM bars
+                WHERE timeframe = ? AND session_date = ?
+                ORDER BY bar_time
+                """,
+                [tf, sd_date],
+            ).fetchall()
+            if not bar_rows:
+                print(f"No bars for session_date={sd_date.isoformat()} timeframe={tf}; aborting.", file=sys.stderr)
+                return 2
+
+            bars = _bars_for_divergence_from_db_rows(bar_rows, tf)
+            divs = detect_divergences(
+                bars,
+                swing_rows,
+                session_date=sd_date,
+                timeframe=tf,
+                swing_lookback=lookback,
+                min_price_delta=float(args.div_min_price),
+                min_cvd_delta=int(args.div_min_cvd),
+                max_swing_bar_distance=int(args.div_max_bars),
+            )
+
+            bearish = sum(1 for d in divs if d["div_kind"] == "bearish")
+            bullish = sum(1 for d in divs if d["div_kind"] == "bullish")
+            sz_conf = sum(1 for d in divs if d["size_confirmation"])
+            n = len(divs)
+
+            sd_label = sd_date.isoformat() if hasattr(sd_date, "isoformat") else str(sd_date)
+            if preview:
+                print(
+                    f"session {sd_label} bearish={bearish} bullish={bullish} "
+                    f"size_confirmed={sz_conf} total={n}"
+                )
+                total_bearish += bearish
+                total_bullish += bullish
+                total_size_conf += sz_conf
+                total_rows += n
+                continue
+
+            cols = [
+                "session_date",
+                "timeframe",
+                "div_kind",
+                "earlier_bar_time",
+                "later_bar_time",
+                "earlier_price",
+                "later_price",
+                "earlier_cvd",
+                "later_cvd",
+                "bars_between",
+                "size_confirmation",
+                "swing_lookback",
+                "min_price_delta",
+                "min_cvd_delta",
+                "max_swing_bar_distance",
+                "earlier_size_imbalance_ratio",
+                "later_size_imbalance_ratio",
+            ]
+            divergence_df = pd.DataFrame(divs, columns=cols) if divs else pd.DataFrame(columns=cols)
+            db_module.replace_divergence_session(con, tf, sd_date, divergence_df)
+            print(f"session {sd_label} divergences written total={n}")
+
+        if preview:
+            print(
+                f"total bearish={total_bearish} bullish={total_bullish} "
+                f"size_confirmed={total_size_conf} rows={total_rows}"
+            )
+            print(
+                f"preview timeframe={tf} window=[{lo}..{hi}] sessions={len(session_dates)} "
+                "(no DB writes)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Recomputed divergences: timeframe={tf} window=[{lo}..{hi}] "
+                f"sessions={len(session_dates)}",
+                file=sys.stderr,
+            )
+        return 0
+    finally:
+        con.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="orderflow_pipeline",
@@ -729,6 +950,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use locked baseline regime-filtered strategy thresholds (default true).",
     )
     rf.set_defaults(func=cmd_recompute_fires)
+
+    rd = sub.add_parser(
+        "recompute-divergences",
+        help="Recompute divergence_events from swing_events + bars (no swing re-detection).",
+        epilog=(
+            "CLI divergence thresholds mirror ingest flags; --divergence-flow-mult only affects "
+            "client/synthetic tunings, not detect_divergences."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    rd.add_argument("--db-path", required=True, help="DuckDB file path")
+    rd.add_argument("--timeframe", required=True, choices=["1m", "15m", "1h"])
+    rd.add_argument("--from", dest="from_", default=None, help="ISO UTC start (optional)")
+    rd.add_argument("--to", default=None, help="ISO UTC end (optional)")
+    rd.add_argument(
+        "--div-min-price",
+        type=float,
+        default=0.25,
+        help="Min price delta between paired swings (default 0.25, same as aggregate).",
+    )
+    rd.add_argument(
+        "--div-min-cvd",
+        type=int,
+        default=1,
+        help="Min CVD delta between paired swings (default 1).",
+    )
+    rd.add_argument(
+        "--div-max-bars",
+        type=int,
+        default=240,
+        help="Max bar index distance between paired swings (default 240).",
+    )
+    rd.add_argument(
+        "--swing-lookback",
+        type=int,
+        default=None,
+        help="Override fractal K for detection + stamping; default = DISTINCT value from swings.",
+    )
+    rd.add_argument(
+        "--preview",
+        action="store_true",
+        help="Print per-session divergence counts and totals only; no DELETE/INSERT.",
+    )
+    rd.set_defaults(func=cmd_recompute_divergences)
 
     c = sub.add_parser("calibrate", help="Print distributions + side-by-side detection counts")
     c.add_argument("--bars-dir", required=True, help="Directory containing aggregated bars JSON")

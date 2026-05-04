@@ -21,6 +21,7 @@ import { bindSelectionUI, restoreSelectionFromUrl } from './ui/selection.js';
 import { bindEventLogClicks } from './render/eventLog.js';
 import { initSectionCollapse } from './ui/sectionCollapse.js';
 import { bindDivergenceNavUI, syncDivergenceNavButtons } from './ui/divergenceNav.js';
+import { updateCvdDivergenceLegend } from './ui/cvdDivergenceLegend.js';
 
 // ───────────────────────────────────────────────────────────
 buildMatrix();
@@ -37,6 +38,7 @@ renderValueEdgeRejectWatch(initialValueEdgeReject);
 drawPriceChart();
 drawFlowChart();
 drawCvdChart();
+updateCvdDivergenceLegend();
 
 window.addEventListener('resize', () => {
   drawPriceChart();

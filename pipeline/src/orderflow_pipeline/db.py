@@ -560,6 +560,51 @@ def write_session(
         raise
 
 
+def replace_divergence_session(
+    con: duckdb.DuckDBPyConnection,
+    timeframe: str,
+    session_date: date,
+    divergence_df: "pd.DataFrame",
+) -> None:
+    """DELETE then INSERT divergence_events for one (timeframe, session_date).
+
+    Used by ``recompute-divergences`` to refresh persisted divergences without
+    touching bars, swings, or fires. Empty ``divergence_df`` clears divergences
+    for that session slice (same semantics as ingest writing zero rows after delete).
+
+    Expected columns match ``write_session`` divergence INSERT:
+    session_date, timeframe, div_kind, earlier_bar_time, later_bar_time,
+    earlier_price, later_price, earlier_cvd, later_cvd, bars_between,
+    size_confirmation, swing_lookback, min_price_delta, min_cvd_delta,
+    max_swing_bar_distance, earlier_size_imbalance_ratio, later_size_imbalance_ratio.
+    """
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute(
+            "DELETE FROM divergence_events WHERE timeframe = ? AND session_date = ?",
+            [timeframe, session_date],
+        )
+        if divergence_df is not None and len(divergence_df) > 0:
+            con.execute(
+                """
+                INSERT INTO divergence_events
+                    (session_date, timeframe, div_kind, earlier_bar_time, later_bar_time,
+                     earlier_price, later_price, earlier_cvd, later_cvd, bars_between,
+                     size_confirmation, swing_lookback, min_price_delta, min_cvd_delta,
+                     max_swing_bar_distance, earlier_size_imbalance_ratio, later_size_imbalance_ratio)
+                SELECT session_date, timeframe, div_kind, earlier_bar_time, later_bar_time,
+                       earlier_price, later_price, earlier_cvd, later_cvd, bars_between,
+                       size_confirmation, swing_lookback, min_price_delta, min_cvd_delta,
+                       max_swing_bar_distance, earlier_size_imbalance_ratio, later_size_imbalance_ratio
+                FROM divergence_df
+                """
+            )
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+
+
 def write_backtest_results(
     con: duckdb.DuckDBPyConnection,
     run_row: dict[str, Any],

@@ -1929,6 +1929,65 @@
     font-size: 9.5px;
   }
 
+  /* CVD panel: divergence connector legend (colors match `cvdChart.js`) */
+  .cvd-div-legend .cvd-div-legend__lines {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 6px;
+    line-height: 1.5;
+    margin-bottom: 6px;
+  }
+  .cvd-div-legend__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+  }
+  .cvd-div-legend__item .cvd-leg-sample + .cvd-leg-sample {
+    margin-left: 2px;
+  }
+  .cvd-div-legend__sep { opacity: 0.45; user-select: none; }
+  .cvd-leg-sample {
+    display: inline-block;
+    width: 28px;
+    flex-shrink: 0;
+  }
+  .cvd-leg-sample--bear-solid {
+    height: 0;
+    border-top: 1.5px solid rgba(239, 83, 80, 0.55);
+  }
+  .cvd-leg-sample--bull-solid {
+    height: 0;
+    border-top: 1.5px solid rgba(38, 166, 154, 0.55);
+  }
+  .cvd-leg-sample--bear-dotted {
+    height: 2px;
+    border-top: none;
+    align-self: center;
+    background: repeating-linear-gradient(
+      90deg,
+      rgba(239, 83, 80, 0.55) 0 4px,
+      transparent 4px 8px
+    );
+  }
+  .cvd-leg-sample--bull-dotted {
+    height: 2px;
+    border-top: none;
+    align-self: center;
+    background: repeating-linear-gradient(
+      90deg,
+      rgba(38, 166, 154, 0.55) 0 4px,
+      transparent 4px 8px
+    );
+  }
+  .cvd-div-legend__thresholds {
+    margin: 0;
+    font-size: 9px;
+    color: var(--muted-2);
+    line-height: 1.55;
+  }
+
   /* Watched cell — persistent indicator on canonical-watch cell */
   .matrix-cell.watched::before {
     content: '';

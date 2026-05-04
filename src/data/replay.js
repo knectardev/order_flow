@@ -14,6 +14,7 @@ import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, render
 import { handleWatchFire } from '../sim/step.js';
 import { renderEventInventory } from '../render/eventInventory.js';
 import { toggleStream } from '../ui/controls.js';
+import { updateCvdDivergenceLegend } from '../ui/cvdDivergenceLegend.js';
 import { clamp } from '../util/math.js';
 
 // Phase 5: bin width per timeframe (mirrors aggregate.BIN_NS_BY_TIMEFRAME
@@ -501,20 +502,24 @@ async function _loadSwingsFromApi() {
 
 async function _loadDivergencesFromApi() {
   state.replay.allDivergences = [];
-  if (state.replay.mode !== 'real' || !state.replay.apiBase) return;
-  const dr = state.replay.dateRange;
-  if (!dr?.min || !dr?.max) return;
-  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
-  const url = `${state.replay.apiBase}/divergence-events?timeframe=${encodeURIComponent(tf)}`
-    + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`;
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(String(res.status));
-    const data = await res.json();
-    const rows = Array.isArray(data.divergences) ? data.divergences : [];
-    state.replay.allDivergences = rows;
-  } catch (e) {
-    console.warn('[orderflow] /divergence-events failed:', e.message);
+    if (state.replay.mode !== 'real' || !state.replay.apiBase) return;
+    const dr = state.replay.dateRange;
+    if (!dr?.min || !dr?.max) return;
+    const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+    const url = `${state.replay.apiBase}/divergence-events?timeframe=${encodeURIComponent(tf)}`
+      + `&from=${encodeURIComponent(dr.min)}&to=${encodeURIComponent(dr.max)}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      const rows = Array.isArray(data.divergences) ? data.divergences : [];
+      state.replay.allDivergences = rows;
+    } catch (e) {
+      console.warn('[orderflow] /divergence-events failed:', e.message);
+    }
+  } finally {
+    updateCvdDivergenceLegend();
   }
 }
 

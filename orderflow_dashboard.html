@@ -180,6 +180,26 @@
       <div class="design-note">
         <strong>Per-bar Δ</strong> is a histogram (contracts per bar). <strong>Session CVD</strong> is cumulative delta from the session open (from API bars). These are separate scales — not overlayed.
       </div>
+      <div class="design-note design-note--tight cvd-div-legend" id="cvdDivLegend" aria-label="CVD divergence connector legend">
+        <div class="cvd-div-legend__lines">
+          <span class="cvd-div-legend__item" title="Bearish: higher price highs with weaker CVD at highs">
+            <span class="cvd-leg-sample cvd-leg-sample--bear-solid" aria-hidden="true"></span>
+            Bearish
+          </span>
+          <span class="cvd-div-legend__sep" aria-hidden="true">·</span>
+          <span class="cvd-div-legend__item" title="Bullish: lower price lows with stronger CVD at lows">
+            <span class="cvd-leg-sample cvd-leg-sample--bull-solid" aria-hidden="true"></span>
+            Bullish
+          </span>
+          <span class="cvd-div-legend__sep" aria-hidden="true">·</span>
+          <span class="cvd-div-legend__item">
+            <span class="cvd-leg-sample cvd-leg-sample--bear-dotted" aria-hidden="true"></span>
+            <span class="cvd-leg-sample cvd-leg-sample--bull-dotted" aria-hidden="true"></span>
+            <span><strong>Solid</strong> = size imbalance confirms · <strong>dotted</strong> = price/CVD thresholds only</span>
+          </span>
+        </div>
+        <p class="cvd-div-legend__thresholds" id="cvdDivLegendThresholds"></p>
+      </div>
     </div>
   </div>
 
