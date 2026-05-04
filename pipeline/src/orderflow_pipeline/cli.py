@@ -4,7 +4,7 @@ Subcommands:
     aggregate  - Decode a directory of .dbn.zst files and emit per-session
                  JSON bars + index.json (1m only). When `--db-path` is set,
                  every aggregated session is also persisted to DuckDB at
-                 all three timeframes (1m / 15m / 1h, Phase 5).
+                 all four timeframes (1m / 5m / 15m / 1h, Phase 5).
     rebuild    - Drop the DuckDB file and re-run aggregate. Use after any
                  change to `regime.py` or aggregation logic; same flag set
                  as `aggregate`.
@@ -39,18 +39,24 @@ from .serialize import DEFAULT_TUNINGS, write_index, write_session_json
 from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
 from .symbology import resolve_front_month
 
+# Subcommands that accept --timeframe use this ordered allowlist (includes 5m).
+TIMEFRAME_CHOICES = ("1m", "5m", "15m", "1h")
+
 # Phase 6: timeframes are processed HTF-first within each session so the
 # Phase 6 cross-timeframe denormalization (`parent_1h_bias`,
 # `parent_15m_bias`) can read its HTF rows out of DuckDB right after
-# they're written. Order: 1h -> 15m -> 1m. The 15m UPDATE pass joins
-# back to the 1h bars; the 1m UPDATE pass joins back to BOTH the 1h
-# and 15m bars.
-TIMEFRAMES = ("1h", "15m", "1m")
+# they're written. Order: 1h -> 15m -> 5m -> 1m. Each LTF UPDATE pass joins
+# back to HTF bars already written for that session.
+TIMEFRAMES = ("1h", "15m", "5m", "1m")
 
 # Phase 6: higher-timeframes whose bias_state is copied onto each LTF row.
 # Coverage uses bars.bar_end_time (exclusive): [HTF.bar_time, HTF.bar_end_time).
 HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str], ...]] = {
     "1m": (
+        ("1h",  "parent_1h_bias"),
+        ("15m", "parent_15m_bias"),
+    ),
+    "5m": (
         ("1h",  "parent_1h_bias"),
         ("15m", "parent_15m_bias"),
     ),
@@ -94,7 +100,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
 
     # DuckDB writer is opt-in via --db-path. When set, every aggregated
     # session is also persisted to the DB (in the same loop, idempotently)
-    # at all three timeframes. JSON output is unconditional and stays 1m-
+    # at all four timeframes. JSON output is unconditional and stays 1m-
     # only — JSON mode is the legacy fallback and the dashboard uses
     # ?source=api now anyway. Phase 5 multi-timeframe data is DB-only.
     db_con = None
@@ -124,8 +130,8 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
             f"vol={fm.volume:,} share={fm.share_of_volume*100:.2f}%"
         )
 
-        # Materialize trades once per session — we re-bin at three
-        # different timeframes, so iterating the decoder three times would
+        # Materialize trades once per session — we re-bin at four
+        # timeframes, so iterating the decoder four times would
         # do the dbn.zst decode work three times. One RTH session of ES
         # trades is on the order of low-millions of records → tens of MB
         # in memory, well within budget.
@@ -202,8 +208,8 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
                 )
                 # Phase 6: after the LTF rows land in the DB, stamp the
                 # denormalized parent_*_bias columns by joining back to
-                # the already-written HTF rows. The `for tf in (1h, 15m,
-                # 1m)` order guarantees the parents exist by the time
+                # the already-written HTF rows. The `TIMEFRAMES` HTF-first
+                # order guarantees the parents exist by the time
                 # the LTF UPDATE runs.
                 _stamp_parent_bias(db_con, session_date, tf)
                 print(f"  [{tf}] wrote duckdb session rows ({len(result.bars)} bars)")
@@ -566,7 +572,7 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     guaranteed-fresh DB. JSON files are NOT deleted (cheap to overwrite,
     and useful as `verify_phase1.py` reference data).
 
-    Phase 5: a single rebuild re-runs aggregation across all three
+    Phase 5: a single rebuild re-runs aggregation across all four
     timeframes for all raw files.
     """
     db_path = Path(args.db_path)
@@ -939,7 +945,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recompute canonical fires from bars already in DuckDB.",
     )
     rf.add_argument("--db-path", required=True, help="DuckDB file path")
-    rf.add_argument("--timeframe", default="1m", choices=["1m", "15m", "1h"])
+    rf.add_argument("--timeframe", default="1m", choices=list(TIMEFRAME_CHOICES))
     rf.add_argument("--from", dest="from_", default=None, help="ISO UTC start (optional)")
     rf.add_argument("--to", default=None, help="ISO UTC end (optional)")
     rf.add_argument("--watch-ids", default=None, help="Comma list, e.g. breakout,fade")
@@ -961,7 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
     )
     rd.add_argument("--db-path", required=True, help="DuckDB file path")
-    rd.add_argument("--timeframe", required=True, choices=["1m", "15m", "1h"])
+    rd.add_argument("--timeframe", required=True, choices=list(TIMEFRAME_CHOICES))
     rd.add_argument("--from", dest="from_", default=None, help="ISO UTC start (optional)")
     rd.add_argument("--to", default=None, help="ISO UTC end (optional)")
     rd.add_argument(
@@ -1015,7 +1021,7 @@ def _add_aggregate_args(a: argparse.ArgumentParser, *, db_path_required: bool = 
     a.add_argument("--out-dir",  required=True, help="Output directory for bars/*.json + index.json")
     a.add_argument("--db-path",  required=db_path_required, default=None,
                    help="Optional DuckDB file path. When set, also persist every aggregated "
-                        "session to the DB at all three timeframes (1m/15m/1h, idempotent).")
+                        "session to the DB at all four timeframes (1m/5m/15m/1h, idempotent).")
     a.add_argument("--symbol",   default="ES",  help="Display symbol (default: ES)")
     a.add_argument("--session",  default="rth", choices=["rth", "globex"],
                    help="Session window (default: rth = 09:30-16:00 ET)")

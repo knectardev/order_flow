@@ -73,6 +73,17 @@ def _apply_timeframe_json_overlay(cfg: LegacyFallbackConfig, timeframe: str) -> 
 
 def _base_legacy_config(timeframe: str, *, use_regime_filter: bool) -> LegacyFallbackConfig:
     tf = (timeframe or "1m").strip()
+    if tf == "5m":
+        return LegacyFallbackConfig(
+            use_regime_filter=use_regime_filter,
+            cooldown_bars=3,
+            min_bars=16,
+            lookback_bars=8,
+            warmup_start=10,
+            stop_loss_ticks=None,
+            take_profit_ticks=None,
+            watch_exit_ticks=(),
+        )
     if tf == "15m":
         return LegacyFallbackConfig(
             use_regime_filter=use_regime_filter,

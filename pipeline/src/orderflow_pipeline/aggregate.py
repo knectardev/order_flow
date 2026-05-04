@@ -1,5 +1,5 @@
 """Aggregate filtered Trade records into OHLCV+delta+microstructure bars at
-a configurable bin width (1m / 15m / 1h — Phase 5).
+a configurable bin width (1m / 5m / 15m / 1h — Phase 5).
 
 Bar schema (matches `orderflow_dashboard.html`'s `generateBar` output plus
 microstructure fields used by the depth-proxy and the data-driven regime
@@ -27,9 +27,9 @@ Per-tick breakdown is exposed via Bar.iter_profile_rows() and routed to the
 DuckDB `bar_volume_profile` table by the CLI.
 
 Phase 5: a single `aggregate_trades` call now bins to one configurable
-timeframe via the `bin_ns` parameter. The CLI invokes it three times per
-session (1m / 15m / 1h), once per timeframe, re-binning from the raw trade
-stream each time. VPT and concentration are NOT summable from 1-minute
+timeframe via the `bin_ns` parameter. The CLI invokes it once per timeframe
+per session (1m / 5m / 15m / 1h), re-binning from the raw trade stream each
+time. VPT and concentration are NOT summable from 1-minute
 bars; they require recomputation from raw trades per timeframe.
 """
 from __future__ import annotations
@@ -51,10 +51,10 @@ DEFAULT_LARGE_PRINT_THRESHOLD = 50
 NS_PER_MINUTE = 60 * 1_000_000_000
 
 # Phase 5 bin widths. `bin_ns` is what `aggregate_trades` actually consumes;
-# this dict is the canonical source of truth for the three supported
-# timeframes the rest of the pipeline + dashboard agrees on.
+# canonical mapping for every timeframe the pipeline + dashboard agree on.
 BIN_NS_BY_TIMEFRAME: dict[str, int] = {
     "1m":  60 * 1_000_000_000,
+    "5m":  5 * 60 * 1_000_000_000,
     "15m": 15 * 60 * 1_000_000_000,
     "1h":  60 * 60 * 1_000_000_000,
 }
@@ -311,7 +311,7 @@ class Bar:
 
         `timeframe` is stamped on every emitted row so the DB's composite
         PK `(bar_time, timeframe, price_tick)` resolves cleanly across
-        timeframes. Session-anchored RTH grids align 1m/15m/1h bin starts
+        timeframes. Session-anchored RTH grids align 1m/5m/15m/1h bin starts
         where period boundaries coincide (not UTC-hour-driven for 1h).
 
         Skips ticks with zero volume (shouldn't happen in practice — every
@@ -342,7 +342,7 @@ class AggregateResult:
     session_start_ns: int | None = None
     session_end_ns: int | None = None
     # Phase 5: bin width this result was aggregated at, and the canonical
-    # timeframe key ('1m' / '15m' / '1h'). Both flow into every downstream
+    # timeframe key ('1m' / '5m' / '15m' / '1h'). Both flow into every downstream
     # writer (DB, JSON path) so the active timeframe is unambiguous.
     bin_ns: int = NS_PER_MINUTE
     timeframe: str = "1m"
@@ -475,8 +475,8 @@ def aggregate_trades(
 ) -> AggregateResult:
     """Bin a stream of trades into OHLCV+delta bars at the requested bin width.
 
-    Phase 5: `bin_ns` selects the aggregation grid (60e9 = 1m, 900e9 = 15m,
-    3600e9 = 1h). `timeframe` is a string key stamped on every output row
+    Phase 5: `bin_ns` selects the aggregation grid (60e9 = 1m, 300e9 = 5m,
+    900e9 = 15m, 3600e9 = 1h). `timeframe` is a string key stamped on every output row
     for downstream DB/API/dashboard scoping. The two parameters are
     redundant on purpose — `bin_ns` is the math, `timeframe` is the label,
     and they're paired via `BIN_NS_BY_TIMEFRAME`.
@@ -507,7 +507,7 @@ def aggregate_trades(
       (`price_volume` / `price_delta`) keyed on `round(price / TICK_SIZE)`.
 
     Full RTH coverage with one trade per minute yields 390 × 1m bars,
-    26 × 15m bars, and 7 × 1h bars (including a 30-minute final hour bucket).
+    78 × 5m bars, 26 × 15m bars, and 7 × 1h bars (including a 30-minute final hour bucket).
     """
     if session not in ("rth", "globex"):
         raise ValueError(f"Unknown session {session!r} (use 'rth' or 'globex').")

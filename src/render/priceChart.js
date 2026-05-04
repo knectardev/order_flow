@@ -1800,12 +1800,12 @@ function drawPriceChart() {
   }
 
   // Bottom axis strip (canvas area above HTML “Chart view” slider): US Eastern 12h clock + “ ET”.
-  // 15m uses fewer candidate ticks + larger min gap so long date+time labels never overlap.
-  // Mirrored session dates on a second row are skipped on 15m and when clock ticks already
+  // 5m / 15m use fewer candidate ticks + larger min gap so long date+time labels never overlap.
+  // Mirrored session dates on a second row are skipped on 5m / 15m and when clock ticks already
   // carry day changes (multi-day window).
   const axisFloorY = volTop + volBandH;
   const multiDayVp = _viewportSpansMultipleEtDays(allBars);
-  const is15mAxis = activeTf === '15m';
+  const useSparseTfAxis = activeTf === '15m' || activeTf === '5m';
 
   if (totalBars >= 1) {
     pctx.save();
@@ -1815,9 +1815,9 @@ function drawPriceChart() {
     pctx.lineWidth = 1;
     pctx.textBaseline = 'bottom';
     const nBars = totalBars;
-    const pxPerSlot = is15mAxis && multiDayVp ? 100 : is15mAxis ? 88 : 52;
-    const capTicks = is15mAxis && multiDayVp ? 4 : is15mAxis ? 5 : 12;
-    let wantTicks = clamp(Math.floor(chartW / pxPerSlot), Math.min(nBars, is15mAxis ? 3 : 4), Math.min(capTicks, nBars));
+    const pxPerSlot = useSparseTfAxis && multiDayVp ? 100 : useSparseTfAxis ? 88 : 52;
+    const capTicks = useSparseTfAxis && multiDayVp ? 4 : useSparseTfAxis ? 5 : 12;
+    let wantTicks = clamp(Math.floor(chartW / pxPerSlot), Math.min(nBars, useSparseTfAxis ? 3 : 4), Math.min(capTicks, nBars));
     if (nBars <= 4) wantTicks = Math.max(1, nBars);
     const cand = [];
     if (nBars === 1) {
@@ -1829,8 +1829,8 @@ function drawPriceChart() {
       }
     }
     const uniq = [...new Set(cand)].sort((a, b) => a - b);
-    let minGapPx = is15mAxis ? 14 : 6;
-    if (is15mAxis && multiDayVp) minGapPx = 22;
+    let minGapPx = useSparseTfAxis ? 14 : 6;
+    if (useSparseTfAxis && multiDayVp) minGapPx = 22;
     const acceptedTicks = [];
     let lastRight = -Infinity;
     let prevLblIdx = -1;
@@ -1863,7 +1863,7 @@ function drawPriceChart() {
     for (const t of acceptedTicks) {
       pctx.fillText(t.lbl, t.x, timeY);
     }
-    if (sessionDividers.length >= 2 && !is15mAxis && !multiDayVp) {
+    if (sessionDividers.length >= 2 && !useSparseTfAxis && !multiDayVp) {
       const vd = sessionDividers;
       const maxSd = Math.min(10, Math.max(2, Math.floor(chartW / 52)));
       let sdStep = 1;

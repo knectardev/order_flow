@@ -98,7 +98,7 @@ _CELL_RE = re.compile(r"^[1-5],[1-5]$")
 # Phase 5 canonical timeframe set. Every endpoint that filters by
 # `timeframe` validates against this allowlist before threading the value
 # into a parameterized SQL query.
-SUPPORTED_TIMEFRAMES = ("1m", "15m", "1h")
+SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h")
 DEFAULT_TIMEFRAME = "1m"
 
 # Event types stored in DuckDB `events.event_type` (see pipeline/db.py).
@@ -114,7 +114,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -299,9 +299,10 @@ def _row_to_dict(cur: duckdb.DuckDBPyConnection) -> list[dict]:
 
 # Phase 6: per-base-timeframe HTF projection list. Drives `_attach_htf_bias`
 # for /bars, /events, /fires. Each tuple is (camelCase_json_key, db_column).
-# 1m sees both 1h and 15m parents; 15m only sees 1h; 1h has no parents.
+# 1m sees both 1h and 15m parents; 5m same as 1m; 15m only sees 1h; 1h has no parents.
 HTF_LISTS_BY_BASE_TF: dict[str, tuple[tuple[str, str], ...]] = {
     "1m":  (("biasH1", "parent_1h_bias"), ("bias15m", "parent_15m_bias")),
+    "5m":  (("biasH1", "parent_1h_bias"), ("bias15m", "parent_15m_bias")),
     "15m": (("biasH1", "parent_1h_bias"),),
     "1h":  (),
 }
@@ -336,8 +337,7 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
     Phase 6 additions: ``vwap``, ``biasState`` (this bar's own bias on
     the active timeframe), ``barEndTime`` (exclusive end, from
     ``bars.bar_end_time``), and the projected HTF parent biases via
-    ``_attach_htf_bias`` (``biasH1`` for 15m / 1m; ``bias15m`` for 1m
-    only).
+    ``_attach_htf_bias`` (``biasH1`` on 15m / 5m / 1m; ``bias15m`` on 5m / 1m only).
     """
     bt: datetime = b["bar_time"]
     shape = {
@@ -439,7 +439,7 @@ def get_timeframes() -> dict:
     found = [r[0] for r in rows]
     if not found:
         return {"timeframes": [DEFAULT_TIMEFRAME]}
-    # Order canonically (1m / 15m / 1h) regardless of DuckDB's lexical
+    # Order canonically (1m / 5m / 15m / 1h) regardless of DuckDB's lexical
     # sort, so the dashboard's selector buttons are stable across rebuilds.
     canonical = [tf for tf in SUPPORTED_TIMEFRAMES if tf in found]
     extras = [tf for tf in found if tf not in SUPPORTED_TIMEFRAMES]
@@ -818,7 +818,7 @@ def get_profile(
     """True tick-level volume profile from `bar_volume_profile`.
 
     Phase 5: scoped to `timeframe` so the per-tick aggregation reflects
-    the active timeframe's bar grid (1m / 15m / 1h all share bin-start
+    the active timeframe's bar grid (1m / 5m / 15m / 1h all share bin-start
     instants but the per-bar volume profile rows are stored per-tf for
     composite-PK uniqueness). At the resolution of "all bars in window",
     the visual profile is dominated by total volume and looks similar
@@ -988,7 +988,7 @@ def get_occupancy(
 
 
 @app.get("/api/backtest/defaults")
-def get_backtest_defaults() -> dict:
+def get_backtest_defaults() -> ORJSONResponse:
     """Expose merged broker economics for dashboards and scripted clients."""
 
     from orderflow_pipeline.backtest_defaults import (
@@ -996,10 +996,13 @@ def get_backtest_defaults() -> dict:
         resolve_backtest_defaults_path_str,
     )
 
-    return {
-        "broker": effective_broker_defaults(),
-        "resolvedPath": resolve_backtest_defaults_path_str(),
-    }
+    return ORJSONResponse(
+        content={
+            "broker": effective_broker_defaults(),
+            "resolvedPath": resolve_backtest_defaults_path_str(),
+        },
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 @app.post("/api/backtest/run")

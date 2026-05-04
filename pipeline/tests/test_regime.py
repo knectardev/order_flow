@@ -347,9 +347,11 @@ def test_regime_15m_seed_transitions_to_current_only_after_k():
 
 def test_regime_params_keys():
     """Phase 5 contract: REGIME_PARAMS must cover all canonical timeframes."""
-    assert set(regime.REGIME_PARAMS.keys()) >= {"1m", "15m", "1h"}
-    # Hybrid warmup is disabled at 1m and enabled at 15m / 1h.
+    assert set(regime.REGIME_PARAMS.keys()) >= {"1m", "5m", "15m", "1h"}
+    assert regime.SEED_SESSIONS_BY_TF["5m"] == 0
+    # Hybrid warmup is disabled at 1m / 5m and enabled at 15m / 1h.
     assert regime.REGIME_PARAMS["1m"]["seed_transition_k"] == 0
+    assert regime.REGIME_PARAMS["5m"]["seed_transition_k"] == 0
     assert regime.REGIME_PARAMS["15m"]["seed_transition_k"] > 0
     assert regime.REGIME_PARAMS["1h"]["seed_transition_k"] > 0
 

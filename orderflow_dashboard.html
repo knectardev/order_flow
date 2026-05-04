@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
 <title>Order Flow Dashboard — Synthetic Prototype</title>
 <link rel="stylesheet" href="styles/dashboard.css">
 </head>
@@ -14,6 +15,18 @@
       <h1>Order Flow Dashboard</h1>
       <p class="subtitle">
         <span class="badge" id="modeBadge">Synthetic</span>
+        <!-- Runs during parse—before defer’d ES modules—so API mode never sticks on HTML default if JS is slow or misses. -->
+        <script>
+        (function () {
+          try {
+            if ((new URLSearchParams(location.search).get('source') || '').toLowerCase() !== 'api') return;
+            var el = document.getElementById('modeBadge');
+            if (!el) return;
+            el.textContent = 'API · Connecting…';
+            el.style.background = 'rgba(210, 170, 50, 0.25)';
+          } catch (_) { /* noop */ }
+        })();
+        </script>
         <span id="modeSubtitle">Probabilistic matrix · Event-based flow markers · Volume profile with 1σ value area</span>
       </p>
     </div>
@@ -50,7 +63,7 @@
         Price · Volume Profile · Events
         <!--
           HTF-bias ribbon legend. The ribbon is drawn at the top of the
-          price canvas (1h strip + 15m strip on 1m timeframe; single 1h
+          price canvas (1h strip + 15m strip on 1m / 5m timeframe; single 1h
           strip on 15m; the bar's own bias_state on 1h). Colors here mirror
           BIAS_PALETTE in src/render/biasRibbon.js exactly — keep them in
           sync if either side changes. CSS-only popover; show on
@@ -72,7 +85,7 @@
               <li><span class="bias-swatch" style="background:#933030"></span><span class="bias-name">BEARISH_STRONG</span><span class="bias-vote">&minus;2</span></li>
             </ul>
             <div class="bias-legend-foot">
-              Top strip = 1h · Bottom strip = 15m (1m view)<br>
+              Top strip = 1h · Bottom strip = 15m (1m / 5m view)<br>
               Vote sums to alignment score in &minus;4&hellip;+4
             </div>
           </div>
@@ -102,6 +115,7 @@
         <span class="replay-tf-label">Timeframe</span>
         <span class="tf-select" id="timeframeSelect" role="tablist" aria-label="Timeframe">
           <button type="button" class="tf-btn active" data-tf="1m"  role="tab" aria-selected="true">1m</button>
+          <button type="button" class="tf-btn"        data-tf="5m"  role="tab" aria-selected="false">5m</button>
           <button type="button" class="tf-btn"        data-tf="15m" role="tab" aria-selected="false">15m</button>
           <button type="button" class="tf-btn"        data-tf="1h"  role="tab" aria-selected="false">1h</button>
         </span>
@@ -470,6 +484,6 @@
 
 </div>
 
-<script type="module" src="src/main.js"></script>
+<script type="module" src="src/main.js?v=20260505a"></script>
 </body>
 </html>

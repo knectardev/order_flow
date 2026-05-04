@@ -77,3 +77,13 @@ def test_timeframe_specific_config_generates_on_1h() -> None:
     )
     assert len(fires) > 0
 
+
+def test_timeframe_specific_config_generates_on_5m() -> None:
+    bars = _bars(80)
+    fires = derive_fires_from_bars(
+        bars,
+        watch_ids={"breakout", "fade", "absorptionWall", "valueEdgeReject"},
+        config=config_for_timeframe("5m", use_regime_filter=True),
+    )
+    assert len(fires) > 0
+

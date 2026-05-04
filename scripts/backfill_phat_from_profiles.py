@@ -53,7 +53,7 @@ def _iter_rows(con, timeframe: str | None):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Backfill PHAT values from bar_volume_profile")
     ap.add_argument("--db", type=Path, default=Path(os.environ.get("ORDERFLOW_DB_PATH", str(DEFAULT_DB))))
-    ap.add_argument("--timeframe", choices=["1m", "15m", "1h"], default=None)
+    ap.add_argument("--timeframe", choices=["1m", "5m", "15m", "1h"], default=None)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 

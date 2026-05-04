@@ -147,7 +147,7 @@ def test_vwap_position_inputs():
 
 def test_vwap_band_per_timeframe_is_canonical():
     # Catches drift if anyone changes the band table without updating tests.
-    assert VWAP_BAND_TICKS_BY_TF == {"1m": 4, "15m": 8, "1h": 16}
+    assert VWAP_BAND_TICKS_BY_TF == {"1m": 4, "5m": 6, "15m": 8, "1h": 16}
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ def test_compute_bias_column_unknown_timeframe_raises():
     pd = pytest.importorskip("pandas")
     df = pd.DataFrame({"close": [4500.0], "vwap": [4500.0], "v_rank": [3], "d_rank": [3]})
     with pytest.raises(ValueError, match="Unknown timeframe"):
-        compute_bias_column(df, "5m")
+        compute_bias_column(df, "9m")
 
 
 # ───────────────────────────────────────────────────────────────────

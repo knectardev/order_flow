@@ -24,7 +24,7 @@ from typing import Any
 SUPPORTED_STRATEGY_CONFIG_VERSION = 1
 
 ALLOWED_TOP_LEVEL_KEYS = frozenset({"version", "_doc", "timeframes", "$schema"})
-ALLOWED_TIMEFRAMES = frozenset({"1m", "15m", "1h"})
+ALLOWED_TIMEFRAMES = frozenset({"1m", "5m", "15m", "1h"})
 ALLOWED_TIMEFRAME_FIELD_KEYS = frozenset(
     {
         "cooldown_bars",

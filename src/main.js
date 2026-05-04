@@ -37,10 +37,6 @@ renderAbsorptionWallWatch(initialAbsorptionWall);
 renderValueEdgeRejectWatch(initialValueEdgeReject);
 initSectionCollapse();
 syncDeltaSectionPanelsFromCollapse();
-drawPriceChart();
-drawFlowChart();
-drawCvdChart();
-updateCvdDivergenceLegend();
 
 window.addEventListener('resize', () => {
   drawPriceChart();
@@ -52,7 +48,20 @@ window.addEventListener('resize', () => {
 // Try to load real-data sessions from the FastAPI/DuckDB stack; falls
 // back to synthetic mode silently when the page is opened without
 // `?source=api` (regime-DB plan §2f retired the JSON-manifest fallback).
-bootstrapReplay();
+// Draw charts only after bootstrap: `?source=api` leaves `replay.mode`
+// non-real with empty `state.bars` until `/bars` loads — an early
+// `drawPriceChart()` would paint an empty canvas (black main chart).
+(async function bootstrapThenPaint() {
+  try {
+    await bootstrapReplay();
+  } catch (e) {
+    console.error('[orderflow] bootstrapReplay failed:', e);
+  }
+  drawPriceChart();
+  drawFlowChart();
+  drawCvdChart();
+  updateCvdDivergenceLegend();
+})();
 bindModalDrag();
 bindPhatLegendModal();
 bindChartDrawUI();

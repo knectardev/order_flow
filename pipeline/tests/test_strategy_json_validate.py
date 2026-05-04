@@ -49,7 +49,7 @@ def test_validate_unknown_watch_id() -> None:
 
 
 def test_validate_unknown_timeframe_key() -> None:
-    doc = {"version": 1, "timeframes": {"5m": {}}}
+    doc = {"version": 1, "timeframes": {"9m": {}}}
     errs = validate_strategy_document(doc)
     assert any("unknown timeframe key" in e for e in errs)
 

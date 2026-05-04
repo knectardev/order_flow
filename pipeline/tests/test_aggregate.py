@@ -242,11 +242,15 @@ def test_1h_session_anchored_seven_bars():
 
 
 def test_rth_full_session_bar_counts_and_end_spans():
-    """Every minute populated ⇒ 390 / 26 / 7 emitted bars with partition ends."""
+    """Every minute populated ⇒ 390 / 78 / 26 / 7 emitted bars with partition ends."""
     trades = _full_session_one_trade_per_minute()
     res_1m = aggregate_trades(
         trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
         bin_ns=BIN_NS_BY_TIMEFRAME["1m"], timeframe="1m",
+    )
+    res_5m = aggregate_trades(
+        trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
+        bin_ns=BIN_NS_BY_TIMEFRAME["5m"], timeframe="5m",
     )
     res_15m = aggregate_trades(
         trades, front_month_id=FRONT_ID, session_date=SESSION_DATE,
@@ -257,10 +261,12 @@ def test_rth_full_session_bar_counts_and_end_spans():
         bin_ns=BIN_NS_BY_TIMEFRAME["1h"], timeframe="1h",
     )
     assert len(res_1m.bars) == 390
+    assert len(res_5m.bars) == 78
     assert len(res_15m.bars) == 26
     assert len(res_1h.bars) == 7
     assert res_1m.bars[0].bin_start_ns == _ts_ns_at(9, 30)
     assert res_1m.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
+    assert res_5m.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
     assert res_15m.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
     assert res_1h.bars[-1].bar_end_ns == _ts_ns_at(16, 0)
 

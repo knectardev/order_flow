@@ -1,7 +1,7 @@
 // Phase 6 directional-bias ribbon.
 //
 // Two thin colored strips drawn above the candle pane that visualize the
-// higher-timeframe bias context behind every visible 1m / 15m bar:
+// higher-timeframe bias context behind every visible 1m / 5m / 15m bar:
 //
 //   ┌────────────────────────────────────────────┐
 //   │ 1h-bias strip   (full width, top)          │  <- biasH1 per slot
@@ -11,7 +11,7 @@
 //
 // On 1h timeframe the ribbon collapses to a single 1h strip (the bar's
 // own bias_state) since 1h has no parents. On 15m the bottom strip is
-// elided (only biasH1 is meaningful). On 1m both strips render.
+// elided (only biasH1 is meaningful). On 1m / 5m both strips render.
 //
 // Color palette (matches the BIAS_VOTE table in canonical.js):
 //   BULLISH_STRONG : deep green     +2
@@ -64,11 +64,11 @@ function drawBiasRibbon(ctx, bars, geom) {
   const tf = geom.activeTimeframe || '1m';
 
   // Layout:
-  //   1m  -> two strips: biasH1 (top), bias15m (bottom)
+  //   1m / 5m  -> two strips: biasH1 (top), bias15m (bottom)
   //   15m -> single strip: biasH1 (full height)
   //   1h  -> single strip: biasState  (the 1h bar's own bias)
   let stripPlan;
-  if (tf === '1m') {
+  if (tf === '1m' || tf === '5m') {
     const h2 = Math.max(2, Math.floor(height / 2) - 1);
     stripPlan = [
       { y: top,                     h: h2, key: 'biasH1',    label: '1h'  },

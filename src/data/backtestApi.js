@@ -10,13 +10,76 @@ function _normalizeApiBase(apiBase) {
 
 async function fetchBacktestDefaults(apiBase) {
   const base = _normalizeApiBase(apiBase);
-  const res = await fetch(`${base}/api/backtest/defaults`);
+  const res = await fetch(`${base}/api/backtest/defaults`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`/api/backtest/defaults ${res.status}`);
   return res.json();
 }
 
+function _commissionInputDisplay(brokerNum) {
+  const n = Number(brokerNum);
+  if (!Number.isFinite(n)) return '';
+  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+  let s = n.toFixed(4);
+  s = s.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.$/, '');
+  return s;
+}
+
+/** Normalize `config/backtest_defaults.json` (flat BrokerConfig-aligned keys + metadata) → API `{ broker }` shape. */
+function _brokerPayloadFromRepoDefaultsRaw(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.broker && typeof raw.broker === 'object') return raw;
+  const skip = new Set(['$schema', '_doc', 'version']);
+  const b = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (skip.has(k)) continue;
+    b[k] = v;
+  }
+  return Object.keys(b).length ? { broker: b } : null;
+}
+
+/**
+ * True when the server's resolved defaults file is (or is absent for) the repo-standard
+ * `config/backtest_defaults.json`. We may then overlay same-origin `config/backtest_defaults.json`
+ * so the Performance inputs match the editor; skip when `ORDERFLOW_BACKTEST_CONFIG` points at
+ * another filename (server is authoritative for that path).
+ */
+function _isStandardRepoBacktestDefaultsPath(resolvedPath) {
+  if (resolvedPath == null || resolvedPath === '') return true;
+  const norm = String(resolvedPath).replace(/\\/g, '/').toLowerCase();
+  return norm.endsWith('/config/backtest_defaults.json');
+}
+
+async function _fetchRepoDefaultsPayload() {
+  try {
+    const url = new URL('../../config/backtest_defaults.json', import.meta.url);
+    const res = await fetch(url.href, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const raw = await res.json();
+    return _brokerPayloadFromRepoDefaultsRaw(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function overlaySameOriginRepoDefaultsOverApi(apiPayload) {
+  if (!apiPayload?.broker || typeof apiPayload.broker !== 'object') return;
+  if (!_isStandardRepoBacktestDefaultsPath(apiPayload.resolvedPath)) return;
+  const repo = await _fetchRepoDefaultsPayload();
+  if (!repo?.broker || typeof repo.broker !== 'object') return;
+  applyBacktestBrokerDefaultsToDomAndState({
+    broker: { ...apiPayload.broker, ...repo.broker },
+  });
+}
+
+async function fetchAndApplyRepoBacktestDefaults() {
+  const payload = await _fetchRepoDefaultsPayload();
+  if (!payload) return false;
+  applyBacktestBrokerDefaultsToDomAndState(payload);
+  return true;
+}
+
 /** Persist GET /api/backtest/defaults `broker` and fill Performance inputs (API mode bootstrap). */
-export function applyBacktestBrokerDefaultsToDomAndState(payload) {
+function applyBacktestBrokerDefaultsToDomAndState(payload) {
   const b = payload?.broker;
   if (!b || typeof b !== 'object') return;
   state.backtest.brokerDefaultsFromApi = b;
@@ -29,7 +92,7 @@ export function applyBacktestBrokerDefaultsToDomAndState(payload) {
     state.backtest.runParams.initialCapital = Number(b.initial_capital);
   }
   if (comm != null && Number.isFinite(Number(b.commission_per_side))) {
-    comm.value = String(Number(b.commission_per_side));
+    comm.value = _commissionInputDisplay(b.commission_per_side);
     state.backtest.runParams.commissionPerSide = Number(b.commission_per_side);
   }
   if (slip != null && Number.isFinite(Number(b.slippage_ticks))) {
@@ -40,6 +103,20 @@ export function applyBacktestBrokerDefaultsToDomAndState(payload) {
     qty.value = String(Math.floor(Number(b.qty)));
     state.backtest.runParams.qty = Math.floor(Number(b.qty));
   }
+}
+
+/** Best-effort: fill Performance broker inputs from FastAPI defaults (survives synthetic mode). */
+async function pullBacktestBrokerDefaultsIntoUi(apiBase) {
+  const base = _normalizeApiBase(apiBase);
+  if (base) {
+    try {
+      const payload = await fetchBacktestDefaults(apiBase);
+      applyBacktestBrokerDefaultsToDomAndState(payload);
+      await overlaySameOriginRepoDefaultsOverApi(payload);
+      return true;
+    } catch (_) { /* Fall through — static repo JSON when API unreachable. */ }
+  }
+  return fetchAndApplyRepoBacktestDefaults();
 }
 
 function _scopeToWatchIds(scope) {
@@ -129,7 +206,10 @@ async function fetchBacktestSkippedFires(runId = null) {
 }
 
 export {
+  applyBacktestBrokerDefaultsToDomAndState,
+  fetchAndApplyRepoBacktestDefaults,
   fetchBacktestDefaults,
+  pullBacktestBrokerDefaultsIntoUi,
   runBacktest,
   fetchBacktestStats,
   fetchBacktestEquity,

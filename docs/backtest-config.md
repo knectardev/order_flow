@@ -22,9 +22,9 @@ Repo root follows the pipeline package layout ([`backtest_defaults.py`](../pipel
 
 ## Reload / cache
 
-The loader LRU-caches contents keyed by resolved path **mtime**. **Restart uvicorn** (or bump file mtime) after edits for predictable reads in long-lived servers.
+The loader **re-reads the JSON file from disk on every** `effective_broker_defaults()` call (used by `GET /api/backtest/defaults` and each `POST /api/backtest/run` merge). There is no in-process LRU keyed only by `mtime`, so rapid edits on Windows (where `mtime_ns` can fail to tick between saves) do not leave **some** broker fields stale.
 
-Tests should call **`clear_backtest_defaults_cache()`** ([`backtest_defaults.py`](../pipeline/src/orderflow_pipeline/backtest_defaults.py)) after swapping env vars or replacing files.
+**`clear_backtest_defaults_cache()`** is retained as a **no-op** for tests that still call it after env swaps.
 
 ## Allowed fields
 
@@ -41,7 +41,7 @@ Tests should call **`clear_backtest_defaults_cache()`** ([`backtest_defaults.py`
 
 ## Dashboard
 
-When the page loads in **`?source=api`** mode, [`bootstrapFromApi`](../src/data/replay.js) fetches **`GET /api/backtest/defaults`** and fills Performance inputs (`Capital`, `Commission/side`, `Slippage`, `Qty`) from the **`broker`** object so you don’t need to type them each session unless you intentionally change overrides in the UI.
+On each load, [`replay.js`](../src/data/replay.js) calls **`pullBacktestBrokerDefaultsIntoUi`**: it requests **`GET /api/backtest/defaults`** against `?apiBase=`, then `localStorage.orderflow_api_base`, then `http://127.0.0.1:8001`, and fills Performance inputs when the response succeeds. This runs in both **`?source=api`** chart mode and **synthetic** chart mode (use `?apiBase=` if your API is not on the default host/port). If the probe fails, inputs stay at HTML placeholders.
 
 ## Validation
 

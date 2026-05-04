@@ -14,6 +14,7 @@
       "additionalProperties": false,
       "properties": {
         "1m": { "$ref": "#/$defs/timeframeBlock" },
+        "5m": { "$ref": "#/$defs/timeframeBlock" },
         "15m": { "$ref": "#/$defs/timeframeBlock" },
         "1h": { "$ref": "#/$defs/timeframeBlock" }
       }

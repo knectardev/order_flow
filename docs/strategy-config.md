@@ -34,6 +34,7 @@ The loader caches file contents keyed by path and file **mtime**. In practice:
 Top-level `timeframes` is an object keyed by timeframe string. Supported keys today:
 
 - `1m`
+- `5m`
 - `15m`
 - `1h`
 

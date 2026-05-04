@@ -3,7 +3,7 @@
 The aggregator is the only writer to this DB. The dashboard (via the FastAPI
 layer in `api/main.py`) is read-only.
 
-Phase 5 extends every table with a `timeframe` column ('1m' / '15m' / '1h')
+Phase 5 extends every table with a `timeframe` column ('1m' / '5m' / '15m' / '1h')
 and promotes the primary keys to composites that include it. Each timeframe
 is its own independent context — events, fires, regime ranks, and per-tick
 volume profile are all computed per-timeframe and never mixed. Storage cost
@@ -16,7 +16,7 @@ Tables (Phase 5):
         session_date    DATE        - "2026-04-21" etc., RTH date
         bar_time        TIMESTAMP   - bin-start UTC (inclusive)
         bar_end_time    TIMESTAMP   - exclusive bar end UTC (half-open [bar_time, bar_end_time))
-        timeframe       VARCHAR     - '1m' | '15m' | '1h'
+        timeframe       VARCHAR     - '1m' | '5m' | '15m' | '1h'
         open / high / low / close   FLOAT
         volume                       INTEGER
         delta                        INTEGER

@@ -139,6 +139,7 @@ const _BASE_TUNINGS_1M = {
 
 export const SYNTH_TUNINGS_BY_TF = {
   '1m':  { ..._BASE_TUNINGS_1M },
+  '5m':  { ..._BASE_TUNINGS_1M },
   '15m': { ..._BASE_TUNINGS_1M },
   '1h':  { ..._BASE_TUNINGS_1M },
 };
@@ -154,5 +155,5 @@ export function getSynthTunings(tf) {
 // Canonical timeframe set the dashboard understands. The selector will
 // be populated from /timeframes when API mode is active, but this is
 // the fallback / synthetic-mode default.
-export const TIMEFRAMES = ['1m', '15m', '1h'];
+export const TIMEFRAMES = ['1m', '5m', '15m', '1h'];
 export const DEFAULT_TIMEFRAME = '1m';

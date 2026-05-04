@@ -5,7 +5,7 @@ import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldown
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { clearOccupancyCache } from './occupancyApi.js';
 import { clearProfileCache } from './profileApi.js';
-import { applyBacktestBrokerDefaultsToDomAndState, fetchBacktestDefaults } from './backtestApi.js';
+import { fetchAndApplyRepoBacktestDefaults, pullBacktestBrokerDefaultsIntoUi } from './backtestApi.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { drawCvdChart } from '../render/cvdChart.js';
@@ -24,6 +24,7 @@ import { clamp } from '../util/math.js';
 // window contains the user's prior position.
 const BIN_MS_BY_TF = {
   '1m':       60 * 1000,
+  '5m':   5 * 60 * 1000,
   '15m': 15 * 60 * 1000,
   '1h':  60 * 60 * 1000,
 };
@@ -33,6 +34,109 @@ const URL_PARAM_SELECTION_FIRE_WATCH = 'selectionFireWatch';
 const URL_PARAM_SELECTION_CELLS = 'selectionCells';
 const KNOWN_DIAGNOSTIC_VERSION = 'v1';
 const _unknownDiagVersionsWarned = new Set();
+/** Fallback when probing cannot reach any candidate (legacy default port). */
+const DEFAULT_ORDERFLOW_API_FALLBACK = 'http://127.0.0.1:8001';
+const _API_PROBE_DEFAULTS_MS = 3200;
+
+/**
+ * Parsed `http:` / `https:` origin (`protocol//host`) or null when invalid/unusable.
+ */
+function _parseHttpApiOrigin(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  try {
+    const u = new URL(String(raw).trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+
+function _browserPageOrigin() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return `${window.location.protocol}//${window.location.host}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Priority: valid `apiBase` query → optional localStorage origin → dashboard page origin → `:8001` fallback (deduped). */
+function _candidateApiBaseOrder(searchParams) {
+  const fb = DEFAULT_ORDERFLOW_API_FALLBACK.replace(/\/+$/, '');
+  const parsedUrl = _parseHttpApiOrigin(searchParams?.get?.('apiBase'));
+  /** When `apiBase` is absent or invalid (e.g. bad port literal), prefer store + probes. */
+  const storeBase = parsedUrl ? null : _storedDevApiBase();
+
+  /** @type {string[]} */
+  const ordered = [];
+  if (parsedUrl) ordered.push(parsedUrl.replace(/\/+$/, ''));
+  if (storeBase) ordered.push(storeBase.replace(/\/+$/, ''));
+  const origin = _browserPageOrigin()?.replace(/\/+$/, '');
+  if (origin) ordered.push(origin);
+  ordered.push(fb);
+
+  const seen = new Set();
+  /** @type {string[]} */
+  const out = [];
+  for (const raw of ordered) {
+    const b = String(raw || '').replace(/\/+$/, '');
+    if (!b || seen.has(b)) continue;
+    seen.add(b);
+    out.push(b);
+  }
+  return out.length ? out : [fb];
+}
+
+/**
+ * Finds the first base that responds 200 from `GET /api/backtest/defaults` within the timeout (no DuckDB required).
+ */
+async function _probeFirstReachableDefaultsBase(candidates) {
+  const list = candidates || [];
+  for (const base of list) {
+    const b = String(base || '').replace(/\/+$/, '');
+    if (!b) continue;
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), _API_PROBE_DEFAULTS_MS);
+    try {
+      const res = await fetch(`${b}/api/backtest/defaults`, {
+        signal: ctrl.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(tid);
+      if (res.ok) return b;
+    } catch (_) {
+      clearTimeout(tid);
+    }
+  }
+  return null;
+}
+
+async function _resolveBootstrapApiBase(searchParams) {
+  const candidates = _candidateApiBaseOrder(searchParams);
+  const hit = await _probeFirstReachableDefaultsBase(candidates);
+  const resolved = hit || candidates[0] || DEFAULT_ORDERFLOW_API_FALLBACK.replace(/\/+$/, '');
+  if (hit) {
+    console.info('[orderflow] Resolved API base (GET /api/backtest/defaults):', resolved);
+  } else {
+    console.warn(
+      '[orderflow] API base probe inconclusive — using',
+      resolved,
+      '(prefer ?apiBase= or run FastAPI reachable from dashboard origin)'
+    );
+  }
+  return resolved.replace(/\/+$/, '');
+}
+
+async function _fetchWithDeadline(resource, ms) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(resource, { signal: ctrl.signal, cache: 'no-store' });
+  } finally {
+    clearTimeout(tid);
+  }
+}
 
 /**
  * Optional dev override when `&apiBase=` is omitted: set once in the browser console, e.g.
@@ -751,12 +855,22 @@ function jumpToNextFire(watchId) {
 }
 
 async function bootstrapReplay() {
-  // regime-DB plan §2f: JSON-manifest mode has been retired. The
-  // dashboard now requires `?source=api[&apiBase=…]`. Older `?source=
-  // json` URLs (or omitted `source=`) intentionally fall back to
-  // synthetic mode rather than silently loading stale JSON. Live data
-  // and the v2 regime classifier come from the FastAPI/DuckDB stack.
+  // Paint API intent before any awaited I/O — covers slow networks or early throws.
+  const _qs = new URL(window.location.href).searchParams;
+  if (((_qs.get('source') || '').toLowerCase()) === 'api') {
+    _renderModeBadgeApiConnecting();
+    /** Until FastAPI responds, show repo `config/backtest_defaults.json` in Performance (instant UX). */
+    void fetchAndApplyRepoBacktestDefaults();
+  }
+
   const params = new URL(window.location.href).searchParams;
+  // `?source=api` loads bars from DuckDB-backed FastAPI; without it we stay synthetic but may
+  // still hydrate Performance inputs from `/api/backtest/defaults`.
+  //
+  // **API origin resolution:** probes `GET /api/backtest/defaults` over (in order) a valid `?apiBase=`,
+  // optional localStorage `orderflow_api_base`, the **current page origin** (same-port uvicorn setups),
+  // then `http://127.0.0.1:8001`. This fixes the common mismatch: dashboard on `:8000` (`http.server`)
+  // plus API on `:8000` (uvicorn) or `:8001` — without relying on `apiBase=` every time.
 
   // Phase 6: Bias filter mode + show-suppressed flag are user-tunable
   // via URL. ?biasFilter=hard activates 1h-anchor suppression (fires
@@ -776,13 +890,15 @@ async function bootstrapReplay() {
 
   const source = (params.get('source') || '').toLowerCase();
   if (source === 'api') {
-    const fromUrl = params.get('apiBase');
-    const fromStore = fromUrl ? null : _storedDevApiBase();
-    const apiBase = (fromUrl || fromStore || 'http://127.0.0.1:8001').replace(/\/+$/, '');
-    console.info('[orderflow] API base:', apiBase, fromUrl ? '(from URL)' : (fromStore ? '(from localStorage orderflow_api_base)' : '(default)'));
+    const apiBase = await _resolveBootstrapApiBase(params);
     return bootstrapFromApi(apiBase);
   }
   console.info('[orderflow] No ?source=api specified; staying in synthetic mode.');
+  state.activeTimeframe = DEFAULT_TIMEFRAME;
+  void _resolveBootstrapApiBase(params).then((base) => {
+    void pullBacktestBrokerDefaultsIntoUi(base);
+  });
+  _syncTimeframeSelectorUI();
 }
 
 // API-mode bootstrap (regime-DB plan §1d). Fetches the session manifest
@@ -800,6 +916,7 @@ async function bootstrapFromApi(apiBase) {
   state.replay.apiBase = apiBase;
   state.replay.source = 'api';
   state.replay.dataDriven = true;
+  _renderModeBadgeApiConnecting();
 
   // Phase 5: read ?timeframe= URL param at bootstrap. Validates against
   // the canonical TIMEFRAMES list; unknown values silently fall back to
@@ -814,7 +931,7 @@ async function bootstrapFromApi(apiBase) {
   // that have data behind them. /timeframes degrades gracefully on a
   // partial rebuild (returns whatever's actually in the bars table).
   try {
-    const tfRes = await fetch(`${apiBase}/timeframes`);
+    const tfRes = await _fetchWithDeadline(`${apiBase}/timeframes`, 15000);
     if (tfRes.ok) {
       const tfData = await tfRes.json();
       if (Array.isArray(tfData.timeframes) && tfData.timeframes.length) {
@@ -831,17 +948,21 @@ async function bootstrapFromApi(apiBase) {
     state.activeTimeframe = state.availableTimeframes[0] || DEFAULT_TIMEFRAME;
   }
 
-  void fetchBacktestDefaults(apiBase)
-    .then(applyBacktestBrokerDefaultsToDomAndState)
-    .catch((err) => console.warn('[orderflow] GET /api/backtest/defaults failed:', err?.message || err));
+  const defsOk = await pullBacktestBrokerDefaultsIntoUi(apiBase);
+  if (!defsOk) {
+    console.warn(
+      '[orderflow] GET /api/backtest/defaults returned non-OK; Performance broker inputs may not match repo JSON.'
+    );
+  }
 
   let metas = [];
   try {
-    const res = await fetch(`${apiBase}/sessions`);
+    const res = await _fetchWithDeadline(`${apiBase}/sessions`, 25000);
     if (!res.ok) throw new Error(`/sessions ${res.status}`);
     const data = await res.json();
     if (!Array.isArray(data.sessions) || data.sessions.length === 0) {
       console.info('[orderflow] API mode: /sessions returned no sessions.');
+      _renderModeBadgeApiNoSessions();
       return;
     }
     metas = data.sessions.slice().sort((a, b) =>
@@ -854,10 +975,16 @@ async function bootstrapFromApi(apiBase) {
     state.replay.apiBase = null;
     state.replay.source = 'synthetic';
     state.replay.dataDriven = false;
+    state.activeTimeframe = DEFAULT_TIMEFRAME;
+    _syncTimeframeSelectorUI();
+    _renderModeBadgeApiBootstrapFailed(err.message);
     return;
   }
   await _loadAllSessionsFromApi(apiBase, metas, state.activeTimeframe);
   _syncTimeframeSelectorUI();
+  if (state.replay.mode !== 'real' && state.replay.source === 'api') {
+    _renderModeBadgeApiNoBars();
+  }
 }
 
 function _normalizeBarPayload(b) {
@@ -1190,7 +1317,8 @@ function _syncTimeframeSelectorUI() {
     const isActive = tf === state.activeTimeframe;
     btn.classList.toggle('active', isActive);
     btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    btn.disabled = !available.has(tf);
+    const synthNonPrimaryTf = state.replay.mode !== 'real' && tf !== DEFAULT_TIMEFRAME;
+    btn.disabled = !available.has(tf) || synthNonPrimaryTf;
   });
 }
 
@@ -1215,9 +1343,59 @@ function _syncCandleModeSelectorUI() {
   }
 }
 
+function _modeBadgeEl() {
+  return document.getElementById('modeBadge');
+}
+
+/** Only for explicit synthetic chart mode bootstrap (not URL ?source=api). */
+function _renderModeBadgeSyntheticDefault() {
+  const badge = _modeBadgeEl();
+  if (!badge) return;
+  badge.textContent = 'Synthetic';
+  badge.removeAttribute('title');
+  badge.style.background = '';
+}
+
+/** `?source=api` but `/sessions` (or DNS/connection) failed — avoid reverting look like accidental HTML default. */
+function _renderModeBadgeApiBootstrapFailed(detail = '') {
+  const badge = _modeBadgeEl();
+  if (!badge) return;
+  badge.textContent = 'API unreachable';
+  badge.setAttribute(
+    'title',
+    `${detail}\nDefaults: uvicorn api on :8001, dashboard on :8000. Try ?apiBase=http://127.0.0.1:YOUR_PORT`,
+  );
+  badge.style.background = 'rgba(200, 80, 70, 0.22)';
+}
+
+function _renderModeBadgeApiConnecting() {
+  const badge = _modeBadgeEl();
+  if (!badge) return;
+  badge.removeAttribute('title');
+  badge.textContent = 'API · Connecting…';
+  badge.style.background = 'rgba(210, 170, 50, 0.25)';
+}
+
+function _renderModeBadgeApiNoSessions() {
+  const badge = _modeBadgeEl();
+  if (!badge) return;
+  badge.removeAttribute('title');
+  badge.textContent = 'API · No sessions in DB';
+  badge.style.background = 'rgba(210, 120, 45, 0.22)';
+}
+
+function _renderModeBadgeApiNoBars() {
+  const badge = _modeBadgeEl();
+  if (!badge) return;
+  badge.removeAttribute('title');
+  badge.textContent = 'API · No bars loaded';
+  badge.style.background = 'rgba(210, 120, 45, 0.22)';
+}
+
 function _renderModeBadge() {
   const badge = document.getElementById('modeBadge');
   if (!badge) return;
+  badge.removeAttribute('title');
   const tfLabel = (state.activeTimeframe || DEFAULT_TIMEFRAME).toUpperCase();
   badge.textContent = `Real · ES · API · v2 regime · ${tfLabel}`;
   badge.style.background = 'rgba(33, 160, 149, 0.18)';

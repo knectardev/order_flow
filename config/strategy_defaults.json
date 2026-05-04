@@ -12,6 +12,15 @@
       "take_profit_ticks": null,
       "watch_exit_ticks": {}
     },
+    "5m": {
+      "cooldown_bars": 3,
+      "min_bars": 16,
+      "lookback_bars": 8,
+      "warmup_start": 10,
+      "stop_loss_ticks": null,
+      "take_profit_ticks": null,
+      "watch_exit_ticks": {}
+    },
     "15m": {
       "cooldown_bars": 2,
       "min_bars": 12,

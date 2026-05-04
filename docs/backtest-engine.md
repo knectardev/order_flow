@@ -62,7 +62,7 @@ These settings define **execution plumbing and P&L accounting**, not *which* fir
 2. **JSON overlay** — [`config/backtest_defaults.json`](../config/backtest_defaults.json), or a file from **`ORDERFLOW_BACKTEST_CONFIG`**, replaces those defaults per key.
 3. **API request overlay** — each field on `POST /api/backtest/run` is optional; **omitted** keys keep the JSON/code merge, **present** keys override that key only.
 
-**`GET /api/backtest/defaults`** returns the merged **(2)+(1)** object so the dashboard can pre-fill the Performance panel in API mode without retyping.
+**`GET /api/backtest/defaults`** returns the merged **(2)+(1)** object so the dashboard can pre-fill the Performance panel (`pullBacktestBrokerDefaultsIntoUi` in [`replay.js`](../src/data/replay.js)) after a best-effort probe to the API host (`?apiBase=` → `orderflow_api_base` → `127.0.0.1:8001`), including synthetic chart mode.
 
 Treat **`POST … stop_loss_ticks` / `take_profit_ticks`** as an optional **run-wide** exit overlay; when both are null/absent, strategy JSON + `resolve_exit_ticks` govern mechanical exits (§4).
 

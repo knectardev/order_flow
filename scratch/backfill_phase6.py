@@ -14,7 +14,7 @@ Recomputes (in this order):
 
 Idempotent: safe to re-run. Each session × timeframe is recomputed
 end-to-end and written back via UPDATE on the (bar_time, timeframe)
-primary key. Sessions are processed HTF-first (1h → 15m → 1m) so the
+primary key. Sessions are processed HTF-first (1h → 15m → 5m → 1m) so the
 parent-bias UPDATEs find populated HTF rows when they run.
 
 Reads/writes the same DB the API uses (``data/orderflow.duckdb`` by
@@ -57,6 +57,10 @@ HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str], ...]] = {
         ("1h",  "parent_1h_bias"),
         ("15m", "parent_15m_bias"),
     ),
+    "5m": (
+        ("1h",  "parent_1h_bias"),
+        ("15m", "parent_15m_bias"),
+    ),
     "15m": (
         ("1h",  "parent_1h_bias"),
     ),
@@ -64,7 +68,7 @@ HTF_PARENTS_BY_LTF: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 # HTF-first so the parent-bias JOIN lands on populated parent rows.
-TIMEFRAMES_ORDERED: tuple[str, ...] = ("1h", "15m", "1m")
+TIMEFRAMES_ORDERED: tuple[str, ...] = ("1h", "15m", "5m", "1m")
 
 
 def _stamp_vwap_for_session(df: pd.DataFrame) -> pd.DataFrame:

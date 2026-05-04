@@ -19,6 +19,8 @@ Per-timeframe contract (Phase 5)
 --------------------------------
 - 1m:  100-bar percentile window, 20-bar range EMA, 30-bar warmup, NO
        cross-session seeding (per-session statistics, as before).
+- 5m:  48-bar percentile window, 12-bar EMA, 18-bar warmup, NO cross-session
+       seeding (`pct_win + warmup` fits within one full RTH 5m grid).
 - 15m: 30-bar percentile window, 8-bar EMA, 10-bar warmup. Optional cross-
        session seed of last 3 sessions; first 15 bars of the current
        session are ranked against (seed + current), bars 16+ against
@@ -89,15 +91,17 @@ if TYPE_CHECKING:
 #                       session-only ranks. 0 disables the hybrid path.
 REGIME_PARAMS: dict[str, dict[str, int]] = {
     "1m":  {"pct_win": 100, "ema_span": 20, "depth_min_periods": 30, "warmup": 30, "smooth": 3, "seed_transition_k": 0},
+    "5m":  {"pct_win": 48,  "ema_span": 12, "depth_min_periods": 18, "warmup": 18, "smooth": 3, "seed_transition_k": 0},
     "15m": {"pct_win": 30,  "ema_span": 8,  "depth_min_periods": 10, "warmup": 10, "smooth": 3, "seed_transition_k": 15},
     "1h":  {"pct_win": 24,  "ema_span": 8,  "depth_min_periods": 8,  "warmup": 8,  "smooth": 3, "seed_transition_k": 8},
 }
 
 # How many prior sessions the CLI should pull from the DB to seed
-# higher-timeframe rolling windows. 1m never seeds (synthesizes its own
-# warmup within the session); 15m/1h pull a few sessions back.
+# higher-timeframe rolling windows. 1m / 5m never seed (5m's percentile window
+# fits within one RTH session). 15m/1h pull a few sessions back.
 SEED_SESSIONS_BY_TF: dict[str, int] = {
     "1m":  0,
+    "5m":  0,
     "15m": 3,
     "1h":  5,
 }

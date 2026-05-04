@@ -77,10 +77,12 @@ BIAS_LEVELS: tuple[str, ...] = (
 # Per-timeframe at-VWAP tolerance in ES ticks. A close within
 # ``band_ticks * TICK_SIZE`` of vwap collapses to vwap_position == 0.
 # 1m  : 4 ticks = 1.00 ES points
+# 5m  : 6 ticks = 1.50 ES points
 # 15m : 8 ticks = 2.00 ES points
 # 1h  : 16 ticks = 4.00 ES points (auto-scales with timeframe noise).
 VWAP_BAND_TICKS_BY_TF: dict[str, int] = {
     "1m":  4,
+    "5m":  6,
     "15m": 8,
     "1h":  16,
 }
@@ -170,7 +172,7 @@ def compute_bias_column(
 
     The ``timeframe`` argument selects the tolerance band from
     ``VWAP_BAND_TICKS_BY_TF``; pass the same string used by the
-    aggregator and the regime classifier ('1m', '15m', or '1h').
+    aggregator and the regime classifier ('1m', '5m', '15m', or '1h').
     """
     import pandas as pd  # noqa: F811
 

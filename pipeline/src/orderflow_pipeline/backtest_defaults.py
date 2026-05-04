@@ -6,7 +6,11 @@ Resolution (first hit):
 2. ``<repo_root>/config/backtest_defaults.json``
 
 Missing optional file falls back to :class:`~.backtest_engine.BrokerConfig` code defaults.
-Cached by path mtime; call ``clear_backtest_defaults_cache()`` in tests after env/file swaps.
+The JSON file is re-read from disk on every ``effective_broker_defaults()`` /
+``load_backtest_defaults_document()`` call (small document; avoids stale
+in-process caches when file ``mtime_ns`` ties across rapid saves on Windows).
+Tests may still call ``clear_backtest_defaults_cache()`` — it is retained as a
+harmless no-op after env swaps.
 
 See ``docs/backtest-config.md``.
 """
@@ -15,7 +19,6 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -159,24 +162,17 @@ def _merge_doc_into_base(doc: dict[str, Any], base: dict[str, Any]) -> dict[str,
     return out
 
 
-@lru_cache(maxsize=4)
-def _load_json_cached(path_str: str, mtime_ns: int) -> dict[str, Any]:
-    del mtime_ns
-    with open(path_str, encoding="utf-8") as f:
-        raw = json.load(f)
-    return raw if isinstance(raw, dict) else {}
-
-
 def load_backtest_defaults_document() -> dict[str, Any]:
     path = resolve_backtest_defaults_path()
     base = _hardcoded_fallback_broker_dict()
     if path is None:
         return base
     try:
-        st = path.stat()
-    except OSError:
+        with open(path, encoding="utf-8") as f:
+            parsed = json.load(f)
+    except (OSError, json.JSONDecodeError):
         return base
-    raw = _load_json_cached(str(path.resolve()), int(st.st_mtime_ns))
+    raw = parsed if isinstance(parsed, dict) else {}
     _warn_version(raw)
     for err in validate_backtest_defaults_document(raw):
         warnings.warn(f"backtest defaults ({path}): {err}", UserWarning, stacklevel=2)
@@ -184,8 +180,7 @@ def load_backtest_defaults_document() -> dict[str, Any]:
 
 
 def clear_backtest_defaults_cache() -> None:
-    """Invalidate cached defaults (tests or manual reload)."""
-    _load_json_cached.cache_clear()
+    """Historical hook for tests/env swaps — defaults are uncached now (no-op)."""
 
 
 def effective_broker_defaults() -> dict[str, Any]:
