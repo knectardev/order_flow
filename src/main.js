@@ -8,7 +8,7 @@ import { drawCvdChart } from './render/cvdChart.js';
 import { buildMatrix, renderMatrix } from './render/matrix.js';
 import { restoreDisplayStateFromUrl } from './render/eventInventory.js';
 import { drawPriceChart } from './render/priceChart.js';
-import { renderBacktestPanel } from './render/backtestPanel.js';
+import { renderBacktestPanel, syncBacktestRunButtonFromState } from './render/backtestPanel.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from './render/watch.js';
 import { bindPlaybackHotkeys, onSpeedChange, resetStream, toggleStream } from './ui/controls.js';
 import { dismissFire, openFireDetails } from './ui/fireBanner.js';
@@ -19,7 +19,7 @@ import { bindChartDrawUI, redrawChartDrawOverlay } from './ui/chartDrawOverlay.j
 import { returnToLiveEdge, _setViewEnd } from './ui/pan.js';
 import { bindSelectionUI, restoreSelectionFromUrl } from './ui/selection.js';
 import { bindEventLogClicks } from './render/eventLog.js';
-import { initSectionCollapse } from './ui/sectionCollapse.js';
+import { initSectionCollapse, syncDeltaSectionPanelsFromCollapse } from './ui/sectionCollapse.js';
 import { bindDivergenceNavUI, syncDivergenceNavButtons } from './ui/divergenceNav.js';
 import { updateCvdDivergenceLegend } from './ui/cvdDivergenceLegend.js';
 
@@ -35,6 +35,8 @@ renderBreakoutWatch(initialBreakout);
 renderFadeWatch(initialFade);
 renderAbsorptionWallWatch(initialAbsorptionWall);
 renderValueEdgeRejectWatch(initialValueEdgeReject);
+initSectionCollapse();
+syncDeltaSectionPanelsFromCollapse();
 drawPriceChart();
 drawFlowChart();
 drawCvdChart();
@@ -218,8 +220,17 @@ bindSelectionUI();
 bindEventLogClicks();
 bindBacktestUI();
 bindChartOverlayLegendToggles();
-initSectionCollapse();
 bindDivergenceNavUI();
+
+document.addEventListener('orderflow:section-collapse', (ev) => {
+  if (ev.detail?.sectionKey !== 'delta') return;
+  syncDeltaSectionPanelsFromCollapse();
+  drawPriceChart();
+  drawFlowChart();
+  drawCvdChart();
+  redrawChartDrawOverlay();
+  syncDivergenceNavButtons();
+});
 
 // The /occupancy fetch is async; when a fresh response lands we want to
 // repaint the matrix (so the heatmap layer fills in) without coupling
@@ -288,13 +299,13 @@ function bindBacktestUI() {
   const capInput = document.getElementById('btInitialCapital');
   const commInput = document.getElementById('btCommission');
   const slipInput = document.getElementById('btSlippage');
+  const qtyInput = document.getElementById('btQty');
   const compareInput = document.getElementById('btCompareRegimeOff');
   const markersOnInput = document.getElementById('btShowMarkersOn');
   const markersOffInput = document.getElementById('btShowMarkersOff');
-  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !compareInput || !markersOnInput || !markersOffInput) return;
+  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !qtyInput || !compareInput || !markersOnInput || !markersOffInput) return;
   function syncBtRunButtonEnabled() {
-    const scopeOk = !!String(scopeInput.value || '').trim();
-    runBtn.disabled = !scopeOk || state.backtest.loading;
+    syncBacktestRunButtonFromState();
   }
   state.backtest.runParams = {
     ...state.backtest.runParams,
@@ -351,12 +362,19 @@ function bindBacktestUI() {
       initialCapital: Number(capInput.value || 50000),
       commissionPerSide: Number(commInput.value || 2),
       slippageTicks: Number(slipInput.value || 1),
-      qty: 1,
+      qty: Math.max(1, Math.floor(Number(qtyInput.value || state.backtest.runParams.qty || 1))),
     };
     syncBacktestCompareRegimeOffUI();
     renderBacktestPanel();
     try {
       const { from, to } = _windowBoundsIso();
+      const defs = state.backtest.brokerDefaultsFromApi || {};
+      const tickSize = Number.isFinite(Number(defs.tick_size)) && Number(defs.tick_size) > 0
+        ? Number(defs.tick_size)
+        : 0.25;
+      const pointValue = Number.isFinite(Number(defs.point_value)) && Number(defs.point_value) > 0
+        ? Number(defs.point_value)
+        : 50;
       const common = {
         from,
         to,
@@ -366,6 +384,8 @@ function bindBacktestUI() {
         commissionPerSide: state.backtest.runParams.commissionPerSide,
         slippageTicks: state.backtest.runParams.slippageTicks,
         qty: state.backtest.runParams.qty,
+        tickSize,
+        pointValue,
       };
       const doCompareOff = !!state.backtest.runParams.compareRegimeOff;
       if (!doCompareOff) {

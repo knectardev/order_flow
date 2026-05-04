@@ -549,6 +549,14 @@
     grid-column: span 2;
     margin-top: 2px;
   }
+  .backtest-controls button:disabled,
+  .backtest-controls button:disabled:hover {
+    background: var(--panel-2);
+    color: var(--muted-2);
+    border: 1px solid var(--border-2);
+    cursor: not-allowed;
+    opacity: 0.72;
+  }
   .bt-toggle-row {
     grid-column: span 2;
     display: inline-flex !important;

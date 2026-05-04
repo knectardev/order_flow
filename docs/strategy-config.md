@@ -1,6 +1,6 @@
 # Strategy defaults JSON
 
-This document describes how [`config/strategy_defaults.json`](../config/strategy_defaults.json) (or a replacement file) configures **legacy fallback** strategy parameters used by the pipeline and backtester.
+This document describes how [`config/strategy_defaults.json`](../config/strategy_defaults.json) (or a replacement file) configures **legacy fallback** strategy parameters used by the pipeline and backtester. **Broker economics** (capital, fees, slippage, `tick_size`, `point_value`) are configured separately — see [`backtest-config.md`](backtest-config.md).
 
 ## Resolution order (SL / TP ticks)
 

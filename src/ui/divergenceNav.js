@@ -101,6 +101,7 @@ export function syncDivergenceNavButtons() {
   const next = document.getElementById('cvdDivNavNext');
   if (!prev || !next) return;
   const enabled =
+    state.chartUi.showCvdPanel &&
     state.replay.mode === 'real' &&
     state.replay.allBars.length > 0 &&
     _sortedPipelineDivergences().length > 0;

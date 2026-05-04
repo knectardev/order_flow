@@ -5,6 +5,7 @@ import { detectEvents, detectStopRun, filterNewEventsCooldown, getSignalCooldown
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
 import { clearOccupancyCache } from './occupancyApi.js';
 import { clearProfileCache } from './profileApi.js';
+import { applyBacktestBrokerDefaultsToDomAndState, fetchBacktestDefaults } from './backtestApi.js';
 import { renderEventLog } from '../render/eventLog.js';
 import { drawFlowChart } from '../render/flowChart.js';
 import { drawCvdChart } from '../render/cvdChart.js';
@@ -829,6 +830,10 @@ async function bootstrapFromApi(apiBase) {
   if (!state.availableTimeframes.includes(state.activeTimeframe)) {
     state.activeTimeframe = state.availableTimeframes[0] || DEFAULT_TIMEFRAME;
   }
+
+  void fetchBacktestDefaults(apiBase)
+    .then(applyBacktestBrokerDefaultsToDomAndState)
+    .catch((err) => console.warn('[orderflow] GET /api/backtest/defaults failed:', err?.message || err));
 
   let metas = [];
   try {

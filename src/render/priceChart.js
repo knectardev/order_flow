@@ -1757,43 +1757,45 @@ function drawPriceChart() {
         },
       });
     }
-    const divs = state.replay.allDivergences || [];
-    for (const d of divs) {
-      const t0 = Date.parse(d.earlierTime);
-      const t1 = Date.parse(d.laterTime);
-      if (t1 < winLo || t0 > winHi) continue;
-      const i0 = allBars.findIndex(b => _barTimeMs(b.time) === t0);
-      const i1 = allBars.findIndex(b => _barTimeMs(b.time) === t1);
-      if (i0 < 0 || i1 < 0) continue;
-      const x0 = PAD.l + (i0 + 0.5) * slotW;
-      const x1 = PAD.l + (i1 + 0.5) * slotW;
-      const bear = d.kind === 'bearish';
-      const y0 = yScale(
-        typeof d.earlierPrice === 'number'
-          ? d.earlierPrice
-          : (bear ? allBars[i0].high : allBars[i0].low),
-      );
-      const y1 = yScale(
-        typeof d.laterPrice === 'number'
-          ? d.laterPrice
-          : (bear ? allBars[i1].high : allBars[i1].low),
-      );
-      pctx.strokeStyle = bear ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)';
-      pctx.setLineDash(d.sizeConfirmation ? [] : [5, 4]);
-      pctx.lineWidth = d.sizeConfirmation ? 1.6 : 1;
-      pctx.beginPath();
-      pctx.moveTo(x0, y0);
-      pctx.lineTo(x1, y1);
-      pctx.stroke();
-      pctx.setLineDash([]);
-      const padPx = Math.max(10, (d.sizeConfirmation ? 1.6 : 1) * 5);
-      state.chartHits.push({
-        hitShape: 'segment',
-        x0, y0, x1, y1,
-        padPx,
-        kind: 'divergenceSegment',
-        payload: { divergence: d, panel: 'price' },
-      });
+    if (state.chartUi.showCvdPanel) {
+      const divs = state.replay.allDivergences || [];
+      for (const d of divs) {
+        const t0 = Date.parse(d.earlierTime);
+        const t1 = Date.parse(d.laterTime);
+        if (t1 < winLo || t0 > winHi) continue;
+        const i0 = allBars.findIndex(b => _barTimeMs(b.time) === t0);
+        const i1 = allBars.findIndex(b => _barTimeMs(b.time) === t1);
+        if (i0 < 0 || i1 < 0) continue;
+        const x0 = PAD.l + (i0 + 0.5) * slotW;
+        const x1 = PAD.l + (i1 + 0.5) * slotW;
+        const bear = d.kind === 'bearish';
+        const y0 = yScale(
+          typeof d.earlierPrice === 'number'
+            ? d.earlierPrice
+            : (bear ? allBars[i0].high : allBars[i0].low),
+        );
+        const y1 = yScale(
+          typeof d.laterPrice === 'number'
+            ? d.laterPrice
+            : (bear ? allBars[i1].high : allBars[i1].low),
+        );
+        pctx.strokeStyle = bear ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)';
+        pctx.setLineDash(d.sizeConfirmation ? [] : [5, 4]);
+        pctx.lineWidth = d.sizeConfirmation ? 1.6 : 1;
+        pctx.beginPath();
+        pctx.moveTo(x0, y0);
+        pctx.lineTo(x1, y1);
+        pctx.stroke();
+        pctx.setLineDash([]);
+        const padPx = Math.max(10, (d.sizeConfirmation ? 1.6 : 1) * 5);
+        state.chartHits.push({
+          hitShape: 'segment',
+          x0, y0, x1, y1,
+          padPx,
+          kind: 'divergenceSegment',
+          payload: { divergence: d, panel: 'price' },
+        });
+      }
     }
   }
 

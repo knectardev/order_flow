@@ -72,7 +72,7 @@ import duckdb
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 PIPELINE_SRC = (Path(__file__).resolve().parents[1] / "pipeline" / "src")
 if str(PIPELINE_SRC) not in sys.path:
@@ -393,15 +393,19 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
 
 
 class BacktestRunRequest(BaseModel):
+    """Broker numerics omitted from JSON use ``config/backtest_defaults.json`` (merge)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
     timeframe: str | None = Field(default=None)
     from_: str = Field(alias="from")
     to: str
-    initial_capital: float = 50_000.0
-    qty: int = 1
-    slippage_ticks: float = 1.0
-    commission_per_side: float = 2.0
-    tick_size: float = 0.25
-    point_value: float = 50.0
+    initial_capital: float | None = None
+    qty: int | None = None
+    slippage_ticks: float | None = None
+    commission_per_side: float | None = None
+    tick_size: float | None = None
+    point_value: float | None = None
     # Run-wide exit override in ticks (None => use strategy timeframe/watch defaults, or flip-only if those are None).
     stop_loss_ticks: float | None = None
     take_profit_ticks: float | None = None
@@ -983,9 +987,25 @@ def get_occupancy(
     return ORJSONResponse(content=body, headers=headers)
 
 
+@app.get("/api/backtest/defaults")
+def get_backtest_defaults() -> dict:
+    """Expose merged broker economics for dashboards and scripted clients."""
+
+    from orderflow_pipeline.backtest_defaults import (
+        effective_broker_defaults,
+        resolve_backtest_defaults_path_str,
+    )
+
+    return {
+        "broker": effective_broker_defaults(),
+        "resolvedPath": resolve_backtest_defaults_path_str(),
+    }
+
+
 @app.post("/api/backtest/run")
 def run_backtest(payload: BacktestRunRequest) -> dict:
-    from orderflow_pipeline.backtest_engine import BacktestEngine, BrokerConfig
+    from orderflow_pipeline.backtest_defaults import merged_broker_config_from_request_payload
+    from orderflow_pipeline.backtest_engine import BacktestEngine
     from orderflow_pipeline.db import init_schema
 
     tf = _validate_timeframe(payload.timeframe)
@@ -1007,20 +1027,13 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
     try:
         init_schema(con)
         engine = BacktestEngine(con)
+        dumped = payload.model_dump(exclude_unset=True)
+        broker_cfg = merged_broker_config_from_request_payload(dumped)
         summary = engine.run(
             timeframe=tf,
             from_time=from_dt,
             to_time=to_dt,
-            config=BrokerConfig(
-                initial_capital=payload.initial_capital,
-                qty=payload.qty,
-                slippage_ticks=payload.slippage_ticks,
-                commission_per_side=payload.commission_per_side,
-                tick_size=payload.tick_size,
-                point_value=payload.point_value,
-                stop_loss_ticks=payload.stop_loss_ticks,
-                take_profit_ticks=payload.take_profit_ticks,
-            ),
+            config=broker_cfg,
             watch_ids=set(watch_ids) if watch_ids else None,
             use_regime_filter=bool(payload.use_regime_filter),
         )
@@ -1237,8 +1250,8 @@ def root() -> dict:
         "endpoints": [
             "/timeframes", "/sessions", "/date-range", "/bars", "/swing-events", "/divergence-events", "/events",
             "/fires", "/profile", "/occupancy",
-            "/api/backtest/run", "/api/backtest/stats", "/api/backtest/equity", "/api/backtest/trades",
-            "/api/backtest/skipped-fires",
+            "/api/backtest/defaults", "/api/backtest/run", "/api/backtest/stats", "/api/backtest/equity",
+            "/api/backtest/trades", "/api/backtest/skipped-fires",
         ],
         "supported_timeframes": list(SUPPORTED_TIMEFRAMES),
     }

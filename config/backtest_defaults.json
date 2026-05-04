@@ -1,0 +1,13 @@
+{
+  "$schema": "./backtest_defaults.schema.json",
+  "version": 1,
+  "_doc": "Broker economics merged into BrokerConfig before each POST /api/backtest/run. Override path: ORDERFLOW_BACKTEST_CONFIG. Unset omitted keys elsewhere keep these values.",
+  "initial_capital": 50000,
+  "qty": 1,
+  "slippage_ticks": 1,
+  "commission_per_side": 2,
+  "tick_size": 0.25,
+  "point_value": 50,
+  "stop_loss_ticks": null,
+  "take_profit_ticks": null
+}

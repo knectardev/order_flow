@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/orderflow/backtest_defaults.schema.json",
+  "title": "Order flow simulated broker defaults",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "_doc": { "type": "string" },
+    "_comment": { "type": "string" },
+    "initial_capital": { "type": "number" },
+    "qty": { "type": "integer", "minimum": 1 },
+    "slippage_ticks": { "type": "number" },
+    "commission_per_side": { "type": "number", "minimum": 0 },
+    "tick_size": { "type": "number", "exclusiveMinimum": 0 },
+    "point_value": { "type": "number", "exclusiveMinimum": 0 },
+    "stop_loss_ticks": { "type": ["number", "null"] },
+    "take_profit_ticks": { "type": ["number", "null"] }
+  },
+  "required": ["version"]
+}

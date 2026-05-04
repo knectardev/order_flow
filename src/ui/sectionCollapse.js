@@ -2,6 +2,8 @@
  * Collapsible dashboard sections with persisted expanded/collapsed state (localStorage).
  * The main price chart section is not collapsible (see HTML).
  */
+import { state } from '../state.js';
+
 const STORAGE_KEY = 'orderflow_dashboard_section_collapsed';
 
 function loadMap() {
@@ -19,6 +21,15 @@ function saveMap(map) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch (_) { /* quota / private mode */ }
+}
+
+/** Maps Delta & session CVD section expand/collapse → chartUi panel flags + price-chart divergence draw gate. */
+export function syncDeltaSectionPanelsFromCollapse() {
+  const section = document.querySelector('.section--collapsible[data-section-key="delta"]');
+  if (!section) return;
+  const expanded = !section.classList.contains('is-collapsed');
+  state.chartUi.showDeltaPanel = expanded;
+  state.chartUi.showCvdPanel = expanded;
 }
 
 export function initSectionCollapse() {
@@ -48,6 +59,9 @@ export function initSectionCollapse() {
       syncUi();
       saved[key] = isCollapsed;
       saveMap(saved);
+      document.dispatchEvent(new CustomEvent('orderflow:section-collapse', {
+        detail: { sectionKey: key, collapsed: isCollapsed },
+      }));
     });
   });
 }

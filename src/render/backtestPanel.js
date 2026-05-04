@@ -1,5 +1,14 @@
 import { state } from '../state.js';
 
+/** Keep Run Backtest in sync with scope + loading (call on every panel render). */
+export function syncBacktestRunButtonFromState() {
+  const runBtn = document.getElementById('btRunBtn');
+  const scopeInput = document.getElementById('btScope');
+  if (!runBtn || !scopeInput) return;
+  const scopeOk = !!String(scopeInput.value || '').trim();
+  runBtn.disabled = !scopeOk || state.backtest.loading;
+}
+
 function _fmtNum(v, digits = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return '—';
   return Number(v).toFixed(digits);
@@ -121,6 +130,7 @@ function renderBacktestPanel() {
     }
   }
   _drawEquity(f.equity || [], u.equity || [], f.benchmark || [], showCompareOff);
+  syncBacktestRunButtonFromState();
 }
 
 export { renderBacktestPanel };

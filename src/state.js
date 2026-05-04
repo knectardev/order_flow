@@ -128,6 +128,8 @@ export const state = {
 
   // Backtest MVP state (existing-fire replay strategy).
   backtest: {
+    /** Last GET /api/backtest/defaults `broker` blob (tick_size/point_value for runs). */
+    brokerDefaultsFromApi: null,
     runParams: {
       scope: '',
       /** When true, runs a second backtest with regime gates relaxed and shows OFF equity/markers. */
