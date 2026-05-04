@@ -539,6 +539,25 @@ function _resolvePointFrame(inner) {
 }
 
 /**
+ * Map scatter pixel (origin top-left of `#matrixScatterCanvas`) to matrix grid indices
+ * matching `.matrix-cell` layout: row 0 = top (vol 5), col 0 = left (depth 1).
+ * Used so cell-brush selection only outlines dots drawn inside the selected cell(s),
+ * not every bar in `selection.barTimes` (those use integer v_rank/d_rank while dots
+ * are placed from continuous volScore/depthScore).
+ */
+function _matrixCellFromScatterPixel(px, py, frameW, frameH) {
+  const c = Math.min(MATRIX_COLS - 1, Math.max(0, Math.floor((px / frameW) * MATRIX_COLS)));
+  const r = Math.min(MATRIX_ROWS - 1, Math.max(0, Math.floor((py / frameH) * MATRIX_ROWS)));
+  return { r, c };
+}
+
+function _matrixScatterInSelectedCells(px, py, frameW, frameH, cells) {
+  if (!cells?.length) return false;
+  const { r, c } = _matrixCellFromScatterPixel(px, py, frameW, frameH);
+  return cells.some(p => p.r === r && p.c === c);
+}
+
+/**
  * Spans `[earlier,later]` bar times from loaded `GET /divergence-events` rows whose interval
  * contains `hoverMs`. Matrix scatter treats every bar in those spans as hovered when any bar
  * in the span is the chart/matrix hover target (Phase 6 brush-link).
@@ -644,7 +663,11 @@ function _renderPointCloud() {
     const { xNorm, yNorm } = _normScatterToFrame(point.vol, point.depth, scatterAgg);
     const px = xNorm * frame.w;
     const py = yNorm * frame.h;
-    const isSelected = state.selection.barTimes?.has(point.barTimeMs) || false;
+    const sel = state.selection;
+    const inBarSet = !!(sel.barTimes?.has(point.barTimeMs));
+    const isSelected = sel.kind === 'cells' && sel.cells?.length
+      ? inBarSet && _matrixScatterInSelectedCells(px, py, frame.w, frame.h, sel.cells)
+      : inBarSet;
     const hb = state.selection.hoverBarTime;
     const divSpans = _cvdDivergenceHoverSpansContaining(hb);
     const inCvdDivSpan = divSpans.some(

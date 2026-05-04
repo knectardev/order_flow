@@ -77,6 +77,26 @@
             </div>
           </div>
         </span>
+        <span class="chart-draw-wrap">
+          <button type="button" class="chart-draw-trigger" id="chartDrawToggleBtn"
+                  aria-label="Toggle chart annotations" aria-pressed="false" title="Annotations (session only)">
+            <span class="chart-draw-trigger-icon" aria-hidden="true">✎</span>
+          </button>
+          <span id="chartDrawToolbar" class="chart-draw-toolbar" hidden role="toolbar" aria-label="Annotation tools">
+            <button type="button" class="chart-draw-tool active" data-draw-tool="select" title="Select / move"
+                    aria-label="Select">↖</button>
+            <button type="button" class="chart-draw-tool" data-draw-tool="pen" title="Freehand line"
+                    aria-label="Draw line">✎</button>
+            <button type="button" class="chart-draw-tool" data-draw-tool="text" title="Place text"
+                    aria-label="Text">T</button>
+            <label class="chart-draw-color-label" title="Stroke / text color">
+              <span class="sr-only">Color</span>
+              <input type="color" id="chartDrawColor" value="#26a69a" aria-label="Annotation color">
+            </label>
+            <button type="button" class="chart-draw-delete" id="chartDrawDeleteBtn" disabled title="Delete selected"
+                    aria-label="Delete selected">⌫</button>
+          </span>
+        </span>
       </div>
       <div class="replay-row replay-row--chart-head" id="replayRow">
         <span class="replay-tf-label">Timeframe</span>
@@ -100,11 +120,14 @@
         </span>
       </div>
     </div>
-    <div class="price-wrap">
+    <div class="price-wrap" id="priceChartWrap">
       <div class="chart-seek-loading" id="chartSeekLoading" hidden>
         <span class="chart-seek-msg">Replaying bars…</span>
       </div>
-      <canvas id="priceChart"></canvas>
+      <div class="chart-canvas-stack">
+        <canvas id="priceChart"></canvas>
+        <canvas id="chartDrawOverlay"></canvas>
+      </div>
       <button class="live-edge-btn" id="liveEdgeBtn" title="Return chart to live edge">↺ Live</button>
       <div class="chart-tooltip" id="chartTooltip" role="tooltip" aria-hidden="true"></div>
     </div>
@@ -132,10 +155,16 @@
   <div class="section section--collapsible" data-section-key="delta">
     <div class="section-head section-head--collapsible">
       <div class="section-title">Delta &amp; session CVD</div>
-      <div class="section-meta">
-        <span id="deltaWindowSum">ΣΔ —</span>
-        <span class="meta-sep" aria-hidden="true"> · </span>
-        <span id="sessionCvdMeta">session CVD —</span>
+      <div class="section-meta section-meta--delta">
+        <span class="section-meta-delta-line">
+          <span id="deltaWindowSum">ΣΔ —</span>
+          <span class="meta-sep" aria-hidden="true"> · </span>
+          <span id="sessionCvdMeta">session CVD —</span>
+        </span>
+        <span class="cvd-div-nav" role="group" aria-label="Pipeline CVD divergences">
+          <button type="button" id="cvdDivNavPrev" class="cvd-div-nav-btn" disabled title="Previous divergence (later swing)" aria-label="Previous divergence">◀</button>
+          <button type="button" id="cvdDivNavNext" class="cvd-div-nav-btn" disabled title="Next divergence (later swing)" aria-label="Next divergence">▶</button>
+        </span>
       </div>
       <button type="button" class="section-collapse-btn" data-section-title="Delta and session CVD" aria-expanded="true">
         <span class="section-collapse-chevron" aria-hidden="true">▼</span>
@@ -255,8 +284,8 @@
          fetches that paint the heatmap layer behind the posterior cells. -->
     <div class="matrix-range" id="matrixRange">
       <div class="matrix-range-row">
-        <button class="matrix-range-btn active" data-kind="session">Current RTH</button>
-        <button class="matrix-range-btn" data-kind="lastHour">Last hour</button>
+        <button class="matrix-range-btn active" data-kind="lastHour">Last hour</button>
+        <button class="matrix-range-btn" data-kind="session">Current RTH</button>
         <span class="matrix-range-group">
           <button class="matrix-range-btn" data-kind="lastN">Last
             <select id="matrixRangeNSelect" aria-label="Number of trailing sessions">

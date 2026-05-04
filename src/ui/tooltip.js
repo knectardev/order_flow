@@ -24,18 +24,72 @@ const TOOLTIP_INFO = {
                 desc: '5/5: middle regime, failed VAH/VAL (high/low probe, close in VA), rejection wick, normal vol band, HTF not opposing MR toward POC.' },
 };
 
+function _distSqPointToSegment(px, py, x0, y0, x1, y1) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-12) {
+    const ux = px - x0;
+    const uy = py - y0;
+    return ux * ux + uy * uy;
+  }
+  let t = ((px - x0) * dx + (py - y0) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const qx = x0 + t * dx;
+  const qy = y0 + t * dy;
+  const ux = px - qx;
+  const uy = py - qy;
+  return ux * ux + uy * uy;
+}
+
+/** Bars whose `bar_time_ms` falls in [earlierTime, laterTime] of a loaded divergence row. */
+function _divergenceSpansForBarMs(btMs) {
+  if (state.replay.mode !== 'real' || !Number.isFinite(btMs) || !state.replay.allDivergences?.length) return [];
+  return state.replay.allDivergences.filter((d) => {
+    const t0 = Date.parse(d.earlierTime);
+    const t1 = Date.parse(d.laterTime);
+    return btMs >= Math.min(t0, t1) && btMs <= Math.max(t0, t1);
+  });
+}
+
+function _divergenceDetailLines(d) {
+  const dP = Number(d.laterPrice) - Number(d.earlierPrice);
+  const dC = Number(d.laterCvd) - Number(d.earlierCvd);
+  const pTxt = Number.isFinite(dP) ? `${dP >= 0 ? '+' : ''}${dP.toFixed(2)} pts` : 'Δprice —';
+  const cTxt = Number.isFinite(dC) ? `${dC >= 0 ? '+' : ''}${Math.round(dC).toLocaleString()} session CVD` : 'Δsession CVD —';
+  const kind = String(d.kind || '—');
+  const bars = d.barsBetween != null ? String(d.barsBetween) : '—';
+  const conf = d.sizeConfirmation === true ? 'yes' : (d.sizeConfirmation === false ? 'no' : String(d.sizeConfirmation));
+  return [
+    `${kind} · ${pTxt} · ${cTxt}`,
+    `Bars between swing anchors: ${bars} · Size confirmation: ${conf}`,
+  ];
+}
+
 function _hitTestChart(x, y) {
-  const _contains = (hit) => {
+  const _dist2ForHit = (hit) => {
     if (hit.hitShape === 'rect') {
-      return x >= hit.x0 && x <= hit.x1 && y >= hit.y0 && y <= hit.y1;
+      if (!(x >= hit.x0 && x <= hit.x1 && y >= hit.y0 && y <= hit.y1)) return null;
+      const dx = x - hit.x;
+      const dy = y - hit.y;
+      return dx * dx + dy * dy;
+    }
+    if (hit.hitShape === 'segment') {
+      const d2 = _distSqPointToSegment(x, y, hit.x0, hit.y0, hit.x1, hit.y1);
+      const pad = hit.padPx ?? 10;
+      if (d2 > pad * pad) return null;
+      return d2;
     }
     const dx = x - hit.x;
     const dy = y - hit.y;
-    return (dx * dx + dy * dy) <= hit.r * hit.r;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > hit.r * hit.r) return null;
+    return d2;
   };
   const _priority = (hit) => {
     if (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias') return 2;
     if (hit.kind === 'priceSwing') return 1.5;
+    if (hit.kind === 'divergenceSegment') return 1.45;
     if (hit.kind === 'phatCandle' || hit.kind === 'candle') return 1;
     return 0;
   };
@@ -43,15 +97,28 @@ function _hitTestChart(x, y) {
   let bestD2 = Infinity;
   let bestPriority = -1;
   for (const hit of state.chartHits) {
-    if (!_contains(hit)) continue;
-    const dx = x - hit.x;
-    const dy = y - hit.y;
-    const d2 = dx * dx + dy * dy;
+    const d2 = _dist2ForHit(hit);
+    if (d2 == null) continue;
     const pri = _priority(hit);
     if (pri > bestPriority || (pri === bestPriority && d2 < bestD2)) {
       best = hit;
       bestD2 = d2;
       bestPriority = pri;
+    }
+  }
+  return best;
+}
+
+function _pickCvdDivergenceHit(x, y) {
+  const hits = state.cvdDivergenceHits || [];
+  let best = null;
+  let bestD2 = Infinity;
+  for (const h of hits) {
+    const d2 = _distSqPointToSegment(x, y, h.x0, h.y0, h.x1, h.y1);
+    const pad = h.padPx ?? 10;
+    if (d2 <= pad * pad && d2 < bestD2) {
+      best = h;
+      bestD2 = d2;
     }
   }
   return best;
@@ -293,6 +360,19 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
 
     const kvHtml = `<div class="tt-phat-kv">${kvCore}${rejHtml}</div>`;
 
+    const btPhat = Number(p.barTimeMs);
+    const divSpansPhat = _divergenceSpansForBarMs(btPhat);
+    let divPhatHtml = '';
+    if (divSpansPhat.length) {
+      const blocks = divSpansPhat.map((dv) => {
+        const lines = _divergenceDetailLines(dv);
+        return '<div class="tt-phat-div-block">'
+          + lines.map(ln => `<div class="tt-desc">${_phatEsc(ln)}</div>`).join('')
+          + '</div>';
+      }).join('');
+      divPhatHtml = `<div class="tt-desc tt-phat-div-wrap"><strong>In CVD divergence span</strong> (pipeline)${blocks}</div>`;
+    }
+
     info = {
       variant: 'breakout',
       glyph: '▌',
@@ -308,6 +388,7 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
         + `<p class="tt-phat-lede">“${_phatEsc(tpl.line3)}”</p>`
         + warnHtml
         + kvHtml
+        + divPhatHtml
         + `<div class="tt-hint tt-phat-disclaimer">PHAT read is descriptive, not predictive</div>`,
     };
     meta = p.shapeLabel || 'PHAT';
@@ -355,22 +436,28 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       detail: `${_phatEsc(valLine)}<br>${_phatEsc(timeLabel)}`,
     };
     meta = kDisp != null ? `K=${kDisp}` : 'K from ingest';
+  } else if (hit.kind === 'divergenceSegment') {
+    const d = hit.payload?.divergence || {};
+    const panel = hit.payload?.panel === 'cvd' ? 'Session CVD panel' : 'Price chart';
+    const lines = _divergenceDetailLines(d);
+    info = {
+      variant: 'diverge',
+      glyph: '⚠',
+      name: `CVD–price divergence (${String(d.kind || '—')})`,
+      desc: `Persisted pipeline span on the ${panel} (earlier → later swing). Solid line = size confirmation; dashed = not.`,
+      detail: lines.map(ln => _phatEsc(ln)).join('<br>'),
+    };
+    meta = 'divergence_events';
   } else if (hit.kind === 'candle') {
     const p = hit.payload || {};
     const up = p.isUp !== false;
     const bt = Number(p.barTimeMs);
     let detail = '';
-    if (state.replay.mode === 'real' && Number.isFinite(bt) && state.replay.allDivergences?.length) {
-      const spans = state.replay.allDivergences.filter(d => {
-        const t0 = Date.parse(d.earlierTime);
-        const t1 = Date.parse(d.laterTime);
-        return bt >= Math.min(t0, t1) && bt <= Math.max(t0, t1);
-      });
-      if (spans.length) {
-        detail = spans.map(d =>
-          `CVD divergence (${d.kind}) · ${d.barsBetween} bars · size confirm ${d.sizeConfirmation}`
-        ).join('<br>');
-      }
+    const spans = _divergenceSpansForBarMs(bt);
+    if (spans.length) {
+      detail = spans.map((dv) =>
+        _divergenceDetailLines(dv).map(ln => _phatEsc(ln)).join('<br>'),
+      ).join('<br><br>');
     }
     info = {
       variant: up ? 'sweep' : 'stop',
@@ -393,7 +480,9 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       ? 'Click to highlight on regime matrix'
       : (hit.kind === 'priceSwing' || hit.kind === 'cvdSwing')
         ? 'Pipeline fractal (swing_events); K matches the Δ section header when uniform.'
-        : 'Shift+click for at-fire criteria · click to select bar range';
+        : hit.kind === 'divergenceSegment'
+          ? 'Connector pairs CVD vs price fractal pivots from divergence_events.'
+          : 'Shift+click for at-fire criteria · click to select bar range';
   if (hit.kind === 'phatCandle' && info._phatHtml) {
     tt.innerHTML = info._phatHtml;
   } else {
@@ -467,11 +556,14 @@ priceCanvas.addEventListener('mousemove', (e) => {
     return;
   }
   const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
-  const hoverMs = (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing'))
-    ? Number(hit.payload?.barTimeMs)
-    : null;
-  hoverBar(hoverMs, 'chart-hover');
-  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing')) {
+  let hoverMs = null;
+  if (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing')) {
+    hoverMs = Number(hit.payload?.barTimeMs);
+  } else if (hit && hit.kind === 'divergenceSegment') {
+    hoverMs = barTimeMsFromSubchartX(priceCanvas, _lastMouse.x);
+  }
+  hoverBar(Number.isFinite(hoverMs) ? hoverMs : null, 'chart-hover');
+  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'divergenceSegment')) {
     _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
   } else {
     _hideTooltip();
@@ -558,6 +650,16 @@ function _wireCvdChartHover(canvas) {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    const divH = _pickCvdDivergenceHit(x, y);
+    if (divH) {
+      const ms = barTimeMsFromSubchartX(canvas, x);
+      hoverBar(Number.isFinite(ms) ? ms : null, 'cvd-div-hover');
+      _showTooltipForHit({
+        kind: 'divergenceSegment',
+        payload: { divergence: divH.divergence, panel: 'cvd' },
+      }, e.clientX, e.clientY, { useClientCoords: true });
+      return;
+    }
     const h = _pickCvdSwingHit(x, y);
     if (h) {
       hoverBar(Number(h.barTimeMs), 'cvd-swing-hover');

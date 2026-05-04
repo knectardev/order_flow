@@ -17,6 +17,7 @@ function drawCvdChart() {
   if (!cvdCanvas || !cvdCtx) return;
   if (!state.chartUi.showCvdPanel) {
     state.cvdSwingHits = [];
+    state.cvdDivergenceHits = [];
     const { w, h } = resizeCanvas(cvdCanvas);
     cvdCtx.clearRect(0, 0, w, h);
     cvdCtx.fillStyle = CHART_CANVAS_BG;
@@ -28,6 +29,7 @@ function drawCvdChart() {
 
   const { w, h } = resizeCanvas(cvdCanvas);
   state.cvdSwingHits = [];
+  state.cvdDivergenceHits = [];
   cvdCtx.clearRect(0, 0, w, h);
   cvdCtx.fillStyle = CHART_CANVAS_BG;
   cvdCtx.fillRect(0, 0, w, h);
@@ -153,6 +155,10 @@ function drawCvdChart() {
     cvdCtx.lineTo(x1, y1);
     cvdCtx.stroke();
     cvdCtx.setLineDash([]);
+    const padPx = Math.max(10, (d.sizeConfirmation ? 1.5 : 1) * 5);
+    state.cvdDivergenceHits.push({
+      x0, y0, x1, y1, padPx, divergence: d,
+    });
   }
 
   const hb = state.selection.hoverBarTime;

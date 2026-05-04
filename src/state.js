@@ -181,6 +181,8 @@ export const state = {
 
   /** Rebuilt in drawCvdChart(): swing triangle hit targets in CVD canvas CSS px. */
   cvdSwingHits: [],
+  /** Rebuilt in drawCvdChart(): CVD divergence connector segments for hover hit-test. */
+  cvdDivergenceHits: [],
 
   // Glossary primitives enabled for primitive flow markers (EVENT_ORDER `.key`).
   // Empty = no deferred event scan / fetch; optional types load on checkbox.
@@ -238,7 +240,7 @@ export const state = {
   //   range.n      — when kind='lastN', number of trailing sessions
   //   range.from / .to — Unix ms (custom only; the other kinds derive
   //                       these on each render from cursor + sessions)
-  //   range.label  — short pill/legend text ("Current RTH", "Last 5",
+  //   range.label  — short pill/legend text ("Last hour", "Current RTH", "Last 5",
   //                   "Custom 04-24 13:30 → 04-24 16:00", …)
   //   displayMode  — 'posterior' (default — preserves existing visual)
   //                   | 'heatmap' (cells tinted by occupancy fraction)
@@ -249,7 +251,7 @@ export const state = {
   // is a fetch cache — re-populated when `range` changes (or every step
   // for cursor-bound ranges where the API returns no-cache).
   matrixState: {
-    range: { kind: 'session', n: null, from: null, to: null, label: 'Current RTH' },
+    range: { kind: 'lastHour', n: null, from: null, to: null, label: 'Last hour' },
     displayMode: 'posterior',
     occupancy: null,
   },

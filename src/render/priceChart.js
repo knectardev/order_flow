@@ -1786,6 +1786,14 @@ function drawPriceChart() {
       pctx.lineTo(x1, y1);
       pctx.stroke();
       pctx.setLineDash([]);
+      const padPx = Math.max(10, (d.sizeConfirmation ? 1.6 : 1) * 5);
+      state.chartHits.push({
+        hitShape: 'segment',
+        x0, y0, x1, y1,
+        padPx,
+        kind: 'divergenceSegment',
+        payload: { divergence: d, panel: 'price' },
+      });
     }
   }
 

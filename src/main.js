@@ -15,10 +15,12 @@ import { dismissFire, openFireDetails } from './ui/fireBanner.js';
 import { bindMatrixRangeUI, repaintMatrix } from './ui/matrixRange.js';
 import { bindModalDrag, closeModal, onOverlayClick, openModal } from './ui/modal.js';
 import { bindPhatLegendModal } from './ui/phatLegendModal.js';
+import { bindChartDrawUI, redrawChartDrawOverlay } from './ui/chartDrawOverlay.js';
 import { returnToLiveEdge, _setViewEnd } from './ui/pan.js';
 import { bindSelectionUI, restoreSelectionFromUrl } from './ui/selection.js';
 import { bindEventLogClicks } from './render/eventLog.js';
 import { initSectionCollapse } from './ui/sectionCollapse.js';
+import { bindDivergenceNavUI, syncDivergenceNavButtons } from './ui/divergenceNav.js';
 
 // ───────────────────────────────────────────────────────────
 buildMatrix();
@@ -40,6 +42,7 @@ window.addEventListener('resize', () => {
   drawPriceChart();
   drawFlowChart();
   drawCvdChart();
+  redrawChartDrawOverlay();
 });
 
 // Try to load real-data sessions from the FastAPI/DuckDB stack; falls
@@ -48,6 +51,7 @@ window.addEventListener('resize', () => {
 bootstrapReplay();
 bindModalDrag();
 bindPhatLegendModal();
+bindChartDrawUI();
 
 // ───────────────────────────────────────────────────────────
 // DOM event wiring (replaces inline on*= handlers stripped from HTML).
@@ -213,6 +217,7 @@ bindEventLogClicks();
 bindBacktestUI();
 bindChartOverlayLegendToggles();
 initSectionCollapse();
+bindDivergenceNavUI();
 
 // The /occupancy fetch is async; when a fresh response lands we want to
 // repaint the matrix (so the heatmap layer fills in) without coupling
@@ -220,10 +225,12 @@ initSectionCollapse();
 // event from within renderMatrix() after kicking off a fetch, and the
 // occupancy module resolves the cached read on the next render pass.
 window.addEventListener('orderflow:matrix-repaint', () => repaintMatrix());
+window.addEventListener('orderflow:chart-view', () => syncDivergenceNavButtons());
 window.addEventListener('orderflow:replay-ready', async () => {
   await restoreDisplayStateFromUrl();
   restoreSelectionFromUrl();
   renderBacktestPanel();
+  syncDivergenceNavButtons();
 });
 
 function _windowBoundsIso() {

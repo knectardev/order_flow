@@ -229,19 +229,23 @@ document.addEventListener('keydown', (e) => {
   _setViewEnd(_currentViewEnd() + delta);
 }, true);
 
-priceCanvas.addEventListener('wheel', (e) => {
-  if (!_chartWheelZoomAvailable()) return;
+/** Wheel zoom on the price strip — reusable when events originate from `#chartDrawOverlay`. */
+function handlePriceChartWheelZoom(e) {
+  if (!_chartWheelZoomAvailable()) return false;
   e.preventDefault();
-  // Normalize: deltaX (horizontal trackpads) takes precedence; otherwise deltaY.
   const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
   const step = 3;
-  // Positive delta (scroll down): zoom out → more bars; negative: zoom in → fewer bars.
   state.chartVisibleBars += delta > 0 ? step : -step;
   _clampChartVisibleBars();
   drawPriceChart();
   drawFlowChart();
   drawCvdChart();
   if (state.replay.mode === 'real') _renderReplayChrome();
+  return true;
+}
+
+priceCanvas.addEventListener('wheel', (e) => {
+  handlePriceChartWheelZoom(e);
 }, { passive: false });
 
 priceCanvas.addEventListener('mousedown', (e) => {
@@ -269,4 +273,13 @@ window.addEventListener('mouseup', () => {
 
 // ───────────────────────────────────────────────────────────
 
-export { _panAvailable, _currentViewEnd, _setViewEnd, returnToLiveEdge, _refreshMatrixForView, _continuePan, consumePanMoved };
+export {
+  _panAvailable,
+  _currentViewEnd,
+  _setViewEnd,
+  returnToLiveEdge,
+  _refreshMatrixForView,
+  _continuePan,
+  consumePanMoved,
+  handlePriceChartWheelZoom,
+};

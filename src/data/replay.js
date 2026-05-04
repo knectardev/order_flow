@@ -361,7 +361,10 @@ function _syncChartPanSliderDOM() {
 }
 
 function _renderReplayChrome() {
-  if (state.replay.mode !== 'real') return;
+  if (state.replay.mode !== 'real') {
+    window.dispatchEvent(new CustomEvent('orderflow:chart-view'));
+    return;
+  }
   _syncChartPanSliderDOM();
   const { viewedBars } = _getViewedBars();
   const sumEl = document.getElementById('deltaWindowSum');
@@ -371,6 +374,7 @@ function _renderReplayChrome() {
       ? `ΣΔ ${cumD >= 0 ? '+' : ''}${Math.round(cumD)} (window)`
       : 'ΣΔ —';
   }
+  window.dispatchEvent(new CustomEvent('orderflow:chart-view'));
 }
 
 function catalogKeyFromPrimitiveEvent(ev) {
@@ -1157,9 +1161,8 @@ function _adjustMatrixRangeForTfSwitch(prevTf, newTf) {
       state.savedMatrixRangeBeforeTf1h = null;
     } else {
       // Saved range was never set (e.g. user reloaded into 1h). Default
-      // 1m / 15m to 'session' so the matrix has a sensible starting
-      // window after a leave-1h.
-      state.matrixState.range = { kind: 'session', n: null, from: null, to: null, label: 'Current RTH' };
+      // 1m / 15m to last hour so the matrix matches the initial pill order.
+      state.matrixState.range = { kind: 'lastHour', n: null, from: null, to: null, label: 'Last hour' };
     }
   }
 }

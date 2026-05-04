@@ -2,7 +2,6 @@ Test / bracket by various time sessions during day.
 Consider off-hours. 
 
 
-
 Refine Backtesting logic / params 
 C:\Users\chris\.cursor\plans
 strategy_config_model_refinement_23f40018.plan.md 
@@ -10,23 +9,8 @@ strategy_config_model_refinement_23f40018.plan.md
 
 Todo 
 
-for performance, can you make the Regime filter OFF disabled by default, allow it to be enabled with a checkbox, and when this checkbox is not checked, do no rerun the backtest with the regime filter off, do not show the yellow line, and do not Show Regime OFF markers. 
-
-
 Todo 
 just to confirm - are the backtests now using new defaults for the parameters just implemented, if so, what are the values, and are they being applied now by default, since I just reran the backtest and it looks like I'm getting the same values. 
-
-
-Todo 
-https://claude.ai/chat/71209195-ad66-4ed6-a07b-7b3004aa1379
-
-C:\local_dev\order_flow
-phat-candle-research-plan.md
-
-
-
-Updates we want to make the chart bigger probably although let’s see how it is on the desktop then we want to be more transparent about what each strategy is doing not just words but visually if possible just for my visual brain
-
 
 We want to introduce opening range breakout, but also just general box theory in which the previous resistance becomes the new support where the horizontal lines of the box are essentially showing consolidation zones
 
