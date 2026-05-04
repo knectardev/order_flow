@@ -50,7 +50,7 @@ def main() -> int:
         d = np.abs(np.diff(vals))
         print(f"\n[{series}] pairs={len(d)}")
         for q in (0.5, 0.75, 0.9, 0.95):
-            print(f"  |Δ| quantile {q:.2f}: {float(np.quantile(d, q)):.6g}")
+            print(f"  |delta| quantile {q:.2f}: {float(np.quantile(d, q)):.6g}")
 
     print("\nReview CLI --div-min-price / --div-min-cvd against quantiles above.")
     return 0

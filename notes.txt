@@ -1,4 +1,81 @@
-Tell Cursor to revert or hide the circles. The absorption pre-check work, the wick-length gating refinements, the tooltip formatting for rejection details—all of that was polishing an unvalidated signal. It's done, but it shouldn't ship.
-Keep the underlying data. The upper_wick_ticks, lower_wick_liquidity columns are fine to keep in the schema. They cost nothing, and if you ever want to backtest wick-level signals later, they're already there. Just don't display them as a primary UI feature.
-Simplify the PHAT legend and tooltips. Remove or de-emphasize the rejection circle sections. Let the fat candle morphology (P-shape, b-shape, body coloring, width) be the complete story. The rejection circles were trying to add a fourth dimension; without them, the encoding is cleaner.
-Document the decision. In the requirements or a research note, briefly state: "Wick-level rejection classification (absorption vs exhaustion) was researched but not validated for predictive utility. The feature is shelved pending backtest evidence. See [research doc] for histogram analysis."
+# Verification Request: CVD + Size Imbalance + Swings + Divergence Implementation
+
+You shipped Phases 1-4 and Phase 6 in a single delivery rather than pausing after Phase 1 as the plan specified. Before I can validate this work, I need concrete answers to the following so I can verify each layer.
+
+## Process note (separate from verification)
+
+The plan explicitly required pausing after Phase 1 for review. That pause exists so I can validate one layer at a time before complexity compounds. Going forward, when a plan specifies a pause point, treat it as a hard requirement. If you think consolidating phases makes sense, ask first rather than ship through pause points silently.
+
+## Verification questions by phase
+
+### Phase 1 (CVD subchart)
+
+This is the most visible part and seems to be working, but I need to confirm a few behaviors:
+
+1. **Session reset:** Pan to a view that spans multiple sessions. Does the CVD line drop back to zero at each session boundary, or does it cumulate across sessions? It must reset per session.
+
+2. **Old viewport-relative cum-Δ sparkline:** The plan called for replacing the old incorrect sparkline in `flowChart.js`. Is the old sparkline removed, or is it still rendered somewhere? Confirm the only CVD line currently visible is the new session-anchored one.
+
+3. **Cross-hair sync:** Does hovering on the CVD panel highlight the corresponding bar on the price chart, and does hovering on a candle highlight the corresponding CVD point? Both directions need to work.
+
+4. **Show/hide toggle:** Is the toggle for the CVD subchart accessible in the UI, and does it actually hide/show the panel?
+
+### Phase 2 (size imbalance fields)
+
+These are data-layer-only with no UI surface, so I need to verify via API inspection:
+
+1. Make a request to `/bars` for a recent session and paste back a sample bar showing all of the following fields populated:
+   - `aggressiveBuyCount`
+   - `aggressiveSellCount`
+   - `avgAggressiveBuySize`
+   - `avgAggressiveSellSize`
+   - `sizeImbalanceRatio`
+
+2. Confirm that `sizeImbalanceRatio` is null (not zero, not infinity) when one side has zero aggressive trades, per the plan's divide-by-zero handling spec.
+
+3. Confirm the database has these columns populated for historical bars after the rebuild, not just bars computed after deploy.
+
+### Phase 3 (swing detection and markers)
+
+I do not see swing markers in my current view. Either they're not rendering, they're too subtle to see, or my current view has no swings.
+
+1. **What visual treatment did you use for swing markers?** Color, shape, size on the price chart and CVD panel? Describe what I should be looking for.
+
+2. **What's the configured `swingLookbackBars` default?** And what value was actually used when computing the existing swing data in the database?
+
+3. **Sanity check:** For a recent session in the database, query the `swing_events` table and report how many swings were detected (split by series: price highs, price lows, CVD highs, CVD lows). If the count is zero or near-zero, swing detection isn't working as expected.
+
+4. **Provide a specific bar_time and timeframe where I should be able to see a swing marker rendered**, so I can navigate there and verify the visual.
+
+### Phase 4 (divergence detection and connector lines)
+
+Same situation—I'm not seeing divergence connectors in my view.
+
+1. **What visual treatment did you use for divergence connector lines?** Color, line style (solid vs dashed for confirmed vs unconfirmed), thickness?
+
+2. **What divergence threshold defaults did you ship with?** Specifically: `divergenceMinPrice`, `divergenceMinCvd`, `divergenceMaxSwingDistance` (or whatever you named them). Where are these set in state.js or CLI flags?
+
+3. **For the loaded data, query the `divergence_events` table and report:** total count of divergences detected, breakdown by type (bearish vs bullish), and breakdown by `size_confirmation` (true vs false).
+
+4. **Provide a specific bar_time / timeframe where I should be able to see a divergence connector rendered**, so I can navigate to it and verify visually.
+
+### Phase 6 (integration with bar tooltip and matrix)
+
+1. **Bar tooltip integration:** When I hover a candle that participates in a divergence, what text appears in the tooltip indicating this? Provide example copy.
+
+2. **Matrix highlight:** When a divergence is selected (or hovered), how does the matrix point cloud respond? Which points get highlighted and how?
+
+3. **Backtest documentation:** The plan mentioned "query hooks for backtest." What was actually documented in `requirements.md` about how to query divergence events for future backtest work? Quote the relevant section.
+
+## Calibration question
+
+The plan called for empirical calibration of divergence thresholds rather than picking magic defaults. You noted thresholds are "still chosen by you / CLI, not magic defaults from the plan."
+
+1. What CLI defaults are currently active if I don't override them?
+2. Was the suggested calibration script (`scripts/calibrate_divergence_thresholds.py` or similar) actually built? If yes, what does it output? If no, that's deferred work I should know about.
+
+## Format for response
+
+Please answer each numbered question directly with concrete information (file paths, code references, query results, sample API responses, specific bar timestamps). I need to be able to navigate to specific places in the UI and database to verify each piece works, not just trust that it shipped.
+
+Once I have these answers, I'll do the visual and data verification myself and come back with a confirmation or list of issues. Don't make additional changes until I respond.

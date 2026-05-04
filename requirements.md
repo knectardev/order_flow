@@ -61,12 +61,15 @@ Design intent remains unchanged:
 - API endpoints that return market rows are timeframe-aware (`timeframe` query parameter, default `1m`), and must not mix contexts across timeframes.
 - `/bars`, `/events`, `/fires` payloads include `vwap`, `barEndTime` (exclusive bar end, ISO-Z), `sessionCvd` (session cumulative delta), aggressor fields (`aggressiveBuyCount`, `aggressiveSellCount`, `avgAggressiveBuySize`, `avgAggressiveSellSize`, `sizeImbalanceRatio`), continuous regime coordinates `volScore` / `depthScore` (open-interval **(1, 5)** after warmup for typical multi-bar windows — JSON null in warmup / zero-volume like `vRank`/`dRank`), PHAT fields (`topCvd`, `bottomCvd`, `topCvdNorm`, `bottomCvdNorm`, `cvdImbalance`, `topBodyVolumeRatio`, `bottomBodyVolumeRatio`, `upperWickLiquidity`, `lowerWickLiquidity`, `upperWickTicks`, `lowerWickTicks`, `highBeforeLow`, `rejectionSide`, `rejectionStrength`, `rejectionType`), and bias fields (`biasState`, `biasH1`, `bias15m`) projected from persisted columns via `_attach_htf_bias`.
 - Storage: DuckDB (`data/orderflow.duckdb` by default). **`data/**/*.bak`** copies and **`data/rebuild_log.txt`** are **gitignored** local artifacts (often large).
+- **Local API + dashboard:** Run `python -m uvicorn api.main:app --host 127.0.0.1 --port <port>` from the repo root (or set env **`ORDERFLOW_DB_PATH`** to an absolute DuckDB path). **`GET /`** returns **`db_path`** for verification. Stop the API process before running **`python -m orderflow_pipeline.cli rebuild`** so the DB file is not locked on Windows. Serve static assets (e.g. `python -m http.server 8000`) and open **`orderflow_dashboard.html?source=api`**. If the API is not on the default **`http://localhost:8001`**, add **`&apiBase=http://127.0.0.1:<port>`** so `src/data/replay.js` bootstrap matches.
+- **CVD divergence ingest thresholds:** CLI flags **`--div-min-price`**, **`--div-min-cvd`**, **`--div-max-bars`**, **`--swing-lookback`** are persisted on each **`divergence_events`** row; a full **rebuild** is required to change stored divergences for historical sessions.
 
 ### 2.3 Mode Loading
 
 - App bootstraps synthetic first, then attempts replay bootstrap.
 - Real mode is explicitly selected via query string (`?source=api`).
 - Synthetic remains supported and is the fallback when API replay is unavailable.
+- **Deferred UX (evaluate after live data review):** wiring **`chartUi.showDeltaPanel` / `showCvdPanel`** to dedicated controls vs relying on section collapse only; matrix interaction for CVD divergences (**hover-span** emphasis vs explicit selection of a divergence) — product choice once swings/connectors are validated visually.
 
 In **API replay**, after the windowed **`/bars`** load completes, **`seek(allBars.length)`** runs so **`replay.cursor`** sits at the **end of the loaded timeline**. The chart shows the **most recent** bars up to **`chartVisibleBars`** (horizontal zoom), while committed streaming/history handling still uses the **`MAX_BARS`** ring buffer (subject to **`chartPanSlider`** / **`chartViewEnd`**) with default timeframe **`1m`** — not bar 0 at session start unless the user pans there.
 
