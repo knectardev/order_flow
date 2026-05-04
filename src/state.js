@@ -179,6 +179,9 @@ export const state = {
   // Each entry: {x, y, r, kind: 'event'|'fire', payload}
   chartHits: [],
 
+  /** Rebuilt in drawCvdChart(): swing triangle hit targets in CVD canvas CSS px. */
+  cvdSwingHits: [],
+
   // Glossary primitives enabled for primitive flow markers (EVENT_ORDER `.key`).
   // Empty = no deferred event scan / fetch; optional types load on checkbox.
   activeEventTypes: new Set(),

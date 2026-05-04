@@ -1,7 +1,7 @@
 import { state } from '../state.js';
 
 function _apiBase() {
-  return state.replay.apiBase || 'http://localhost:8001';
+  return state.replay.apiBase || 'http://127.0.0.1:8001';
 }
 
 function _scopeToWatchIds(scope) {

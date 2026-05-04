@@ -63,7 +63,92 @@
     }
   }
 
-  .header { margin-bottom: 18px; }
+  .header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px 16px;
+    margin-bottom: 14px;
+  }
+  .header-main {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
+  .header-playback {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px 8px;
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+  .btn-playback {
+    flex: 0 0 auto;
+    padding: 5px 11px;
+    font-size: 10px;
+    letter-spacing: 0.35px;
+    white-space: nowrap;
+  }
+  .header-speed {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px 2px 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    flex: 0 0 auto;
+  }
+  .header-speed-label {
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.65px;
+    color: var(--muted);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .header-speed input[type="range"] {
+    width: 76px;
+    flex-shrink: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    height: 3px;
+    background: var(--border-2);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    margin: 0;
+    accent-color: var(--accent);
+  }
+  .header-speed input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 11px;
+    height: 11px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+  .header-speed input[type="range"]::-moz-range-thumb {
+    width: 11px;
+    height: 11px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+  .header-speed-value {
+    color: var(--text-2);
+    font-weight: 500;
+    font-size: 10px;
+    min-width: 32px;
+    text-align: right;
+    letter-spacing: 0.2px;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
   h1 {
     font-size: 15px;
     font-weight: 500;
@@ -87,8 +172,6 @@
     text-transform: uppercase;
     margin-right: 6px;
   }
-
-  .controls { display: flex; gap: 8px; margin-bottom: 16px; }
 
   .replay-seek-label {
     color: var(--muted-2);
@@ -267,64 +350,6 @@
   button.tertiary:hover {
     background: rgba(212, 160, 74, 0.10);
     border-color: rgba(212, 160, 74, 0.6);
-  }
-
-  /* Speed slider */
-  .speed-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 16px;
-    padding: 9px 13px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 10.5px;
-    color: var(--muted);
-  }
-  .speed-row .speed-label-text {
-    text-transform: uppercase;
-    letter-spacing: 0.7px;
-    font-size: 9px;
-    color: var(--muted);
-    flex-shrink: 0;
-  }
-  .speed-row input[type="range"] {
-    flex: 1;
-    appearance: none;
-    -webkit-appearance: none;
-    height: 3px;
-    background: var(--border-2);
-    border-radius: 2px;
-    outline: none;
-    cursor: pointer;
-    margin: 0;
-  }
-  .speed-row input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    background: var(--accent);
-    border-radius: 50%;
-    cursor: pointer;
-    border: 2px solid var(--bg);
-  }
-  .speed-row input[type="range"]::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
-    background: var(--accent);
-    border-radius: 50%;
-    cursor: pointer;
-    border: 2px solid var(--bg);
-  }
-  .speed-row .speed-value {
-    color: var(--text-2);
-    font-weight: 500;
-    font-size: 11px;
-    min-width: 38px;
-    text-align: right;
-    letter-spacing: 0.3px;
-    flex-shrink: 0;
   }
 
   .section {
@@ -1110,8 +1135,8 @@
   }
   #priceChart { display: block; width: 100%; height: 465px; cursor: crosshair; }
   #priceChart.panning { cursor: grabbing; }
-  #flowChart  { display: block; width: 100%; height: 64px; cursor: crosshair; }
-  #cvdChart   { display: block; width: 100%; height: 64px; cursor: crosshair; }
+  #flowChart  { display: block; width: 100%; height: 128px; cursor: crosshair; }
+  #cvdChart   { display: block; width: 100%; height: 128px; cursor: crosshair; }
   .chart-stack-wrap--cvd { margin-top: 4px; }
 
   /* Hover tooltip on chart events. Style-consistent with .design-note / panels. */

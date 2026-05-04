@@ -1737,6 +1737,25 @@ function drawPriceChart() {
       }
       pctx.closePath();
       pctx.fill();
+      const cy = sw.seriesType === 'price_high' ? y + 1 / 3 : y - 1 / 3;
+      const K = Number(sw.swingLookback);
+      const b = allBars[idx];
+      state.chartHits.push({
+        x,
+        y: cy,
+        r: 10,
+        kind: 'priceSwing',
+        payload: {
+          seriesType: sw.seriesType,
+          swingValue: Number.isFinite(Number(sw.swingValue))
+            ? Number(sw.swingValue)
+            : (sw.seriesType === 'price_high' ? b.high : b.low),
+          barTimeMs: tms,
+          swingLookback: Number.isFinite(K) ? K : null,
+          high: b.high,
+          low: b.low,
+        },
+      });
     }
     const divs = state.replay.allDivergences || [];
     for (const d of divs) {
@@ -1878,6 +1897,23 @@ function drawPriceChart() {
       pctx.font = '8px "IBM Plex Mono", monospace';
       pctx.textAlign = 'center';
       pctx.fillText('FIRE', xFire, PAD.t + 8);
+      pctx.restore();
+    }
+  }
+
+  // Transient hover bar (price canvas, flow, CVD, matrix): same x as subchart crosshairs.
+  const hbCross = state.selection.hoverBarTime;
+  if (hbCross != null && allBars.length) {
+    const hiCross = allBars.findIndex(b => _barTimeMs(b.time) === hbCross);
+    if (hiCross >= 0) {
+      const xh = PAD.l + (hiCross + 0.5) * slotW;
+      pctx.save();
+      pctx.strokeStyle = 'rgba(0,191,165,0.45)';
+      pctx.lineWidth = 1;
+      pctx.beginPath();
+      pctx.moveTo(xh, PAD.t);
+      pctx.lineTo(xh, volTop + volBandH);
+      pctx.stroke();
       pctx.restore();
     }
   }

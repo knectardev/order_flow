@@ -35,6 +35,7 @@ function _hitTestChart(x, y) {
   };
   const _priority = (hit) => {
     if (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias') return 2;
+    if (hit.kind === 'priceSwing') return 1.5;
     if (hit.kind === 'phatCandle' || hit.kind === 'candle') return 1;
     return 0;
   };
@@ -56,16 +57,38 @@ function _hitTestChart(x, y) {
   return best;
 }
 
+function _pickCvdSwingHit(x, y) {
+  const hits = state.cvdSwingHits || [];
+  let best = null;
+  let bestD2 = Infinity;
+  for (const h of hits) {
+    const dx = x - h.x;
+    const dy = y - h.y;
+    const d2 = dx * dx + dy * dy;
+    const r = h.r ?? 10;
+    if (d2 <= r * r && d2 < bestD2) {
+      best = h;
+      bestD2 = d2;
+    }
+  }
+  return best;
+}
+
 function _hideTooltip() {
   const tt = document.getElementById('chartTooltip');
   if (tt) {
     tt.classList.remove('visible');
     tt.setAttribute('aria-hidden', 'true');
+    tt.style.position = '';
+    tt.style.left = '';
+    tt.style.top = '';
+    tt.style.transform = '';
   }
+  if (cvdCanvas) cvdCanvas.style.cursor = 'crosshair';
   priceCanvas.style.cursor = state.isPanningChart ? 'grabbing' : 'crosshair';
 }
 
-function _showTooltipForHit(hit, mouseX, mouseY) {
+function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
   const tt = document.getElementById('chartTooltip');
   if (!tt) return;
   const _phatTemplate = (shape, hasRejection, neutralReason) => {
@@ -288,6 +311,50 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
         + `<div class="tt-hint tt-phat-disclaimer">PHAT read is descriptive, not predictive</div>`,
     };
     meta = p.shapeLabel || 'PHAT';
+  } else if (hit.kind === 'priceSwing' || hit.kind === 'cvdSwing') {
+    const p = hit.payload || {};
+    const st = p.seriesType || '';
+    const K = Number(p.swingLookback);
+    const kDisp = Number.isFinite(K) ? K : (Number(state.replay.swingLookbackDisplay) || null);
+    const kStr = kDisp != null ? String(kDisp) : 'K';
+    const isHigh = st === 'cvd_high' || st === 'price_high';
+    const onCvd = st.startsWith('cvd_');
+    const name = onCvd
+      ? (isHigh ? 'Session CVD swing high' : 'Session CVD swing low')
+      : (isHigh ? 'Price swing high' : 'Price swing low');
+    const desc = onCvd
+      ? (isHigh
+        ? `Local maximum on session cumulative delta: no higher CVD within ${kStr} bars on each side where that window exists. Down-triangle marks this bar; divergence lines pair it with a matching price pivot when ingest rules pass.`
+        : `Local minimum on session cumulative delta with the same ${kStr}-bar fractal rule (up-triangle).`)
+      : (isHigh
+        ? `Local maximum on trade price: this bar’s high is ≥ the highs of the ${kStr} bars on each side where the window exists.`
+        : `Local minimum on trade price: this bar’s low is ≤ the lows of the ${kStr} bars on each side where the window exists.`);
+    const valLine = onCvd
+      ? `Session CVD at bar: ${Number.isFinite(Number(p.swingValue)) ? Math.round(Number(p.swingValue)).toLocaleString() : '—'}`
+      : (() => {
+        const hStr = Number.isFinite(Number(p.high)) ? Number(p.high).toFixed(2) : '—';
+        const lStr = Number.isFinite(Number(p.low)) ? Number(p.low).toFixed(2) : '—';
+        return `Bar H ${hStr} · L ${lStr}`;
+      })();
+    const bt = Number(p.barTimeMs);
+    const timeLabel = Number.isFinite(bt)
+      ? new Date(bt).toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }) + ' ET'
+      : '—';
+    info = {
+      variant: 'diverge',
+      glyph: isHigh ? '▼' : '▲',
+      name,
+      desc,
+      detail: `${_phatEsc(valLine)}<br>${_phatEsc(timeLabel)}`,
+    };
+    meta = kDisp != null ? `K=${kDisp}` : 'K from ingest';
   } else if (hit.kind === 'candle') {
     const p = hit.payload || {};
     const up = p.isUp !== false;
@@ -324,7 +391,9 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
     ? ''
     : hit.kind === 'candle'
       ? 'Click to highlight on regime matrix'
-      : 'Shift+click for at-fire criteria · click to select bar range';
+      : (hit.kind === 'priceSwing' || hit.kind === 'cvdSwing')
+        ? 'Pipeline fractal (swing_events); K matches the Δ section header when uniform.'
+        : 'Shift+click for at-fire criteria · click to select bar range';
   if (hit.kind === 'phatCandle' && info._phatHtml) {
     tt.innerHTML = info._phatHtml;
   } else {
@@ -339,20 +408,39 @@ function _showTooltipForHit(hit, mouseX, mouseY) {
       `<div class="tt-hint">${hint}</div>`;
   }
 
-  // Position: prefer right-of-cursor; flip if it would clip the chart.
-  const wrap = priceCanvas.parentElement.getBoundingClientRect();
+  // Position: price-wrap coords, or fixed viewport when hovering CVD (tooltip DOM lives under price-wrap).
   const ttW = tt.offsetWidth || 220;
   const ttH = tt.offsetHeight || 60;
-  let left = mouseX + 14;
-  let top  = mouseY + 14;
-  if (left + ttW > wrap.width - 4)  left = mouseX - ttW - 14;
-  if (top + ttH > wrap.height - 4)  top  = mouseY - ttH - 14;
-  if (left < 4) left = 4;
-  if (top < 4)  top  = 4;
-  tt.style.left = left + 'px';
-  tt.style.top  = top  + 'px';
-  tt.style.transform = 'none';
-  priceCanvas.style.cursor = 'pointer';
+  if (opts.useClientCoords) {
+    tt.style.position = 'fixed';
+    tt.style.transform = 'none';
+    const pad = 14;
+    let left = mouseX + pad;
+    let top = mouseY + pad;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (left + ttW > vw - 8) left = mouseX - ttW - pad;
+    if (top + ttH > vh - 8) top = mouseY - ttH - pad;
+    if (left < 8) left = 8;
+    if (top < 8) top = 8;
+    tt.style.left = `${left}px`;
+    tt.style.top = `${top}px`;
+    if (cvdCanvas) cvdCanvas.style.cursor = 'pointer';
+    priceCanvas.style.cursor = 'crosshair';
+  } else {
+    tt.style.position = '';
+    const wrap = priceCanvas.parentElement.getBoundingClientRect();
+    let left = mouseX + 14;
+    let top = mouseY + 14;
+    if (left + ttW > wrap.width - 4) left = mouseX - ttW - 14;
+    if (top + ttH > wrap.height - 4) top = mouseY - ttH - 14;
+    if (left < 4) left = 4;
+    if (top < 4) top = 4;
+    tt.style.left = `${left}px`;
+    tt.style.top = `${top}px`;
+    tt.style.transform = 'none';
+    priceCanvas.style.cursor = 'pointer';
+  }
 }
 
 function _refreshTooltipFromLastMouse() {
@@ -379,11 +467,11 @@ priceCanvas.addEventListener('mousemove', (e) => {
     return;
   }
   const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
-  const hoverMs = (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle'))
+  const hoverMs = (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing'))
     ? Number(hit.payload?.barTimeMs)
     : null;
   hoverBar(hoverMs, 'chart-hover');
-  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle')) {
+  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing')) {
     _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
   } else {
     _hideTooltip();
@@ -439,7 +527,7 @@ priceCanvas.addEventListener('click', (e) => {
     } else {
       selectFire(hit.payload);
     }
-  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle') {
+  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing') {
     const barMs = Number(hit.payload?.barTimeMs);
     if (Number.isFinite(barMs)) {
       selectBar(barMs, 'chart-click');
@@ -462,7 +550,39 @@ function _wireSubchartHover(canvas) {
 }
 
 _wireSubchartHover(flowCanvas);
-_wireSubchartHover(cvdCanvas);
+
+function _wireCvdChartHover(canvas) {
+  if (!canvas) return;
+  canvas.addEventListener('mousemove', (e) => {
+    if (state.isPanningChart) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const h = _pickCvdSwingHit(x, y);
+    if (h) {
+      hoverBar(Number(h.barTimeMs), 'cvd-swing-hover');
+      _showTooltipForHit({
+        kind: 'cvdSwing',
+        payload: {
+          seriesType: h.seriesType,
+          swingValue: h.swingValue,
+          barTimeMs: h.barTimeMs,
+          swingLookback: h.swingLookback,
+        },
+      }, e.clientX, e.clientY, { useClientCoords: true });
+    } else {
+      const ms = barTimeMsFromSubchartX(canvas, x);
+      hoverBar(Number.isFinite(ms) ? ms : null, 'subchart-hover');
+      _hideTooltip();
+    }
+  });
+  canvas.addEventListener('mouseleave', () => {
+    hoverBar(null, 'subchart-leave');
+    _hideTooltip();
+  });
+}
+
+_wireCvdChartHover(cvdCanvas);
 
 // ───────────────────────────────────────────────────────────
 

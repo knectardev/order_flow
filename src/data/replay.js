@@ -32,6 +32,24 @@ const URL_PARAM_SELECTION_CELLS = 'selectionCells';
 const KNOWN_DIAGNOSTIC_VERSION = 'v1';
 const _unknownDiagVersionsWarned = new Set();
 
+/**
+ * Optional dev override when `&apiBase=` is omitted: set once in the browser console, e.g.
+ * `localStorage.setItem('orderflow_api_base', 'http://127.0.0.1:8002')` then reload with `?source=api`.
+ * Query param `apiBase` always wins. Only `http:` / `https:` origins are accepted.
+ */
+function _storedDevApiBase() {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('orderflow_api_base');
+    if (!raw || typeof raw !== 'string') return null;
+    const u = new URL(raw.trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
 function _clearSelectionParamsInUrl() {
   const url = new URL(window.location.href);
   const p = url.searchParams;
@@ -748,7 +766,10 @@ async function bootstrapReplay() {
 
   const source = (params.get('source') || '').toLowerCase();
   if (source === 'api') {
-    const apiBase = (params.get('apiBase') || 'http://localhost:8001').replace(/\/+$/, '');
+    const fromUrl = params.get('apiBase');
+    const fromStore = fromUrl ? null : _storedDevApiBase();
+    const apiBase = (fromUrl || fromStore || 'http://127.0.0.1:8001').replace(/\/+$/, '');
+    console.info('[orderflow] API base:', apiBase, fromUrl ? '(from URL)' : (fromStore ? '(from localStorage orderflow_api_base)' : '(default)'));
     return bootstrapFromApi(apiBase);
   }
   console.info('[orderflow] No ?source=api specified; staying in synthetic mode.');

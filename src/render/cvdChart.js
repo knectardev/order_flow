@@ -16,6 +16,7 @@ function _sessionCvdForBar(b, idx, viewedBars) {
 function drawCvdChart() {
   if (!cvdCanvas || !cvdCtx) return;
   if (!state.chartUi.showCvdPanel) {
+    state.cvdSwingHits = [];
     const { w, h } = resizeCanvas(cvdCanvas);
     cvdCtx.clearRect(0, 0, w, h);
     cvdCtx.fillStyle = CHART_CANVAS_BG;
@@ -26,6 +27,7 @@ function drawCvdChart() {
   }
 
   const { w, h } = resizeCanvas(cvdCanvas);
+  state.cvdSwingHits = [];
   cvdCtx.clearRect(0, 0, w, h);
   cvdCtx.fillStyle = CHART_CANVAS_BG;
   cvdCtx.fillRect(0, 0, w, h);
@@ -116,6 +118,17 @@ function drawCvdChart() {
     }
     cvdCtx.closePath();
     cvdCtx.fill();
+    const cy = sw.seriesType === 'cvd_high' ? y + 1 / 3 : y - 1 / 3;
+    const K = Number(sw.swingLookback);
+    state.cvdSwingHits.push({
+      x,
+      y: cy,
+      r: 10,
+      seriesType: sw.seriesType,
+      swingValue: Number(sw.swingValue ?? pts[idx].cvd),
+      barTimeMs: tms,
+      swingLookback: Number.isFinite(K) ? K : null,
+    });
   }
 
   // CVD divergence connectors (same panel — line between CVD swing points)
