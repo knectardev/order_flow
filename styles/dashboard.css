@@ -493,11 +493,35 @@
     outline: 1px solid var(--accent);
     outline-offset: 2px;
   }
+  .backtest-toolbar-row {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
   .backtest-controls {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 0;
+  }
+  .backtest-toggle-column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+    min-width: 0;
+  }
+  .backtest-toggle-column .bt-toggle-row,
+  .backtest-toggle-column .bt-marker-split-row {
+    grid-column: unset;
+    width: 100%;
+  }
+  .backtest-toggle-column .bt-marker-split-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
   }
   .backtest-legend {
     display: flex;
@@ -512,6 +536,10 @@
     align-items: center;
     gap: 6px;
   }
+  /* `.legend-item` display overrides native `[hidden]` — hide Performance legend rows when toggled in JS. */
+  .backtest-legend .legend-item[hidden] {
+    display: none !important;
+  }
   .legend-dot {
     width: 9px;
     height: 9px;
@@ -520,6 +548,7 @@
   }
   .legend-dot.teal { background: #21a095; }
   .legend-dot.orange { background: #d39145; }
+  .legend-dot.null-hypothesis { background: #2ecc71; }
   .backtest-controls label {
     display: flex;
     flex-direction: column;
@@ -548,6 +577,9 @@
   .backtest-controls button {
     grid-column: span 2;
     margin-top: 2px;
+  }
+  .backtest-controls .bt-popout-btn {
+    margin-top: 0;
   }
   .backtest-controls button:disabled,
   .backtest-controls button:disabled:hover {
@@ -584,6 +616,36 @@
   .bt-toggle-orange {
     color: #d39145;
   }
+  .bt-null-hypothesis {
+    color: #2ecc71;
+  }
+  .bt-null-hypothesis.bt-null-hypothesis--disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .bt-exec-policy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 0;
+    width: 100%;
+  }
+  .bt-exec-policy-note {
+    font-size: 10px;
+    color: var(--muted-2);
+    margin-bottom: 2px;
+  }
+  .bt-entry-gap-guard {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    margin-top: 2px;
+    color: var(--muted);
+  }
+  .bt-entry-gap-guard input[type="number"] {
+    max-width: 5.5rem;
+  }
   .backtest-metrics {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -619,6 +681,45 @@
   }
   .bt-val.teal { color: #21a095; }
   .bt-val.orange { color: #d39145; }
+  .bt-val.nh {
+    color: #2ecc71;
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+  }
+  /* Performance metric cards: optional NH row under ON (+ OFF) values */
+  .backtest-metrics .bt-card strong {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    min-height: 0;
+  }
+  .backtest-metrics .bt-stat-primary {
+    display: block;
+    line-height: 1.28;
+  }
+  .backtest-metrics .bt-stat-primary .bt-val.teal,
+  .backtest-metrics .bt-stat-primary .bt-val.orange {
+    display: inline;
+  }
+  .backtest-metrics .bt-stat-nh {
+    display: block;
+    margin-top: 1px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(46, 204, 113, 0.22);
+    line-height: 1.28;
+  }
+  .backtest-metrics .bt-card strong#btStatScope {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .backtest-metrics #btStatScope .bt-stat-primary {
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 500;
+  }
   .backtest-chart-wrap #backtestEquityChart {
     display: block;
     width: 100%;
@@ -2286,6 +2387,185 @@
   .event-log-system-row .label { color: var(--muted); }
   .event-log-system-row .price { color: var(--muted-2); font-size: 10px; text-align: right; }
   .event-log-system-row .time  { color: var(--muted-2); font-size: 10px; }
+
+  body.backtest-popout-mode .header,
+  body.backtest-popout-mode .fire-banner,
+  body.backtest-popout-mode .col-left,
+  body.backtest-popout-mode .col-right > .section:not(#backtestSection) {
+    display: none !important;
+  }
+  body.backtest-popout-mode {
+    padding: 10px 10px 16px;
+  }
+  body.backtest-popout-mode .grid-main {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 0;
+  }
+  body.backtest-popout-mode .col-right {
+    width: 100%;
+    max-width: none;
+  }
+  body.backtest-popout-mode #backtestSection {
+    margin: 0;
+  }
+  body.backtest-popout-mode #backtestSection .section-head--collapsible {
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+  }
+  body.backtest-popout-mode #backtestSection .section-head {
+    margin-bottom: 10px;
+  }
+  body.backtest-popout-mode #backtestSection .section-head .section-collapse-btn {
+    display: none;
+  }
+  body.backtest-popout-mode #backtestSection .section-head .section-meta {
+    justify-self: end;
+    text-align: right;
+    color: var(--muted);
+  }
+  body.backtest-popout-mode #backtestSection .section-body {
+    display: grid;
+    grid-template-columns: minmax(260px, 520px) minmax(190px, 280px) minmax(220px, 1fr);
+    grid-template-areas:
+      "legend legend legend"
+      "controls toggles metrics"
+      "chart chart chart";
+    gap: 8px 14px;
+    align-items: start;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toolbar-row {
+    display: contents;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-legend {
+    grid-area: legend;
+    margin-bottom: 0;
+    padding: 0 2px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-controls {
+    grid-area: controls;
+    width: 100%;
+    max-width: 520px;
+    margin-bottom: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 9px;
+    padding: 9px 10px 10px;
+    background: rgba(24, 30, 42, 0.38);
+    border: 1px solid rgba(42, 49, 66, 0.78);
+    border-radius: 4px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column {
+    grid-area: toggles;
+    padding: 9px 10px 10px;
+    background: rgba(24, 30, 42, 0.38);
+    border: 1px solid rgba(42, 49, 66, 0.78);
+    border-radius: 4px;
+    gap: 7px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-exec-policy-note {
+    margin-bottom: 1px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-marker-split-row {
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 1px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-controls label {
+    font-size: 9.5px;
+    gap: 3px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-controls input,
+  body.backtest-popout-mode #backtestSection .backtest-controls select {
+    min-height: 28px;
+    padding: 4px 6px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-toggle-row {
+    justify-content: flex-start;
+    gap: 7px;
+    font-size: 9.5px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-toggle-row input[type="checkbox"] {
+    margin: 0;
+    transform: translateY(-0.5px);
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column #btCompareRegimeOff {
+    margin-left: 2px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-marker-split-row .bt-toggle-row-inline {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 7px;
+    margin: 0;
+    min-width: 0;
+    white-space: normal;
+    justify-content: flex-start;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-toggle-row,
+  body.backtest-popout-mode #backtestSection .backtest-toggle-column .bt-marker-split-row .bt-toggle-row-inline {
+    width: 100%;
+    flex-direction: row;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-controls button {
+    margin-top: 0;
+    min-height: 30px;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-metrics {
+    grid-area: metrics;
+    margin-bottom: 0;
+    grid-template-columns: repeat(2, minmax(148px, 1fr));
+    gap: 10px;
+    align-content: start;
+    justify-self: stretch;
+    width: 100%;
+    padding: 4px 0;
+  }
+  body.backtest-popout-mode #backtestSection .bt-card {
+    padding: 11px 14px;
+    min-height: 64px;
+    justify-content: center;
+    gap: 6px;
+    border-color: rgba(42, 49, 66, 0.9);
+    border-radius: 4px;
+  }
+  body.backtest-popout-mode #backtestSection .bt-card span {
+    font-size: 10.5px;
+    letter-spacing: 0.55px;
+  }
+  body.backtest-popout-mode #backtestSection .bt-card strong {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  body.backtest-popout-mode #backtestSection .backtest-chart-wrap {
+    grid-area: chart;
+    margin-top: 1px;
+  }
+  body.backtest-popout-mode #btPopoutBtn {
+    display: none !important;
+  }
+  body.backtest-popout-mode .backtest-chart-wrap #backtestEquityChart {
+    height: min(56vh, 460px);
+  }
+  @media (max-width: 1180px) {
+    body.backtest-popout-mode #backtestSection .section-body {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "legend"
+        "controls"
+        "toggles"
+        "metrics"
+        "chart";
+    }
+    body.backtest-popout-mode #backtestSection .backtest-controls {
+      width: 100%;
+      max-width: none;
+    }
+    body.backtest-popout-mode #backtestSection .backtest-metrics {
+      grid-template-columns: repeat(2, minmax(130px, 1fr));
+      max-width: none;
+      justify-self: stretch;
+      gap: 10px;
+    }
+  }
 
   /* Selection banner (regime-DB plan §4b). Same sticky semantics as the
      warmup row but in the accent color so users associate it with the

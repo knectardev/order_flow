@@ -22,7 +22,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from .backtest_engine import BrokerConfig
+from .backtest_engine import BrokerConfig, ExecutionPolicy
 
 SUPPORTED_BACKTEST_DEFAULTS_VERSION = 1
 
@@ -37,6 +37,16 @@ BROKER_FIELD_KEYS = (
     "stop_loss_ticks",
     "take_profit_ticks",
 )
+EXECUTION_POLICY_BOOL_KEYS = (
+    "ignore_same_side_fire_when_open",
+    "flip_on_opposite_fire",
+    "exit_on_stop_loss",
+    "exit_on_take_profit",
+    "close_at_end_of_window",
+    "entry_next_bar_open",
+)
+EXECUTION_POLICY_OPTIONAL_FLOAT_KEYS = ("entry_gap_guard_max_ticks",)
+EXECUTION_POLICY_FIELD_KEYS = EXECUTION_POLICY_BOOL_KEYS + EXECUTION_POLICY_OPTIONAL_FLOAT_KEYS
 
 
 def _repo_root() -> Path:
@@ -84,6 +94,19 @@ def _hardcoded_fallback_broker_dict() -> dict[str, Any]:
     }
 
 
+def _hardcoded_execution_policy_dict() -> dict[str, Any]:
+    p = ExecutionPolicy()
+    return {
+        "ignore_same_side_fire_when_open": p.ignore_same_side_fire_when_open,
+        "flip_on_opposite_fire": p.flip_on_opposite_fire,
+        "exit_on_stop_loss": p.exit_on_stop_loss,
+        "exit_on_take_profit": p.exit_on_take_profit,
+        "close_at_end_of_window": p.close_at_end_of_window,
+        "entry_next_bar_open": p.entry_next_bar_open,
+        "entry_gap_guard_max_ticks": p.entry_gap_guard_max_ticks,
+    }
+
+
 def _warn_version(raw: dict[str, Any]) -> None:
     v = raw.get("version", 1)
     if not isinstance(v, int):
@@ -114,6 +137,8 @@ def validate_backtest_defaults_document(doc: dict[str, Any]) -> list[str]:
             continue
         if k in BROKER_FIELD_KEYS:
             continue
+        if k in EXECUTION_POLICY_FIELD_KEYS:
+            continue
         errs.append(f"unknown top-level key {k!r}")
     iv = doc.get("initial_capital")
     if iv is not None and (not isinstance(iv, (int, float)) or isinstance(iv, bool)):
@@ -129,6 +154,17 @@ def validate_backtest_defaults_document(doc: dict[str, Any]) -> list[str]:
         ):
             errs.append(f"{fk} must be number or null")
     for fk in ("stop_loss_ticks", "take_profit_ticks"):
+        v = doc.get(fk)
+        if v is not None and (
+            not isinstance(v, (int, float))
+            or isinstance(v, bool)
+        ):
+            errs.append(f"{fk} must be number or null")
+    for ek in EXECUTION_POLICY_BOOL_KEYS:
+        v = doc.get(ek)
+        if v is not None and not isinstance(v, bool):
+            errs.append(f"{ek} must be boolean or null")
+    for fk in EXECUTION_POLICY_OPTIONAL_FLOAT_KEYS:
         v = doc.get(fk)
         if v is not None and (
             not isinstance(v, (int, float))
@@ -162,21 +198,44 @@ def _merge_doc_into_base(doc: dict[str, Any], base: dict[str, Any]) -> dict[str,
     return out
 
 
+def _merge_execution_doc_into_base(doc: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k in EXECUTION_POLICY_BOOL_KEYS:
+        if k not in doc:
+            continue
+        val = doc[k]
+        if val is None:
+            continue
+        out[k] = bool(val)
+    for k in EXECUTION_POLICY_OPTIONAL_FLOAT_KEYS:
+        if k not in doc:
+            continue
+        val = doc[k]
+        if val is None:
+            out[k] = None
+        else:
+            out[k] = float(val)
+    return out
+
+
 def load_backtest_defaults_document() -> dict[str, Any]:
     path = resolve_backtest_defaults_path()
-    base = _hardcoded_fallback_broker_dict()
+    broker_base = _hardcoded_fallback_broker_dict()
+    exec_base = _hardcoded_execution_policy_dict()
     if path is None:
-        return base
+        return {**broker_base, **exec_base}
     try:
         with open(path, encoding="utf-8") as f:
             parsed = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return base
+        return {**broker_base, **exec_base}
     raw = parsed if isinstance(parsed, dict) else {}
     _warn_version(raw)
     for err in validate_backtest_defaults_document(raw):
         warnings.warn(f"backtest defaults ({path}): {err}", UserWarning, stacklevel=2)
-    return _merge_doc_into_base(raw, base)
+    merged_broker = _merge_doc_into_base(raw, broker_base)
+    merged_exec = _merge_execution_doc_into_base(raw, exec_base)
+    return {**merged_broker, **merged_exec}
 
 
 def clear_backtest_defaults_cache() -> None:
@@ -184,8 +243,15 @@ def clear_backtest_defaults_cache() -> None:
 
 
 def effective_broker_defaults() -> dict[str, Any]:
-    """Broker fields dict after JSON overlay."""
-    return load_backtest_defaults_document()
+    """Broker-only fields after JSON overlay."""
+    full = load_backtest_defaults_document()
+    return {k: full[k] for k in BROKER_FIELD_KEYS}
+
+
+def effective_execution_policy_defaults() -> dict[str, Any]:
+    """Execution policy fields after JSON overlay."""
+    full = load_backtest_defaults_document()
+    return {k: full[k] for k in EXECUTION_POLICY_FIELD_KEYS}
 
 
 def merge_request_broker_overlay(
@@ -195,6 +261,20 @@ def merge_request_broker_overlay(
 ) -> dict[str, Any]:
     """Merge explicit request fields onto JSON/file defaults."""
     base = effective_broker_defaults()
+    out = dict(base)
+    for k in overlay_keys_only:
+        if k not in request_dump:
+            continue
+        out[k] = request_dump[k]
+    return out
+
+
+def merge_request_execution_overlay(
+    request_dump: dict[str, Any],
+    *,
+    overlay_keys_only: frozenset[str],
+) -> dict[str, Any]:
+    base = effective_execution_policy_defaults()
     out = dict(base)
     for k in overlay_keys_only:
         if k not in request_dump:
@@ -234,4 +314,19 @@ def merged_broker_config_from_request_payload(request_dump: dict[str, Any]) -> B
         point_value=float(merged["point_value"]),
         stop_loss_ticks=_float_or_none(merged.get("stop_loss_ticks")),
         take_profit_ticks=_float_or_none(merged.get("take_profit_ticks")),
+    )
+
+
+def merged_execution_policy_from_request_payload(request_dump: dict[str, Any]) -> ExecutionPolicy:
+    """Merge execution-policy fields from request overlay onto defaults."""
+    keys = frozenset(EXECUTION_POLICY_FIELD_KEYS)
+    merged = merge_request_execution_overlay(request_dump, overlay_keys_only=keys)
+    return ExecutionPolicy(
+        ignore_same_side_fire_when_open=bool(merged["ignore_same_side_fire_when_open"]),
+        flip_on_opposite_fire=bool(merged["flip_on_opposite_fire"]),
+        exit_on_stop_loss=bool(merged["exit_on_stop_loss"]),
+        exit_on_take_profit=bool(merged["exit_on_take_profit"]),
+        close_at_end_of_window=bool(merged["close_at_end_of_window"]),
+        entry_next_bar_open=bool(merged["entry_next_bar_open"]),
+        entry_gap_guard_max_ticks=_float_or_none(merged.get("entry_gap_guard_max_ticks")),
     )

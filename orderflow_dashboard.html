@@ -251,7 +251,9 @@
     <div class="backtest-legend">
       <span class="legend-item"><span class="legend-dot teal"></span> Regime filter ON</span>
       <span class="legend-item" id="btLegendRegimeOff" hidden><span class="legend-dot orange"></span> Regime filter OFF</span>
+      <span class="legend-item" id="btLegendNullHypothesis" hidden><span class="legend-dot null-hypothesis"></span> Null hypothesis</span>
     </div>
+    <div class="backtest-toolbar-row">
     <div class="backtest-controls">
       <label>Backtest scope
         <select id="btScope">
@@ -263,10 +265,46 @@
           <option value="valueEdgeReject">Value Edge only</option>
         </select>
       </label>
+      <label title="Uses bars and fires for this timeframe (same as top-chart timeframe when you switch either control).">Backtest timeframe
+        <select id="btTimeframe" aria-label="Backtest timeframe"></select>
+      </label>
       <label>Capital <input id="btInitialCapital" type="number" value="50000" step="1000"></label>
       <label>Commission/side ($) <input id="btCommission" type="number" value="2" step="0.25"></label>
       <label>Qty <input id="btQty" type="number" value="1" min="1" step="1"></label>
       <label>Slippage (ticks) <input id="btSlippage" type="number" value="1" step="0.25"></label>
+      <label title="Positive distance in ticks on the adverse side from entry fill (not Webull-style -25 for longs; enter 25). Long: stop is below fill. Maps to stop_loss_ticks. Blank → merged defaults.">Stop loss (ticks) <input id="btStopLossTicks" type="number" step="any" min="0" placeholder=""></label>
+      <label title="Positive distance in ticks to the profit target from fill. Long: target above fill. Maps to take_profit_ticks. Blank → merged defaults.">Take profit (ticks) <input id="btTakeProfitTicks" type="number" step="any" min="0" placeholder=""></label>
+      <button id="btRunBtn">Run Backtest</button>
+      <button id="btPopoutBtn" type="button" class="secondary bt-popout-btn">Pop Out</button>
+    </div>
+    <aside class="backtest-toggle-column" aria-label="Backtest options">
+      <div class="bt-exec-policy" aria-label="Execution policy">
+        <div class="bt-exec-policy-note">Same-side fires while in position are skipped (single contract).</div>
+        <label class="bt-toggle-row bt-toggle-row-inline">
+          <input id="btExecFlipOpposite" type="checkbox" checked>
+          Flip on opposite signal
+        </label>
+        <label class="bt-toggle-row bt-toggle-row-inline">
+          <input id="btExecStopLoss" type="checkbox" checked>
+          Honor stop loss (when defined)
+        </label>
+        <label class="bt-toggle-row bt-toggle-row-inline">
+          <input id="btExecTakeProfit" type="checkbox" checked>
+          Honor take profit (when defined)
+        </label>
+        <label class="bt-toggle-row bt-toggle-row-inline">
+          <input id="btExecEndWindow" type="checkbox" checked>
+          Close at end of window
+        </label>
+        <label class="bt-toggle-row bt-toggle-row-inline" title="Fill new entries at the next bar open (signal still on signal bar). Sharpe vs default close-fill is a different hypothesis—not automatically “failed integrity”.">
+          <input id="btExecNextBarOpen" type="checkbox">
+          Entry next bar open (integrity)
+        </label>
+        <label class="bt-entry-gap-guard" title="Skip deferred entry when |open(next)−close(signal)| exceeds this many ticks. Uses merged tick_size. Leave blank to disable.">
+          Gap guard (ticks)
+          <input id="btEntryGapGuardTicks" type="number" step="any" min="0" placeholder="" disabled>
+        </label>
+      </div>
       <label class="bt-toggle-row">
         <input id="btCompareRegimeOff" type="checkbox">
         Compare regime filter OFF (second run)
@@ -281,8 +319,15 @@
           Show Regime OFF markers
         </label>
       </div>
-      <button id="btRunBtn">Run Backtest</button>
-    </div>
+      <label class="bt-toggle-row bt-show-buy-hold">
+        <input id="btShowBuyHold" type="checkbox" checked>
+        Show buy &amp; hold benchmark
+      </label>
+      <label class="bt-toggle-row bt-null-hypothesis" id="btNullHypothesisLabel" title="Requires exactly one watch in scope and regime ON baseline.">
+        <input id="btNullHypothesis" type="checkbox">
+        Null hypothesis (frequency-matched random)
+      </label>
+    </aside>
     <div class="backtest-metrics">
       <div class="bt-card"><span>Scope</span><strong id="btStatScope">—</strong></div>
       <div class="bt-card"><span>Run</span><strong id="btStatRunId">—</strong></div>
@@ -293,6 +338,7 @@
       <div class="bt-card"><span>Net P&L</span><strong id="btStatNetPnl">—</strong></div>
       <div class="bt-card"><span>Equity Pts</span><strong id="btStatEqPoints">—</strong></div>
     </div>
+    </div><!-- /backtest-toolbar-row -->
     <div class="price-wrap backtest-chart-wrap">
       <canvas id="backtestEquityChart"></canvas>
     </div>

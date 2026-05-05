@@ -13,6 +13,7 @@ import { renderMatrix } from '../render/matrix.js';
 import { _getViewedBars, drawPriceChart } from '../render/priceChart.js';
 import { renderAbsorptionWallWatch, renderBreakoutWatch, renderFadeWatch, renderValueEdgeRejectWatch } from '../render/watch.js';
 import { handleWatchFire } from '../sim/step.js';
+import { syncBacktestTimeframeSelect } from '../render/backtestPanel.js';
 import { renderEventInventory } from '../render/eventInventory.js';
 import { toggleStream } from '../ui/controls.js';
 import { updateCvdDivergenceLegend } from '../ui/cvdDivergenceLegend.js';
@@ -61,7 +62,10 @@ function _browserPageOrigin() {
   }
 }
 
-/** Priority: valid `apiBase` query → optional localStorage origin → dashboard page origin → `:8001` fallback (deduped). */
+/** Priority: valid `apiBase` query → optional localStorage → `:8001` fallback → dashboard page origin (deduped).
+ * Fallback is tried before same-origin so a static `python -m http.server` on :8000 does not produce a spurious
+ * GET /api/backtest/defaults 404 during probing when FastAPI runs on :8001. Same-origin-only API: use ?apiBase= or localStorage.
+ */
 function _candidateApiBaseOrder(searchParams) {
   const fb = DEFAULT_ORDERFLOW_API_FALLBACK.replace(/\/+$/, '');
   const parsedUrl = _parseHttpApiOrigin(searchParams?.get?.('apiBase'));
@@ -72,9 +76,9 @@ function _candidateApiBaseOrder(searchParams) {
   const ordered = [];
   if (parsedUrl) ordered.push(parsedUrl.replace(/\/+$/, ''));
   if (storeBase) ordered.push(storeBase.replace(/\/+$/, ''));
+  ordered.push(fb);
   const origin = _browserPageOrigin()?.replace(/\/+$/, '');
   if (origin) ordered.push(origin);
-  ordered.push(fb);
 
   const seen = new Set();
   /** @type {string[]} */
@@ -868,9 +872,8 @@ async function bootstrapReplay() {
   // still hydrate Performance inputs from `/api/backtest/defaults`.
   //
   // **API origin resolution:** probes `GET /api/backtest/defaults` over (in order) a valid `?apiBase=`,
-  // optional localStorage `orderflow_api_base`, the **current page origin** (same-port uvicorn setups),
-  // then `http://127.0.0.1:8001`. This fixes the common mismatch: dashboard on `:8000` (`http.server`)
-  // plus API on `:8000` (uvicorn) or `:8001` — without relying on `apiBase=` every time.
+  // optional localStorage `orderflow_api_base`, **`http://127.0.0.1:8001`** (try before page origin so static
+  // `http.server` on :8000 does not log spurious 404s), then the **current page origin** for same-port API setups.
 
   // Phase 6: Bias filter mode + show-suppressed flag are user-tunable
   // via URL. ?biasFilter=hard activates 1h-anchor suppression (fires
@@ -1229,6 +1232,7 @@ async function setActiveTimeframe(tf) {
   _renderModeSubtitle();
   _syncTimeframeSelectorUI();
   _syncCandleModeSelectorUI();
+  syncBacktestTimeframeSelect();
 }
 
 function _snapCursorToTimeframe(prevBarTimeMs, tf) {

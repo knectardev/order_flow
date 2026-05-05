@@ -409,8 +409,17 @@ class BacktestRunRequest(BaseModel):
     # Run-wide exit override in ticks (None => use strategy timeframe/watch defaults, or flip-only if those are None).
     stop_loss_ticks: float | None = None
     take_profit_ticks: float | None = None
+    ignore_same_side_fire_when_open: bool | None = None
+    flip_on_opposite_fire: bool | None = None
+    exit_on_stop_loss: bool | None = None
+    exit_on_take_profit: bool | None = None
+    close_at_end_of_window: bool | None = None
+    entry_next_bar_open: bool | None = None
+    entry_gap_guard_max_ticks: float | None = None
     watch_ids: list[str] | None = None
     use_regime_filter: bool = True
+    null_hypothesis: bool = False
+    null_hypothesis_seed: int | None = None
 
 
 # ───────────────────────────────────────────────────────────
@@ -993,12 +1002,14 @@ def get_backtest_defaults() -> ORJSONResponse:
 
     from orderflow_pipeline.backtest_defaults import (
         effective_broker_defaults,
+        effective_execution_policy_defaults,
         resolve_backtest_defaults_path_str,
     )
 
     return ORJSONResponse(
         content={
             "broker": effective_broker_defaults(),
+            "execution": effective_execution_policy_defaults(),
             "resolvedPath": resolve_backtest_defaults_path_str(),
         },
         headers={"Cache-Control": "no-store, must-revalidate"},
@@ -1007,7 +1018,10 @@ def get_backtest_defaults() -> ORJSONResponse:
 
 @app.post("/api/backtest/run")
 def run_backtest(payload: BacktestRunRequest) -> dict:
-    from orderflow_pipeline.backtest_defaults import merged_broker_config_from_request_payload
+    from orderflow_pipeline.backtest_defaults import (
+        merged_broker_config_from_request_payload,
+        merged_execution_policy_from_request_payload,
+    )
     from orderflow_pipeline.backtest_engine import BacktestEngine
     from orderflow_pipeline.db import init_schema
 
@@ -1032,15 +1046,128 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
         engine = BacktestEngine(con)
         dumped = payload.model_dump(exclude_unset=True)
         broker_cfg = merged_broker_config_from_request_payload(dumped)
+        exec_policy = merged_execution_policy_from_request_payload(dumped)
+        try:
+            exec_policy.validate()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if broker_cfg.stop_loss_ticks is not None and broker_cfg.stop_loss_ticks < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="stop_loss_ticks must be >= 0 (use a positive tick distance from entry on the "
+                "adverse side, not a signed offset like some order tickets).",
+            )
+        if broker_cfg.take_profit_ticks is not None and broker_cfg.take_profit_ticks < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="take_profit_ticks must be >= 0 (positive tick distance to the profit target).",
+            )
+
+        if payload.null_hypothesis:
+            if not payload.use_regime_filter:
+                raise HTTPException(
+                    status_code=400,
+                    detail="null_hypothesis requires use_regime_filter=true (regime ON baseline).",
+                )
+            if len(watch_ids) != 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="null_hypothesis requires exactly one watch in scope.",
+                )
+
         summary = engine.run(
             timeframe=tf,
             from_time=from_dt,
             to_time=to_dt,
             config=broker_cfg,
+            execution_policy=exec_policy,
             watch_ids=set(watch_ids) if watch_ids else None,
             use_regime_filter=bool(payload.use_regime_filter),
         )
-        return summary
+
+        if not payload.null_hypothesis:
+            return summary
+
+        from orderflow_pipeline.null_hypothesis import (
+            effective_seed_from_baseline_run_id,
+            run_null_hypothesis_parity_loop,
+        )
+        from orderflow_pipeline.strategies.legacy_fallback_logic import config_for_timeframe
+
+        n_trades = int(summary["tradeCount"])
+        if n_trades == 0:
+            return {
+                **summary,
+                "nullHypothesis": {"skipped": True, "reason": "baseline_zero_trades"},
+            }
+
+        bars = engine._load_bars(tf, from_dt, to_dt)
+        strat_cfg = config_for_timeframe(tf, use_regime_filter=True)
+        wid = watch_ids[0]
+        eff_seed = effective_seed_from_baseline_run_id(
+            summary["runId"], override=payload.null_hypothesis_seed
+        )
+
+        def simulate_trade_count(fires_by_time):
+            closed, _, _ = engine._simulate(
+                bars,
+                fires_by_time,
+                timeframe=tf,
+                config=broker_cfg,
+                policy=exec_policy,
+            )
+            return len(closed)
+
+        try:
+            nh_fires, nh_diag = run_null_hypothesis_parity_loop(
+                bars=bars,
+                cfg=strat_cfg,
+                watch_id=wid,
+                baseline_trade_count=n_trades,
+                baseline_run_id=summary["runId"],
+                effective_seed=eff_seed,
+                cooldown_bars=strat_cfg.cooldown_bars,
+                simulate_trade_count=simulate_trade_count,
+                entry_next_bar_open=bool(exec_policy.entry_next_bar_open),
+                tick_size=float(broker_cfg.tick_size),
+                gap_max_ticks=exec_policy.entry_gap_guard_max_ticks,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        nh_meta_extra = {
+            "is_null_hypothesis": True,
+            "baseline_run_id": summary["runId"],
+            "null_hypothesis_seed": eff_seed,
+            "matched_trade_count": n_trades,
+            "nh_scheduled_fire_count": nh_diag["nh_scheduled_fire_count"],
+            "parity_iterations": nh_diag["parity_iterations"],
+            "eligible_bar_count": nh_diag["eligible_bar_count"],
+            "max_schedulable_fires": nh_diag["max_schedulable_fires"],
+            "parity_variants_per_k": nh_diag["parity_variants_per_k"],
+            "parity_placement_styles": nh_diag["parity_placement_styles"],
+        }
+        nh_summary = engine.run(
+            timeframe=tf,
+            from_time=from_dt,
+            to_time=to_dt,
+            config=broker_cfg,
+            execution_policy=exec_policy,
+            watch_ids={wid},
+            use_regime_filter=True,
+            fires_by_time=nh_fires,
+            signal_source="null_hypothesis",
+            metadata_extra=nh_meta_extra,
+        )
+        return {
+            **summary,
+            "nullHypothesis": {
+                **nh_summary,
+                "nullHypothesisSeed": eff_seed,
+                "skipped": False,
+            },
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:

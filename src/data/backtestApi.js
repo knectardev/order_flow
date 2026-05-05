@@ -15,6 +15,16 @@ async function fetchBacktestDefaults(apiBase) {
   return res.json();
 }
 
+function _ticksInputDisplay(v) {
+  if (v == null) return '';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+  let s = n.toFixed(4);
+  s = s.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.$/, '');
+  return s;
+}
+
 function _commissionInputDisplay(brokerNum) {
   const n = Number(brokerNum);
   if (!Number.isFinite(n)) return '';
@@ -24,17 +34,36 @@ function _commissionInputDisplay(brokerNum) {
   return s;
 }
 
-/** Normalize `config/backtest_defaults.json` (flat BrokerConfig-aligned keys + metadata) → API `{ broker }` shape. */
+const _EXECUTION_POLICY_KEYS = new Set([
+  'ignore_same_side_fire_when_open',
+  'flip_on_opposite_fire',
+  'exit_on_stop_loss',
+  'exit_on_take_profit',
+  'close_at_end_of_window',
+  'entry_next_bar_open',
+  'entry_gap_guard_max_ticks',
+]);
+
+/** Normalize flat `config/backtest_defaults.json` → `{ broker, execution }`. */
 function _brokerPayloadFromRepoDefaultsRaw(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  if (raw.broker && typeof raw.broker === 'object') return raw;
+  if (raw.broker && typeof raw.broker === 'object') {
+    const out = { broker: raw.broker };
+    if (raw.execution && typeof raw.execution === 'object') out.execution = raw.execution;
+    return out;
+  }
   const skip = new Set(['$schema', '_doc', 'version']);
   const b = {};
+  const e = {};
   for (const [k, v] of Object.entries(raw)) {
     if (skip.has(k)) continue;
-    b[k] = v;
+    if (_EXECUTION_POLICY_KEYS.has(k)) e[k] = v;
+    else b[k] = v;
   }
-  return Object.keys(b).length ? { broker: b } : null;
+  const out = {};
+  if (Object.keys(b).length) out.broker = b;
+  if (Object.keys(e).length) out.execution = e;
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -62,13 +91,17 @@ async function _fetchRepoDefaultsPayload() {
 }
 
 async function overlaySameOriginRepoDefaultsOverApi(apiPayload) {
-  if (!apiPayload?.broker || typeof apiPayload.broker !== 'object') return;
   if (!_isStandardRepoBacktestDefaultsPath(apiPayload.resolvedPath)) return;
   const repo = await _fetchRepoDefaultsPayload();
-  if (!repo?.broker || typeof repo.broker !== 'object') return;
-  applyBacktestBrokerDefaultsToDomAndState({
-    broker: { ...apiPayload.broker, ...repo.broker },
-  });
+  if (!repo) return;
+  const hasBroker = repo.broker && typeof repo.broker === 'object';
+  const hasExec = repo.execution && typeof repo.execution === 'object';
+  if (!hasBroker && !hasExec) return;
+  const merged = {
+    ...(hasBroker ? { broker: { ...(apiPayload.broker || {}), ...repo.broker } } : {}),
+    ...(hasExec ? { execution: { ...(apiPayload.execution || {}), ...repo.execution } } : {}),
+  };
+  applyBacktestBrokerDefaultsToDomAndState(merged);
 }
 
 async function fetchAndApplyRepoBacktestDefaults() {
@@ -78,15 +111,47 @@ async function fetchAndApplyRepoBacktestDefaults() {
   return true;
 }
 
-/** Persist GET /api/backtest/defaults `broker` and fill Performance inputs (API mode bootstrap). */
+function applyExecutionPolicyDefaultsToDom(ex) {
+  if (!ex || typeof ex !== 'object') return;
+  const map = [
+    ['flip_on_opposite_fire', 'btExecFlipOpposite', 'flipOnOppositeFire'],
+    ['exit_on_stop_loss', 'btExecStopLoss', 'exitOnStopLoss'],
+    ['exit_on_take_profit', 'btExecTakeProfit', 'exitOnTakeProfit'],
+    ['close_at_end_of_window', 'btExecEndWindow', 'closeAtEndWindow'],
+    ['entry_next_bar_open', 'btExecNextBarOpen', 'entryNextBarOpen'],
+  ];
+  for (const [jsonKey, domId, stateKey] of map) {
+    if (typeof ex[jsonKey] !== 'boolean') continue;
+    const el = document.getElementById(domId);
+    if (el != null) el.checked = ex[jsonKey];
+    state.backtest.runParams[stateKey] = ex[jsonKey];
+  }
+  const gapEl = document.getElementById('btEntryGapGuardTicks');
+  const g = ex.entry_gap_guard_max_ticks;
+  if (gapEl != null) {
+    if (g != null && Number.isFinite(Number(g)) && Number(g) >= 0) {
+      gapEl.value = _ticksInputDisplay(g);
+      state.backtest.runParams.entryGapGuardMaxTicks = Number(g);
+    } else {
+      gapEl.value = '';
+      state.backtest.runParams.entryGapGuardMaxTicks = null;
+    }
+  }
+}
+
+/** Persist GET /api/backtest/defaults `broker` / `execution` and fill Performance inputs. */
 function applyBacktestBrokerDefaultsToDomAndState(payload) {
   const b = payload?.broker;
-  if (!b || typeof b !== 'object') return;
-  state.backtest.brokerDefaultsFromApi = b;
-  const cap = document.getElementById('btInitialCapital');
+  const ex = payload?.execution;
+  if ((!b || typeof b !== 'object') && (!ex || typeof ex !== 'object')) return;
+  if (b && typeof b === 'object') {
+    state.backtest.brokerDefaultsFromApi = b;
+    const cap = document.getElementById('btInitialCapital');
   const comm = document.getElementById('btCommission');
   const slip = document.getElementById('btSlippage');
   const qty = document.getElementById('btQty');
+  const slTicksEl = document.getElementById('btStopLossTicks');
+  const tpTicksEl = document.getElementById('btTakeProfitTicks');
   if (cap != null && Number.isFinite(Number(b.initial_capital))) {
     cap.value = String(Number(b.initial_capital));
     state.backtest.runParams.initialCapital = Number(b.initial_capital);
@@ -102,6 +167,31 @@ function applyBacktestBrokerDefaultsToDomAndState(payload) {
   if (qty != null && Number.isFinite(Number(b.qty)) && Number(b.qty) >= 1) {
     qty.value = String(Math.floor(Number(b.qty)));
     state.backtest.runParams.qty = Math.floor(Number(b.qty));
+  }
+  if (slTicksEl != null) {
+    const sl = b.stop_loss_ticks;
+    if (sl != null && Number.isFinite(Number(sl)) && Number(sl) >= 0) {
+      slTicksEl.value = _ticksInputDisplay(sl);
+      state.backtest.runParams.stopLossTicks = Number(sl);
+    } else {
+      slTicksEl.value = '';
+      state.backtest.runParams.stopLossTicks = null;
+    }
+  }
+  if (tpTicksEl != null) {
+    const tp = b.take_profit_ticks;
+    if (tp != null && Number.isFinite(Number(tp)) && Number(tp) >= 0) {
+      tpTicksEl.value = _ticksInputDisplay(tp);
+      state.backtest.runParams.takeProfitTicks = Number(tp);
+    } else {
+      tpTicksEl.value = '';
+      state.backtest.runParams.takeProfitTicks = null;
+    }
+  }
+  }
+  if (ex && typeof ex === 'object') {
+    state.backtest.executionDefaultsFromApi = ex;
+    applyExecutionPolicyDefaultsToDom(ex);
   }
 }
 
@@ -124,6 +214,12 @@ function _scopeToWatchIds(scope) {
   return [scope];
 }
 
+/** True when Performance scope is exactly one canonical watch (not “all” / unset). */
+function backtestScopeIsSingleWatch(scope) {
+  const ids = _scopeToWatchIds(scope);
+  return Array.isArray(ids) && ids.length === 1;
+}
+
 async function runBacktest({
   from,
   to,
@@ -133,10 +229,24 @@ async function runBacktest({
   commissionPerSide,
   slippageTicks,
   qty,
+  stopLossTicks,
+  takeProfitTicks,
+  flipOnOppositeFire,
+  exitOnStopLoss,
+  exitOnTakeProfit,
+  closeAtEndWindow,
+  entryNextBarOpen = false,
+  entryGapGuardMaxTicks = undefined,
   tickSize,
   pointValue,
   useRegimeFilter = true,
+  nullHypothesis = false,
+  nullHypothesisSeed = undefined,
 }) {
+  const nh = !!nullHypothesis;
+  if (nh && !backtestScopeIsSingleWatch(scope)) {
+    throw new Error('Null hypothesis requires a single-watch scope (pick one watch, not “All canonical watches”).');
+  }
   const watchIds = _scopeToWatchIds(scope);
   const ts = Number(tickSize);
   const pv = Number(pointValue);
@@ -151,8 +261,49 @@ async function runBacktest({
     watch_ids: watchIds,
     use_regime_filter: !!useRegimeFilter,
   };
+  if (nh) {
+    payload.null_hypothesis = true;
+    const seed = nullHypothesisSeed == null ? null : Number(nullHypothesisSeed);
+    if (seed != null && Number.isFinite(seed)) payload.null_hypothesis_seed = Math.trunc(seed);
+  }
   if (Number.isFinite(ts) && ts > 0) payload.tick_size = ts;
   if (Number.isFinite(pv) && pv > 0) payload.point_value = pv;
+  if (stopLossTicks !== undefined && stopLossTicks !== null && Number.isFinite(Number(stopLossTicks))) {
+    const sl = Number(stopLossTicks);
+    if (sl < 0) {
+      throw new Error(
+        'stop_loss_ticks must be >= 0 (positive adverse distance in ticks, not a signed ticket offset like -25).',
+      );
+    }
+    payload.stop_loss_ticks = sl;
+  }
+  if (takeProfitTicks !== undefined && takeProfitTicks !== null && Number.isFinite(Number(takeProfitTicks))) {
+    const tp = Number(takeProfitTicks);
+    if (tp < 0) {
+      throw new Error('take_profit_ticks must be >= 0.');
+    }
+    payload.take_profit_ticks = tp;
+  }
+  const flip = !!flipOnOppositeFire;
+  const stopOk = !!exitOnStopLoss;
+  const tpOk = !!exitOnTakeProfit;
+  const endOk = !!closeAtEndWindow;
+  if (!flip && !stopOk && !tpOk && !endOk) {
+    throw new Error(
+      'Execution policy deadlock: enable flip on opposite signal, honor stop/target, or close at end of window.'
+    );
+  }
+  payload.flip_on_opposite_fire = flip;
+  payload.exit_on_stop_loss = stopOk;
+  payload.exit_on_take_profit = tpOk;
+  payload.close_at_end_of_window = endOk;
+  payload.entry_next_bar_open = !!entryNextBarOpen;
+  if (entryNextBarOpen) {
+    const g = entryGapGuardMaxTicks;
+    if (g !== undefined && g !== null && Number.isFinite(Number(g)) && Number(g) >= 0) {
+      payload.entry_gap_guard_max_ticks = Number(g);
+    }
+  }
   const res = await fetch(`${_apiBase()}/api/backtest/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -207,6 +358,7 @@ async function fetchBacktestSkippedFires(runId = null) {
 
 export {
   applyBacktestBrokerDefaultsToDomAndState,
+  applyExecutionPolicyDefaultsToDom,
   fetchAndApplyRepoBacktestDefaults,
   fetchBacktestDefaults,
   pullBacktestBrokerDefaultsIntoUi,
@@ -215,4 +367,5 @@ export {
   fetchBacktestEquity,
   fetchBacktestTrades,
   fetchBacktestSkippedFires,
+  backtestScopeIsSingleWatch,
 };

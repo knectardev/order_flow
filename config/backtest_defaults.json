@@ -9,5 +9,12 @@
   "tick_size": 0.25,
   "point_value": 50,
   "stop_loss_ticks": null,
-  "take_profit_ticks": null
+  "take_profit_ticks": null,
+  "ignore_same_side_fire_when_open": true,
+  "flip_on_opposite_fire": true,
+  "exit_on_stop_loss": true,
+  "exit_on_take_profit": true,
+  "close_at_end_of_window": true,
+  "entry_next_bar_open": false,
+  "entry_gap_guard_max_ticks": null
 }

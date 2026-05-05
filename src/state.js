@@ -130,16 +130,31 @@ export const state = {
   backtest: {
     /** Last GET /api/backtest/defaults `broker` blob (tick_size/point_value for runs). */
     brokerDefaultsFromApi: null,
+    /** Last merged execution-policy blob from defaults API / repo overlay. */
+    executionDefaultsFromApi: null,
     runParams: {
       scope: '',
       /** When true, runs a second backtest with regime gates relaxed and shows OFF equity/markers. */
       compareRegimeOff: false,
       showMarkersOn: true,
       showMarkersOff: false,
+      showBuyHold: true,
+      nullHypothesis: false,
       initialCapital: 50000,
       commissionPerSide: 2,
       slippageTicks: 1,
       qty: 1,
+      /** Optional run-wide SL/TP (ticks); null = leave blank / omit from POST so defaults merge applies. */
+      stopLossTicks: null,
+      takeProfitTicks: null,
+      flipOnOppositeFire: true,
+      exitOnStopLoss: true,
+      exitOnTakeProfit: true,
+      closeAtEndWindow: true,
+      /** Next-bar open integrity mode (POST `entry_next_bar_open`). */
+      entryNextBarOpen: false,
+      /** Optional max gap in ticks when next-bar mode is on (`entry_gap_guard_max_ticks`); blank → omit. */
+      entryGapGuardMaxTicks: null,
     },
     /** Scope string for the metrics row; updated only after a successful Run Backtest. */
     lastRunScope: null,
@@ -151,6 +166,8 @@ export const state = {
       filtered: { runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] } },
       unfiltered: { runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] } },
     },
+    /** Null-hypothesis run (regime ON baseline only); null when not requested or cleared. */
+    nullHypothesis: null,
     loading: false,
     error: null,
   },
