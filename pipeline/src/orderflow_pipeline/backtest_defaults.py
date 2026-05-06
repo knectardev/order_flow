@@ -36,6 +36,15 @@ BROKER_FIELD_KEYS = (
     "point_value",
     "stop_loss_ticks",
     "take_profit_ticks",
+    "regime_exit_scale_enabled",
+    "regime_exit_scale_mode",
+    "regime_sl_mult_min",
+    "regime_sl_mult_max",
+    "regime_tp_mult_min",
+    "regime_tp_mult_max",
+    "regime_sl_floor_ticks",
+    "regime_v_rank_sl_mults",
+    "regime_v_rank_tp_mults",
 )
 EXECUTION_POLICY_BOOL_KEYS = (
     "ignore_same_side_fire_when_open",
@@ -80,6 +89,17 @@ def resolve_backtest_defaults_path_str() -> str | None:
     return str(p.resolve()) if p is not None else None
 
 
+def _v_rank_mults_tuple(val: Any, fallback: tuple[float, float, float, float, float]) -> tuple[
+    float, float, float, float, float
+]:
+    if isinstance(val, (list, tuple)) and len(val) == 5:
+        try:
+            return tuple(float(x) for x in val)
+        except (TypeError, ValueError):
+            return fallback
+    return fallback
+
+
 def _hardcoded_fallback_broker_dict() -> dict[str, Any]:
     bc = BrokerConfig()
     return {
@@ -91,6 +111,15 @@ def _hardcoded_fallback_broker_dict() -> dict[str, Any]:
         "point_value": bc.point_value,
         "stop_loss_ticks": bc.stop_loss_ticks,
         "take_profit_ticks": bc.take_profit_ticks,
+        "regime_exit_scale_enabled": bc.regime_exit_scale_enabled,
+        "regime_exit_scale_mode": bc.regime_exit_scale_mode,
+        "regime_sl_mult_min": bc.regime_sl_mult_min,
+        "regime_sl_mult_max": bc.regime_sl_mult_max,
+        "regime_tp_mult_min": bc.regime_tp_mult_min,
+        "regime_tp_mult_max": bc.regime_tp_mult_max,
+        "regime_sl_floor_ticks": bc.regime_sl_floor_ticks,
+        "regime_v_rank_sl_mults": list(bc.regime_v_rank_sl_mults),
+        "regime_v_rank_tp_mults": list(bc.regime_v_rank_tp_mults),
     }
 
 
@@ -160,6 +189,42 @@ def validate_backtest_defaults_document(doc: dict[str, Any]) -> list[str]:
             or isinstance(v, bool)
         ):
             errs.append(f"{fk} must be number or null")
+    for fk in (
+        "regime_sl_mult_min",
+        "regime_sl_mult_max",
+        "regime_tp_mult_min",
+        "regime_tp_mult_max",
+    ):
+        v = doc.get(fk)
+        if v is not None and (
+            not isinstance(v, (int, float))
+            or isinstance(v, bool)
+        ):
+            errs.append(f"{fk} must be number or null")
+    rsf = doc.get("regime_sl_floor_ticks")
+    if rsf is not None and (
+        not isinstance(rsf, (int, float))
+        or isinstance(rsf, bool)
+    ):
+        errs.append("regime_sl_floor_ticks must be number or null")
+    rem = doc.get("regime_exit_scale_mode")
+    if rem is not None:
+        rm = str(rem).strip().lower()
+        if rm not in ("range_pct", "v_rank"):
+            errs.append("regime_exit_scale_mode must be 'range_pct', 'v_rank', or null")
+    for fk in ("regime_v_rank_sl_mults", "regime_v_rank_tp_mults"):
+        v = doc.get(fk)
+        if v is None:
+            continue
+        if not isinstance(v, list) or len(v) != 5:
+            errs.append(f"{fk} must be list of 5 numbers when set")
+            continue
+        for i, x in enumerate(v):
+            if not isinstance(x, (int, float)) or isinstance(x, bool):
+                errs.append(f"{fk}[{i}] must be number")
+    bool_x = doc.get("regime_exit_scale_enabled")
+    if bool_x is not None and not isinstance(bool_x, bool):
+        errs.append("regime_exit_scale_enabled must be boolean or null")
     for ek in EXECUTION_POLICY_BOOL_KEYS:
         v = doc.get(ek)
         if v is not None and not isinstance(v, bool):
@@ -176,6 +241,7 @@ def validate_backtest_defaults_document(doc: dict[str, Any]) -> list[str]:
 
 def _merge_doc_into_base(doc: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
+    bc = BrokerConfig()
     for k in BROKER_FIELD_KEYS:
         if k not in doc:
             continue
@@ -188,6 +254,29 @@ def _merge_doc_into_base(doc: dict[str, Any], base: dict[str, Any]) -> dict[str,
                 out[k] = None
             else:
                 out[k] = float(val)
+            continue
+        if k == "regime_exit_scale_enabled":
+            out[k] = bool(val) if val is not None else base[k]
+            continue
+        if k == "regime_exit_scale_mode":
+            out[k] = str(val).strip().lower() if val is not None else base[k]
+            continue
+        if k == "regime_sl_floor_ticks":
+            out[k] = float(val) if val is not None else None
+            continue
+        if k == "regime_v_rank_sl_mults":
+            out[k] = list(_v_rank_mults_tuple(val, bc.regime_v_rank_sl_mults))
+            continue
+        if k == "regime_v_rank_tp_mults":
+            out[k] = list(_v_rank_mults_tuple(val, bc.regime_v_rank_tp_mults))
+            continue
+        if k in (
+            "regime_sl_mult_min",
+            "regime_sl_mult_max",
+            "regime_tp_mult_min",
+            "regime_tp_mult_max",
+        ):
+            out[k] = float(val) if val is not None else base[k]
             continue
         if val is None:
             continue
@@ -305,6 +394,7 @@ def merged_broker_config_from_request_payload(request_dump: dict[str, Any]) -> B
     ):
         if merged.get(k) is None:
             merged[k] = base_eff[k]
+    fb = BrokerConfig()
     return BrokerConfig(
         initial_capital=float(merged["initial_capital"]),
         qty=int(merged["qty"]),
@@ -314,6 +404,23 @@ def merged_broker_config_from_request_payload(request_dump: dict[str, Any]) -> B
         point_value=float(merged["point_value"]),
         stop_loss_ticks=_float_or_none(merged.get("stop_loss_ticks")),
         take_profit_ticks=_float_or_none(merged.get("take_profit_ticks")),
+        regime_exit_scale_enabled=bool(
+            merged.get("regime_exit_scale_enabled", fb.regime_exit_scale_enabled)
+        ),
+        regime_exit_scale_mode=str(
+            merged.get("regime_exit_scale_mode") or fb.regime_exit_scale_mode
+        ).strip().lower(),
+        regime_sl_mult_min=float(merged.get("regime_sl_mult_min", fb.regime_sl_mult_min)),
+        regime_sl_mult_max=float(merged.get("regime_sl_mult_max", fb.regime_sl_mult_max)),
+        regime_tp_mult_min=float(merged.get("regime_tp_mult_min", fb.regime_tp_mult_min)),
+        regime_tp_mult_max=float(merged.get("regime_tp_mult_max", fb.regime_tp_mult_max)),
+        regime_sl_floor_ticks=_float_or_none(merged.get("regime_sl_floor_ticks")),
+        regime_v_rank_sl_mults=_v_rank_mults_tuple(
+            merged.get("regime_v_rank_sl_mults"), fb.regime_v_rank_sl_mults
+        ),
+        regime_v_rank_tp_mults=_v_rank_mults_tuple(
+            merged.get("regime_v_rank_tp_mults"), fb.regime_v_rank_tp_mults
+        ),
     )
 
 

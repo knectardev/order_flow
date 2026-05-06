@@ -1635,6 +1635,11 @@
     height: 1px;
     border-top: 1px dashed rgba(220, 200, 90, 0.85);
   }
+  .profile-legend .swatch.or945 {
+    background: transparent;
+    height: 1px;
+    border-top: 1px dashed rgba(255, 145, 85, 0.9);
+  }
   .profile-legend strong { color: var(--text-2); font-weight: 500; }
 
   /* Signal inventory (full-load histogram, API replay) */

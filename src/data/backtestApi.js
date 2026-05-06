@@ -34,6 +34,39 @@ function _commissionInputDisplay(brokerNum) {
   return s;
 }
 
+/** Same semantics as main.js `_optionalTicksFromInput` — blank → undefined (omit from POST). */
+function _optionalTicksFromBrokerInput(el) {
+  if (!el) return undefined;
+  const s = String(el.value ?? '').trim();
+  if (s === '') return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/**
+ * Disable regime scaling when run-wide SL/TP inputs are set; sync mode select enabled state.
+ * Exported for main.js after SL/TP input events.
+ */
+function syncRegimeExitScaleControlsMutualExclusion() {
+  const slEl = document.getElementById('btStopLossTicks');
+  const tpEl = document.getElementById('btTakeProfitTicks');
+  const regEn = document.getElementById('btRegimeExitScale');
+  const regMode = document.getElementById('btRegimeExitScaleMode');
+  if (!regEn || !regMode) return;
+  const blocked =
+    _optionalTicksFromBrokerInput(slEl) !== undefined ||
+    _optionalTicksFromBrokerInput(tpEl) !== undefined;
+  regEn.disabled = blocked;
+  regMode.disabled = blocked || !regEn.checked;
+  regEn.title = blocked
+    ? 'Run-wide Stop loss / Take profit ticks disable regime scaling (server contract). Clear those fields to enable.'
+    : 'Scale strategy template SL/TP using range_pct / v_rank on the entry bar.';
+  if (blocked && regEn.checked) {
+    regEn.checked = false;
+    state.backtest.runParams.regimeExitScaleEnabled = false;
+  }
+}
+
 const _EXECUTION_POLICY_KEYS = new Set([
   'ignore_same_side_fire_when_open',
   'flip_on_opposite_fire',
@@ -188,6 +221,20 @@ function applyBacktestBrokerDefaultsToDomAndState(payload) {
       state.backtest.runParams.takeProfitTicks = null;
     }
   }
+  const regEn = document.getElementById('btRegimeExitScale');
+  const regMode = document.getElementById('btRegimeExitScaleMode');
+  if (regEn != null && typeof b.regime_exit_scale_enabled === 'boolean') {
+    regEn.checked = b.regime_exit_scale_enabled;
+    state.backtest.runParams.regimeExitScaleEnabled = b.regime_exit_scale_enabled;
+  }
+  if (regMode != null && b.regime_exit_scale_mode != null) {
+    const m = String(b.regime_exit_scale_mode).trim().toLowerCase();
+    if (m === 'range_pct' || m === 'v_rank') {
+      regMode.value = m;
+      state.backtest.runParams.regimeExitScaleMode = m;
+    }
+  }
+  syncRegimeExitScaleControlsMutualExclusion();
   }
   if (ex && typeof ex === 'object') {
     state.backtest.executionDefaultsFromApi = ex;
@@ -242,6 +289,8 @@ async function runBacktest({
   useRegimeFilter = true,
   nullHypothesis = false,
   nullHypothesisSeed = undefined,
+  regimeExitScaleEnabled = undefined,
+  regimeExitScaleMode = undefined,
 }) {
   const nh = !!nullHypothesis;
   if (nh && !backtestScopeIsSingleWatch(scope)) {
@@ -304,6 +353,11 @@ async function runBacktest({
       payload.entry_gap_guard_max_ticks = Number(g);
     }
   }
+  if (regimeExitScaleEnabled === true) {
+    payload.regime_exit_scale_enabled = true;
+    const mode = String(regimeExitScaleMode || 'range_pct').trim().toLowerCase();
+    payload.regime_exit_scale_mode = mode === 'v_rank' ? 'v_rank' : 'range_pct';
+  }
   const res = await fetch(`${_apiBase()}/api/backtest/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -362,6 +416,7 @@ export {
   fetchAndApplyRepoBacktestDefaults,
   fetchBacktestDefaults,
   pullBacktestBrokerDefaultsIntoUi,
+  syncRegimeExitScaleControlsMutualExclusion,
   runBacktest,
   fetchBacktestStats,
   fetchBacktestEquity,

@@ -40,6 +40,14 @@ The loader **re-reads the JSON file from disk on every** merge path (`GET /api/b
 | `point_value` | number > 0 | $ per price point per contract (`gross_pnl`) |
 | `stop_loss_ticks` | number or `null` | Run-wide SL ticks; `null` → strategy resolver |
 | `take_profit_ticks` | number or `null` | Run-wide TP ticks; `null` → strategy resolver |
+| `regime_exit_scale_enabled` | boolean | When **true** and both broker tick fields above are **`null`**, scale strategy template SL/TP per trade from the entry bar (`pipeline/src/orderflow_pipeline/strategies/regime_exit_scale.py`). |
+| `regime_exit_scale_mode` | `"range_pct"` or `"v_rank"` | Volatility signal for scaling (defaults **`range_pct`**). |
+| `regime_sl_mult_min` / `regime_sl_mult_max` | numbers | In **`range_pct`** mode, SL multiplier lerps between these as **`range_pct`** runs **0→1**. |
+| `regime_tp_mult_min` / `regime_tp_mult_max` | numbers | Same for TP. |
+| `regime_sl_floor_ticks` | number or `null` | Optional minimum SL ticks after scaling. |
+| `regime_v_rank_sl_mults` / `regime_v_rank_tp_mults` | array of **5** numbers | Per-rank (1…5) multipliers for **`v_rank`** mode or **`range_pct`** fallback when continuous inputs are absent. |
+
+The dashboard Performance panel (`orderflow_dashboard.html`) exposes **`regime_exit_scale_enabled`** as **Scale template SL/TP by regime (entry bar)** and **`regime_exit_scale_mode`** as the **Regime mode** select when the API/build includes the controls; advanced multiplier JSON remains API/file-only unless extended later.
 
 ### Execution policy (`ExecutionPolicy`)
 

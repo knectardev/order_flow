@@ -17,6 +17,25 @@
     "point_value": { "type": "number", "exclusiveMinimum": 0 },
     "stop_loss_ticks": { "type": ["number", "null"] },
     "take_profit_ticks": { "type": ["number", "null"] },
+    "regime_exit_scale_enabled": { "type": "boolean" },
+    "regime_exit_scale_mode": { "type": "string", "enum": ["range_pct", "v_rank"] },
+    "regime_sl_mult_min": { "type": "number" },
+    "regime_sl_mult_max": { "type": "number" },
+    "regime_tp_mult_min": { "type": "number" },
+    "regime_tp_mult_max": { "type": "number" },
+    "regime_sl_floor_ticks": { "type": ["number", "null"], "minimum": 0 },
+    "regime_v_rank_sl_mults": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "type": "number" }
+    },
+    "regime_v_rank_tp_mults": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "type": "number" }
+    },
     "ignore_same_side_fire_when_open": { "type": "boolean" },
     "flip_on_opposite_fire": { "type": "boolean" },
     "exit_on_stop_loss": { "type": "boolean" },

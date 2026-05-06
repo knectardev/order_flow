@@ -1,3 +1,6 @@
+
+Your Stop Loss (SL) and Take Profit (TP) values should be dynamic, not static.
+
 Test / bracket by various time sessions during day. 
 Consider off-hours. 
 

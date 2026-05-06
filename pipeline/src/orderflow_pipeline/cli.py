@@ -391,6 +391,7 @@ def _write_session_to_db(
         bar_rows,
         watch_ids={"breakout", "fade", "absorptionWall", "valueEdgeReject"},
         config=config_for_timeframe(timeframe, use_regime_filter=True),
+        timeframe=timeframe,
     )
     for bt, batch in sorted(derived.items(), key=lambda kv: kv[0]):
         for fire in batch:
@@ -651,6 +652,7 @@ def cmd_recompute_fires(args: argparse.Namespace) -> int:
             bar_rows,
             watch_ids=watch_ids,
             config=config_for_timeframe(tf, use_regime_filter=bool(args.use_regime_filter)),
+            timeframe=tf,
         )
         fire_rows = []
         for bt, batch in sorted(derived.items(), key=lambda kv: kv[0]):

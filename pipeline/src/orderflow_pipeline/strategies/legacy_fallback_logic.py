@@ -10,6 +10,7 @@ from .absorption_wall import try_emit_absorption_wall
 from .breakout import try_emit_breakout
 from .config import LegacyFallbackConfig, config_for_timeframe
 from .fade import try_emit_fade
+from .opening_range_breakout import try_emit_opening_range_breakout
 from .value_edge_reject import try_emit_value_edge_reject
 
 __all__ = [
@@ -24,9 +25,11 @@ def derive_fires_from_bars(
     *,
     watch_ids: set[str] | None = None,
     config: LegacyFallbackConfig | None = None,
+    timeframe: str = "1m",
 ) -> dict[datetime, list[dict]]:
     cfg = config or LegacyFallbackConfig()
-    if len(bars) < cfg.min_bars:
+    tf = (timeframe or "1m").strip()
+    if not bars:
         return {}
 
     out: dict[datetime, list[dict]] = {}
@@ -57,6 +60,21 @@ def derive_fires_from_bars(
                 "diagnostics": diagnostics,
             }
         )
+
+    orb_state: dict = {}
+    for i in range(len(bars)):
+        try_emit_opening_range_breakout(
+            i=i,
+            timeframe=tf,
+            watch_ids=watch_ids,
+            bars=bars,
+            emit=emit,
+            orb_state=orb_state,
+            use_regime_filter=cfg.use_regime_filter,
+        )
+
+    if len(bars) < cfg.min_bars:
+        return out
 
     for i in range(cfg.warmup_start, len(bars)):
         b = bars[i]

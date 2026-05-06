@@ -14,6 +14,9 @@ import duckdb
 from . import db as db_module
 from .strategies.exit_ticks import resolve_exit_ticks
 from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
+from .strategies.regime_exit_scale import RegimeExitScaleParams, apply_regime_exit_scale
+
+RUNTIME_DERIVED_WATCH_IDS = frozenset({"orb"})
 
 _BUY_HOLD_CACHE_MAX = 24
 _BUY_HOLD_CACHE: "OrderedDict[tuple, list[dict]]" = OrderedDict()
@@ -121,6 +124,42 @@ class BrokerConfig:
     # Run-wide SL/TP in ticks; if either is set, applies to every new position for the run.
     stop_loss_ticks: float | None = None
     take_profit_ticks: float | None = None
+    # Optional regime-based scaling of strategy template ticks (ignored when broker SL/TP override set).
+    regime_exit_scale_enabled: bool = False
+    regime_exit_scale_mode: str = "range_pct"  # "range_pct" | "v_rank"
+    regime_sl_mult_min: float = 0.75
+    regime_sl_mult_max: float = 1.25
+    regime_tp_mult_min: float = 0.75
+    regime_tp_mult_max: float = 1.25
+    regime_sl_floor_ticks: float | None = None
+    regime_v_rank_sl_mults: tuple[float, float, float, float, float] = (
+        0.85,
+        0.92,
+        1.0,
+        1.08,
+        1.15,
+    )
+    regime_v_rank_tp_mults: tuple[float, float, float, float, float] = (
+        0.85,
+        0.92,
+        1.0,
+        1.08,
+        1.15,
+    )
+
+
+def regime_exit_params_from_config(config: BrokerConfig) -> RegimeExitScaleParams:
+    return RegimeExitScaleParams(
+        regime_exit_scale_enabled=config.regime_exit_scale_enabled,
+        regime_exit_scale_mode=config.regime_exit_scale_mode,
+        regime_sl_mult_min=config.regime_sl_mult_min,
+        regime_sl_mult_max=config.regime_sl_mult_max,
+        regime_tp_mult_min=config.regime_tp_mult_min,
+        regime_tp_mult_max=config.regime_tp_mult_max,
+        regime_sl_floor_ticks=config.regime_sl_floor_ticks,
+        regime_v_rank_sl_mults=config.regime_v_rank_sl_mults,
+        regime_v_rank_tp_mults=config.regime_v_rank_tp_mults,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +219,8 @@ class Position:
     entry_index: int
     stop_price: float | None = None
     take_profit_price: float | None = None
+    stop_ticks_effective: float | None = None
+    take_profit_ticks_effective: float | None = None
 
 
 class SimulatedBroker:
@@ -244,6 +285,8 @@ class SimulatedBroker:
             entry_index=bar_idx,
             stop_price=stop_px,
             take_profit_price=tp_px,
+            stop_ticks_effective=stop_ticks,
+            take_profit_ticks_effective=take_profit_ticks,
         )
         self._mark(fill)
 
@@ -279,6 +322,10 @@ class SimulatedBroker:
         self.realized_pnl += net
         self.unrealized_pnl = 0.0
         self._trade_id += 1
+        eff_sl = pos.stop_ticks_effective
+        slip_ratio = None
+        if eff_sl is not None and eff_sl > 0:
+            slip_ratio = round(float(self.config.slippage_ticks) / float(eff_sl), 6)
         self.trade_log.append(
             {
                 "trade_id": self._trade_id,
@@ -294,6 +341,9 @@ class SimulatedBroker:
                 "net_pnl": round(net, 6),
                 "bars_held": max(1, bar_idx - pos.entry_index),
                 "exit_reason": reason,
+                "stop_loss_ticks_effective": eff_sl,
+                "take_profit_ticks_effective": pos.take_profit_ticks_effective,
+                "slippage_to_stop_ratio": slip_ratio,
             }
         )
         self.position = None
@@ -322,7 +372,8 @@ class BacktestEngine:
     def _load_bars(self, timeframe: str, from_time: datetime, to_time: datetime) -> list[dict]:
         cur = self.con.execute(
             """
-            SELECT bar_time, open, high, low, close, volume
+            SELECT bar_time, open, high, low, close, volume,
+                   session_date, v_rank, d_rank, range_pct
             FROM bars
             WHERE timeframe = ? AND bar_time BETWEEN ? AND ?
             ORDER BY bar_time
@@ -375,13 +426,14 @@ class BacktestEngine:
             bars,
             watch_ids=watch_ids,
             config=config_for_timeframe(timeframe, use_regime_filter=use_regime_filter),
+            timeframe=timeframe,
         )
 
     @staticmethod
     def _signal_side(watch_id: str, direction: str | None) -> int | None:
         if direction not in {"up", "down"}:
             return None
-        if watch_id == "breakout":
+        if watch_id in {"breakout", "orb"}:
             return 1 if direction == "up" else -1
         if watch_id in {"fade", "valueEdgeReject", "absorptionWall"}:
             return -1 if direction == "up" else 1
@@ -493,6 +545,21 @@ class BacktestEngine:
         broker = SimulatedBroker(config, execution_policy=policy)
         skipped_fires: list[dict] = []
         pending: list[dict[str, Any]] = []
+        regime_params = regime_exit_params_from_config(config)
+
+        def finalize_exit_ticks(
+            tpl_sl: float | None,
+            tpl_tp: float | None,
+            entry_bar_idx: int,
+        ) -> tuple[float | None, float | None]:
+            return apply_regime_exit_scale(
+                tpl_sl,
+                tpl_tp,
+                bars[entry_bar_idx],
+                regime_params,
+                broker_stop_loss_ticks=config.stop_loss_ticks,
+                broker_take_profit_ticks=config.take_profit_ticks,
+            )
 
         def log_skip(fire: dict, reason_code: str, detail: dict | None = None) -> None:
             pos = broker.position
@@ -543,16 +610,30 @@ class BacktestEngine:
                 entry_bar = bars[entry_bar_idx]
                 entry_ts = entry_bar["bar_time"]
                 px_open = _safe_float(entry_bar.get("open"))
+                eff_sl, eff_tp = finalize_exit_ticks(
+                    pend["tpl_sl"], pend["tpl_tp"], entry_bar_idx
+                )
                 broker.open_position(
                     entry_ts,
                     px_open,
                     int(pend["side"]),
                     str(pend["watch_id"]),
                     entry_bar_idx,
-                    stop_ticks=pend["sl_ticks"],
-                    take_profit_ticks=pend["tp_ticks"],
+                    stop_ticks=eff_sl,
+                    take_profit_ticks=eff_tp,
                 )
             pending = next_pending
+
+        def _orb_skip_intrabar_sl_tp_this_bar(bar_idx: int) -> bool:
+            """ORB fills at the breakout extreme; same-bar OHLC would tag tight stops.
+            Skip mechanical SL/TP on the entry bar only (flip still uses fire prices).
+            """
+            pos = broker.position
+            return (
+                pos is not None
+                and str(pos.watch_id) == "orb"
+                and int(pos.entry_index) == int(bar_idx)
+            )
 
         def schedule_next_bar_open(
             fire: dict,
@@ -574,8 +655,8 @@ class BacktestEngine:
                     "signal_idx": signal_idx,
                     "side": side,
                     "watch_id": fire["watch_id"],
-                    "sl_ticks": sl_ticks,
-                    "tp_ticks": tp_ticks,
+                    "tpl_sl": sl_ticks,
+                    "tpl_tp": tp_ticks,
                     "fire": fire,
                 }
             )
@@ -586,7 +667,8 @@ class BacktestEngine:
             ts = bar["bar_time"]
             high = float(bar["high"])
             low = float(bar["low"])
-            broker.try_intrabar_exit(ts, idx, high, low)
+            if not _orb_skip_intrabar_sl_tp_this_bar(idx):
+                broker.try_intrabar_exit(ts, idx, high, low)
 
             fire_batch = fires_by_time.get(ts, [])
             for fire in fire_batch:
@@ -595,7 +677,7 @@ class BacktestEngine:
                     log_skip(fire, "invalid_direction")
                     continue
                 px_fire = _safe_float(fire.get("price"), _safe_float(bar.get("close")))
-                sl_ticks, tp_ticks = resolve_exit_ticks(
+                tpl_sl, tpl_tp = resolve_exit_ticks(
                     timeframe,
                     fire["watch_id"],
                     broker_stop_loss_ticks=config.stop_loss_ticks,
@@ -603,16 +685,17 @@ class BacktestEngine:
                 )
                 if not broker.has_open_position():
                     if policy.entry_next_bar_open:
-                        schedule_next_bar_open(fire, idx, side, sl_ticks, tp_ticks)
+                        schedule_next_bar_open(fire, idx, side, tpl_sl, tpl_tp)
                     else:
+                        eff_sl, eff_tp = finalize_exit_ticks(tpl_sl, tpl_tp, idx)
                         broker.open_position(
                             ts,
                             px_fire,
                             side,
                             fire["watch_id"],
                             idx,
-                            stop_ticks=sl_ticks,
-                            take_profit_ticks=tp_ticks,
+                            stop_ticks=eff_sl,
+                            take_profit_ticks=eff_tp,
                         )
                     continue
                 if broker.position and broker.position.side != side:
@@ -625,21 +708,23 @@ class BacktestEngine:
                         continue
                     broker.close_position(ts, px_fire, "flip", idx)
                     if policy.entry_next_bar_open:
-                        schedule_next_bar_open(fire, idx, side, sl_ticks, tp_ticks)
+                        schedule_next_bar_open(fire, idx, side, tpl_sl, tpl_tp)
                     else:
+                        eff_sl, eff_tp = finalize_exit_ticks(tpl_sl, tpl_tp, idx)
                         broker.open_position(
                             ts,
                             px_fire,
                             side,
                             fire["watch_id"],
                             idx,
-                            stop_ticks=sl_ticks,
-                            take_profit_ticks=tp_ticks,
+                            stop_ticks=eff_sl,
+                            take_profit_ticks=eff_tp,
                         )
                     continue
                 log_skip(fire, "already_in_position_same_side")
 
-            broker.try_intrabar_exit(ts, idx, high, low)
+            if not _orb_skip_intrabar_sl_tp_this_bar(idx):
+                broker.try_intrabar_exit(ts, idx, high, low)
             broker.mark_to_market(ts, _safe_float(bar.get("close")))
 
         last_bar = bars[-1]
@@ -676,13 +761,36 @@ class BacktestEngine:
     ) -> dict:
         policy = execution_policy or ExecutionPolicy()
         policy.validate()
+        if watch_ids and "orb" in watch_ids and timeframe.strip() != "5m":
+            raise ValueError(
+                "Opening range breakout (`orb`) requires timeframe='5m'."
+            )
         bars = self._load_bars(timeframe, from_time, to_time)
         if not bars:
             raise ValueError("No bars in requested window.")
 
         if fires_by_time is None:
             sig = "db"
-            if use_regime_filter:
+            derived_runtime = (
+                watch_ids is not None
+                and len(watch_ids) > 0
+                and watch_ids.issubset(RUNTIME_DERIVED_WATCH_IDS)
+            )
+            if derived_runtime:
+                fires_by_time = self._derive_fires_from_bars(
+                    bars,
+                    timeframe,
+                    watch_ids=watch_ids,
+                    use_regime_filter=use_regime_filter,
+                )
+                sig = "derived_runtime"
+                if not fires_by_time:
+                    scope = sorted(watch_ids) if watch_ids else ["all"]
+                    raise ValueError(
+                        "No derived fires in requested window/scope for runtime-derived watch "
+                        f"(scope={scope}, timeframe={timeframe})."
+                    )
+            elif use_regime_filter:
                 fires_by_time = self._load_fires(timeframe, from_time, to_time, watch_ids=watch_ids)
                 if not fires_by_time:
                     scope = sorted(watch_ids) if watch_ids else ["all"]
@@ -718,6 +826,14 @@ class BacktestEngine:
 
         wins = [t for t in closed if _safe_float(t.get("net_pnl")) > 0]
         win_rate = (len(wins) / len(closed)) if closed else None
+        slip_ratios = [
+            float(t["slippage_to_stop_ratio"])
+            for t in closed
+            if t.get("slippage_to_stop_ratio") is not None
+        ]
+        mean_slippage_to_stop_ratio = (
+            round(sum(slip_ratios) / len(slip_ratios), 6) if slip_ratios else None
+        )
         start_equity = config.initial_capital
         end_equity = _safe_float(
             equity_rows[-1]["equity"] if equity_rows else start_equity, start_equity
@@ -769,8 +885,17 @@ class BacktestEngine:
                     config.stop_loss_ticks is not None
                     or config.take_profit_ticks is not None
                 )
-                else "strategy_defaults"
+                else (
+                    "strategy_defaults_regime_scaled"
+                    if config.regime_exit_scale_enabled
+                    else "strategy_defaults"
+                )
             ),
+            "regime_exit_scale_enabled": bool(config.regime_exit_scale_enabled),
+            "regime_exit_scale_mode": config.regime_exit_scale_mode
+            if config.regime_exit_scale_enabled
+            else None,
+            "mean_slippage_to_stop_ratio": mean_slippage_to_stop_ratio,
             "execution_policy": policy.to_metadata_dict(),
             "entry_mode": entry_mode,
             "entry_gap_guard_max_ticks": policy.entry_gap_guard_max_ticks,

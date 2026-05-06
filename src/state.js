@@ -147,6 +147,10 @@ export const state = {
       /** Optional run-wide SL/TP (ticks); null = leave blank / omit from POST so defaults merge applies. */
       stopLossTicks: null,
       takeProfitTicks: null,
+      /** When true, POST regime_exit_scale_enabled (requires blank run-wide SL/TP per server). */
+      regimeExitScaleEnabled: false,
+      /** `range_pct` | `v_rank` — maps to regime_exit_scale_mode when scaling is ON. */
+      regimeExitScaleMode: 'range_pct',
       flipOnOppositeFire: true,
       exitOnStopLoss: true,
       exitOnTakeProfit: true,
@@ -184,6 +188,8 @@ export const state = {
     poc: true,
     va: true,
     vwap: true,
+    /** NYSE cash session: high/low of bars whose [open, open+bin) intersects 9:30–9:45 ET (reference only). */
+    openingRange945: true,
   },
   /** How many candles to fit horizontally (wheel zoom); rolling buffer size remains MAX_BARS. */
   chartVisibleBars: MAX_BARS,

@@ -103,7 +103,7 @@ DEFAULT_TIMEFRAME = "1m"
 
 # Event types stored in DuckDB `events.event_type` (see pipeline/db.py).
 _EVENT_TYPES_ALLOWED = frozenset({"sweep", "absorption", "divergence", "stoprun"})
-_WATCH_IDS_ALLOWED = frozenset({"breakout", "fade", "absorptionWall", "valueEdgeReject"})
+_WATCH_IDS_ALLOWED = frozenset({"breakout", "fade", "absorptionWall", "valueEdgeReject", "orb"})
 
 
 app = FastAPI(
@@ -409,6 +409,15 @@ class BacktestRunRequest(BaseModel):
     # Run-wide exit override in ticks (None => use strategy timeframe/watch defaults, or flip-only if those are None).
     stop_loss_ticks: float | None = None
     take_profit_ticks: float | None = None
+    regime_exit_scale_enabled: bool | None = None
+    regime_exit_scale_mode: str | None = None
+    regime_sl_mult_min: float | None = None
+    regime_sl_mult_max: float | None = None
+    regime_tp_mult_min: float | None = None
+    regime_tp_mult_max: float | None = None
+    regime_sl_floor_ticks: float | None = None
+    regime_v_rank_sl_mults: list[float] | None = None
+    regime_v_rank_tp_mults: list[float] | None = None
     ignore_same_side_fire_when_open: bool | None = None
     flip_on_opposite_fire: bool | None = None
     exit_on_stop_loss: bool | None = None
@@ -1039,6 +1048,11 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
             status_code=400,
             detail=f"Invalid watch_ids={bad_watch}; allowed={sorted(_WATCH_IDS_ALLOWED)}",
         )
+    if watch_ids and "orb" in watch_ids and tf != "5m":
+        raise HTTPException(
+            status_code=400,
+            detail="watch_ids includes `orb`; timeframe must be 5m.",
+        )
 
     con = _connect_rw()
     try:
@@ -1064,6 +1078,28 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
                 detail="take_profit_ticks must be >= 0 (positive tick distance to the profit target).",
             )
 
+        mode_norm = (broker_cfg.regime_exit_scale_mode or "").strip().lower()
+        if mode_norm not in ("range_pct", "v_rank"):
+            raise HTTPException(
+                status_code=400,
+                detail="regime_exit_scale_mode must be 'range_pct' or 'v_rank'.",
+            )
+        if broker_cfg.regime_sl_mult_max < broker_cfg.regime_sl_mult_min:
+            raise HTTPException(
+                status_code=400,
+                detail="regime_sl_mult_max must be >= regime_sl_mult_min.",
+            )
+        if broker_cfg.regime_tp_mult_max < broker_cfg.regime_tp_mult_min:
+            raise HTTPException(
+                status_code=400,
+                detail="regime_tp_mult_max must be >= regime_tp_mult_min.",
+            )
+        if broker_cfg.regime_sl_floor_ticks is not None and broker_cfg.regime_sl_floor_ticks < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="regime_sl_floor_ticks must be >= 0 when set.",
+            )
+
         if payload.null_hypothesis:
             if not payload.use_regime_filter:
                 raise HTTPException(
@@ -1074,6 +1110,11 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
                 raise HTTPException(
                     status_code=400,
                     detail="null_hypothesis requires exactly one watch in scope.",
+                )
+            if watch_ids and "orb" in watch_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="null_hypothesis is not supported for scope `orb`.",
                 )
 
         summary = engine.run(
@@ -1290,7 +1331,8 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
             """
             SELECT trade_id, watch_id, entry_time, exit_time, direction, qty,
                    entry_price, exit_price, gross_pnl, commission, net_pnl, bars_held,
-                   exit_reason
+                   exit_reason,
+                   stop_loss_ticks_effective, take_profit_ticks_effective, slippage_to_stop_ratio
             FROM backtest_trades
             WHERE run_id = ?
             ORDER BY trade_id
@@ -1299,29 +1341,33 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
         ).fetchall()
     finally:
         con.close()
-    return {
-        "runId": rid,
-        "trades": [
-            {
-                "tradeId": r[0],
-                "watchId": r[1],
-                "entryTime": r[2].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "exitTime": r[3].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "entryEvent": "ENTRY",
-                "exitEvent": "EXIT",
-                "direction": r[4],
-                "qty": r[5],
-                "entryPrice": r[6],
-                "exitPrice": r[7],
-                "grossPnl": r[8],
-                "commission": r[9],
-                "netPnl": r[10],
-                "barsHeld": r[11],
-                "exitReason": r[12],
-            }
-            for r in rows
-        ],
-    }
+    trades_out: list[dict] = []
+    for r in rows:
+        item = {
+            "tradeId": r[0],
+            "watchId": r[1],
+            "entryTime": r[2].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "exitTime": r[3].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "entryEvent": "ENTRY",
+            "exitEvent": "EXIT",
+            "direction": r[4],
+            "qty": r[5],
+            "entryPrice": r[6],
+            "exitPrice": r[7],
+            "grossPnl": r[8],
+            "commission": r[9],
+            "netPnl": r[10],
+            "barsHeld": r[11],
+            "exitReason": r[12],
+        }
+        if r[13] is not None:
+            item["stopLossTicksEffective"] = r[13]
+        if r[14] is not None:
+            item["takeProfitTicksEffective"] = r[14]
+        if r[15] is not None:
+            item["slippageToStopRatio"] = r[15]
+        trades_out.append(item)
+    return {"runId": rid, "trades": trades_out}
 
 
 @app.get("/api/backtest/skipped-fires")

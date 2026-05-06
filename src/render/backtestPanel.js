@@ -291,6 +291,10 @@ function renderBacktestPanel() {
         const gt = f.stats?.entryGapGuardMaxTicks;
         if (gt != null && Number.isFinite(Number(gt))) msg += ` · gap≤${gt} ticks`;
       }
+      const rp = state.backtest.runParams || {};
+      if (rp.regimeExitScaleEnabled) {
+        msg += ` · regime SL/TP: ${rp.regimeExitScaleMode === 'v_rank' ? 'v_rank' : 'range_pct'}`;
+      }
       statusEl.textContent = msg;
     }
   }

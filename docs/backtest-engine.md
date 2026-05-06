@@ -11,7 +11,7 @@ This document explains how the **API backtest path** works in code, and how **gl
 | **Backtest engine** | Loads bars and fire candidates, steps bar-by-bar, drives a single-position broker | [`pipeline/src/orderflow_pipeline/backtest_engine.py`](../pipeline/src/orderflow_pipeline/backtest_engine.py) |
 | **HTTP API** | Validates request, merges JSON defaults + body into `BrokerConfig` and **`ExecutionPolicy`**, runs engine | [`api/main.py`](../api/main.py) — `GET /api/backtest/defaults`, `POST /api/backtest/run` |
 | **Broker defaults JSON** | Persistent simulated broker economics merge | [`pipeline/src/orderflow_pipeline/backtest_defaults.py`](../pipeline/src/orderflow_pipeline/backtest_defaults.py), [`config/backtest_defaults.json`](../config/backtest_defaults.json) |
-| **Legacy strategy (signals)** | Derives canonical watch fires from OHLC + regime context | [`pipeline/src/orderflow_pipeline/strategies/`](../pipeline/src/orderflow_pipeline/strategies/) — composed by `legacy_fallback_logic.py` |
+| **Legacy strategy (signals)** | Derives canonical watch fires from OHLC + regime context; **`opening_range_breakout`** (**`orb`**) composes alongside breakout/fade/wall/VER | [`pipeline/src/orderflow_pipeline/strategies/`](../pipeline/src/orderflow_pipeline/strategies/) — composed by `legacy_fallback_logic.py` |
 | **Strategy parameters** | Per-timeframe cooldown, lookback, warmup, and optional SL/TP templates | [`pipeline/src/orderflow_pipeline/strategies/config.py`](../pipeline/src/orderflow_pipeline/strategies/config.py) + JSON loader [`strategy_json.py`](../pipeline/src/orderflow_pipeline/strategy_json.py) |
 | **Exit tick resolution** | Maps timeframe + watch + optional broker override → SL/TP distances in ticks | [`pipeline/src/orderflow_pipeline/strategies/exit_ticks.py`](../pipeline/src/orderflow_pipeline/strategies/exit_ticks.py) |
 | **Persisted fires** | Rows in DuckDB `fires` written by the pipeline from the same derivation function | Ingest / `recompute-fires` in [`pipeline/src/orderflow_pipeline/cli.py`](../pipeline/src/orderflow_pipeline/cli.py) |
@@ -20,15 +20,16 @@ This document explains how the **API backtest path** works in code, and how **gl
 
 ## 2. Execution flow (what happens on each run)
 
-1. **Load bars** for `(timeframe, from, to)` from DuckDB `bars`, ordered by `bar_time`.
-2. **Choose a fire stream** (this is the important split between “regime ON” and compare “OFF”):
-   - **Regime filter ON** (default dashboard path): fires come from **`fires` table** — precomputed when the session was ingested or when you ran `recompute-fires`. The backtester does **not** re-run `derive_fires_from_bars` for this path.
-   - **Regime filter OFF** (optional compare run): fires are **derived on the fly** from the same bar window using `derive_fires_from_bars` with `use_regime_filter=False`. Metadata records `fire_source: derived_no_regime`.
+1. **Load bars** for `(timeframe, from, to)` from DuckDB `bars`, ordered by `bar_time` (columns include **`session_date`**, **`v_rank`**, **`d_rank`**, **`range_pct`** for regime-aware tooling and optional SL/TP scaling).
+2. **Choose a fire stream** (split among persisted canonical watches, runtime-derived **`orb`**, and compare OFF):
+   - **Regime filter ON — persisted canonical watches** (`breakout`, `fade`, `absorptionWall`, `valueEdgeReject`): fires come from **`fires`** — precomputed at ingest / `recompute-fires`. The backtester does **not** re-run full derivation for this path.
+   - **Regime filter ON — `orb` only**: **`fires`** is **not** consulted even though **`use_regime_filter`** may still be **true**. Signals come from **`derive_fires_from_bars`** (module [**`opening_range_breakout.py`**](../pipeline/src/orderflow_pipeline/strategies/opening_range_breakout.py)), **`timeframe` must be `5m`**, and metadata records **`fire_source: derived_runtime`**.
+   - **Regime filter OFF** (optional compare run): fires are **derived on the fly** from the same bar window using `derive_fires_from_bars` with `use_regime_filter=False`. Metadata records **`fire_source: derived_no_regime`** for canonical-watch scopes. **`orb`** only: both ON and OFF runs use **`fire_source: derived_runtime`**; **`use_regime_filter=false`** skips the ORB **(v_rank, d_rank)** entry gate only (opening-range rules unchanged). The dashboard compare-OFF control applies to **`orb`** as well.
 3. **Simulated broker** (`SimulatedBroker`): at most **one** open position; holds **`ExecutionPolicy`** for intrabar mechanical gates; applies slippage and commission on entry/exit; marks equity each bar as `cash + unrealized_pnl`.
 4. **Per bar**, in order:
-   - Try **intrabar SL/TP** against the current position using that bar’s high/low (risk-first if both hit and both mechanical honors are on — see §4.4). **`exit_on_stop_loss` / `exit_on_take_profit`** are enforced **inside** `try_intrabar_exit` so the two intrabar passes stay consistent; stored **`stop_price` / `take_profit_price`** on `Position` are **not** cleared when a flag is off.
+   - Try **intrabar SL/TP** against the current position using that bar’s high/low (risk-first if both hit and both mechanical honors are on — see §4.4), **unless** the position is **`orb`** opened **this same bar** (entry bar skips mechanical SL/TP only — see **`orb`** note in §2). **`exit_on_stop_loss` / `exit_on_take_profit`** are enforced **inside** `try_intrabar_exit` so the two intrabar passes stay consistent; stored **`stop_price` / `take_profit_price`** on `Position` are **not** cleared when a flag is off.
    - For each fire at this timestamp: map `watch_id` + `direction` → long/short side; resolve SL/TP ticks (see §4); open, **flip** (unless `flip_on_opposite_fire` is false → skip `flip_disabled`), or skip (e.g. same-side when `ignore_same_side_fire_when_open`).
-   - Run **intrabar SL/TP** again (same policy gates).
+   - Run **intrabar SL/TP** again (same policy gates and the same **`orb`** entry-bar skip).
    - Mark to market at bar close.
 5. **End of window**: if a position remains and **`close_at_end_of_window`** is true, close at last bar’s close with reason `end_of_window`; otherwise leave the position open through the synthetic window boundary (deadlock validation prevents configs with no other exit path).
 6. **Persist** summary, trades, equity, benchmark (`buy_hold`), and skipped-fire rows under a new `run_id`.
@@ -39,8 +40,10 @@ When `POST /api/backtest/run` sets **`null_hypothesis=true`** alongside **`use_r
 
 **Watch → direction convention** (mapping from fire to traded side):
 
-- `breakout`: trade **with** the fire direction (`up` → long, `down` → short).
+- `breakout`, **`orb`**: trade **with** the fire direction (`up` → long, `down` → short).
 - `fade`, `valueEdgeReject`, `absorptionWall`: trade **against** the fire direction (mean-reversion read).
+
+**`orb` (Opening Range Breakout, learning experiment):** Hardcoded **5m** session logic — first bar per **`session_date`** defines opening-range high/low; first subsequent bar (with **`v_rank`/`d_rank`** in {(3,2),(3,3),(4,2),(4,3)}) that breaks above/below may emit **one** long and/or **one** short per session; no signals on bars whose **`bar_time`** maps to **12:00 America/New_York** or later. Not written to **`fires`** by aggregation by default; parameters stay in Python (not **`strategy_defaults.json`**). Each emitted fire’s **`price`** is the breakout extreme on that bar (**long → bar `high`**, **short → bar `low`**), so fills are modeled at the **top/bottom of the signal candle**, not at `close`. **`SimulatedBroker.try_intrabar_exit`** is **not** invoked on the **ORB entry bar** for mechanical SL/TP (both passes in step 4), so a tight template stop is not forced to “re-hit” the same candle’s full range immediately after that fill; mechanical barriers apply from the **next** bar onward. **Flip** and other fire-driven closes on the entry bar are unchanged.
 
 ---
 
@@ -105,7 +108,7 @@ Details and profiles live in [`strategy-config.md`](strategy-config.md).
 
 | Concern | Every backtest |
 |--------|----------------|
-| **SL/TP tick distances for new positions** | Resolved via [`resolve_exit_ticks`](../pipeline/src/orderflow_pipeline/strategies/exit_ticks.py) on **every** open/flip unless broker run-wide overrides apply (below). Uses `config_for_timeframe(timeframe)` (strategy JSON + Python base); then optional **`watch_exit_ticks`** overrides for the matching `watch_id`. |
+| **SL/TP tick distances for new positions** | Resolved via [`resolve_exit_ticks`](../pipeline/src/orderflow_pipeline/strategies/exit_ticks.py) on **every** open/flip unless broker run-wide overrides apply (below). Uses `config_for_timeframe(timeframe)` (strategy JSON + Python base); then optional **`watch_exit_ticks`** overrides for the matching `watch_id`. When **`regime_exit_scale_enabled`** is **true** on the merged [`BrokerConfig`](../pipeline/src/orderflow_pipeline/backtest_engine.py) **and** broker run-wide SL/TP are **both unset**, template ticks are scaled per trade using [`apply_regime_exit_scale`](../pipeline/src/orderflow_pipeline/strategies/regime_exit_scale.py) from the **entry bar** (`range_pct` / `v_rank` on that bar row). With **`entry_next_bar_open`**, the entry bar is the deferred fill bar (not the signal bar). Barriers are fixed for the life of the trade (no intrabar regime updates). |
 
 So: tuning **cooldown / lookbacks** requires **pipeline recomputation** to refresh `fires` for regime-ON parity with your JSON. Tuning **only SL/TP** (with null broker overrides) affects **fills and equity** immediately on the next API run **without** rewriting `fires`.
 
@@ -118,6 +121,10 @@ For each new position the engine asks `resolve_exit_ticks(timeframe, watch_id, b
 3. If **`watch_exit_ticks`** defines the current `watch_id`, non-null fields override per watch.
 
 **Null** SL and TP everywhere (and no broker override) ⇒ **flip + optional end flatten** by default — no barrier prices unless **`ExecutionPolicy`** disables flip/end (must remain deadlock-valid).
+
+**Regime scaling (optional):** After steps 1–3 yield template ticks, if **`regime_exit_scale_enabled`** is **true** and neither **`BrokerConfig.stop_loss_ticks`** nor **`take_profit_ticks`** is set, multiply distances by multipliers derived from the entry bar (`regime_exit_scale_mode`: **`range_pct`** / **`v_rank`**). Invalid or missing regime inputs fall back to **unscaled** template ticks (same as treating multipliers as **1.0**). **`exit_ticks_resolution`** in run metadata is **`strategy_defaults_regime_scaled`** when scaling is active; **`run_wide_broker`** still wins whenever either broker tick field is set.
+
+**Slippage vs tight stops:** Each closed trade may record **`slippage_to_stop_ratio`** (`slippage_ticks / stop_loss_ticks_effective`) when an SL distance was in effect; run metadata includes **`mean_slippage_to_stop_ratio`** across trades with SL. Very tight dynamic stops make fixed slip a larger fraction of risk — interpret low-vol outcomes accordingly.
 
 ### 4.4 Intrabar ambiguity
 
@@ -154,7 +161,7 @@ If the same OHLC bar hits both SL and TP **and both mechanical honors are enable
 
 ## 6. Run metadata (`metadata_json`)
 
-Each run persists diagnostic fields including `watch_ids`, `fire_source`, `use_regime_filter`, **`execution_policy`** (serialized policy fields), top-level **`entry_mode`** (`signal_bar_close` vs `next_bar_open`) and **`entry_gap_guard_max_ticks`** when relevant, skipped-fire counts, and whether exit ticks used **`run_wide_broker`** vs **`strategy_defaults`**. Inspect `backtest_runs.metadata_json` for reproducibility and debugging.
+Each run persists diagnostic fields including `watch_ids`, `fire_source`, `use_regime_filter`, **`execution_policy`** (serialized policy fields), top-level **`entry_mode`** (`signal_bar_close` vs `next_bar_open`) and **`entry_gap_guard_max_ticks`** when relevant, skipped-fire counts, **`exit_ticks_resolution`** (`run_wide_broker` \| **`strategy_defaults`** \| **`strategy_defaults_regime_scaled`**), **`regime_exit_scale_enabled`** / **`regime_exit_scale_mode`** when scaling is configured, **`mean_slippage_to_stop_ratio`** when applicable, and broker exit-tick provenance keys. Inspect `backtest_runs.metadata_json` for reproducibility and debugging.
 
 ---
 
@@ -166,7 +173,7 @@ Each run persists diagnostic fields including `watch_ids`, `fire_source`, `use_r
 | `POST /api/backtest/run` | Execute backtest |
 | `GET /api/backtest/stats` | Latest or `runId`-scoped summary |
 | `GET /api/backtest/equity` | Equity + optional `buy_hold` benchmark points |
-| `GET /api/backtest/trades` | Trades with `exit_reason` (`flip`, `stop_loss`, `take_profit`, `end_of_window`) |
+| `GET /api/backtest/trades` | Trades with `exit_reason` (`flip`, `stop_loss`, `take_profit`, `end_of_window`); optional **`stopLossTicksEffective`**, **`takeProfitTicksEffective`**, **`slippageToStopRatio`** when persisted |
 | `GET /api/backtest/skipped-fires` | Fires skipped (`already_in_position_same_side`, **`flip_disabled`**, etc.) |
 
 ---

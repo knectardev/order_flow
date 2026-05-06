@@ -14,6 +14,7 @@ import {
   fetchBacktestSkippedFires,
   fetchBacktestTrades,
   runBacktest,
+  syncRegimeExitScaleControlsMutualExclusion,
 } from './data/backtestApi.js';
 import { drawFlowChart } from './render/flowChart.js';
 import { drawCvdChart } from './render/cvdChart.js';
@@ -368,9 +369,24 @@ function syncBacktestNullHypothesisEnabledUI() {
   const nhLabel = document.getElementById('btNullHypothesisLabel');
   const scopeInput = document.getElementById('btScope');
   if (!nhInput || !scopeInput) return;
-  const ok = backtestScopeIsSingleWatch(String(scopeInput.value || ''));
+  const scopeVal = String(scopeInput.value || '');
+  const orbScope = scopeVal === 'orb';
+  const ok = backtestScopeIsSingleWatch(scopeVal) && !orbScope;
   nhInput.disabled = !ok;
   nhLabel?.classList.toggle('bt-null-hypothesis--disabled', !ok);
+}
+
+/** ORB scope: compare OFF is allowed — server skips ORB (v_rank,d_rank) rank gate when use_regime_filter=false. */
+function syncBacktestOrbScopeUI() {
+  const compareInput = document.getElementById('btCompareRegimeOff');
+  const scopeInput = document.getElementById('btScope');
+  if (!compareInput || !scopeInput) return;
+  const orbScope = String(scopeInput.value || '') === 'orb';
+  compareInput.disabled = false;
+  compareInput.title = orbScope
+    ? 'OFF run: ORB without the (v_rank,d_rank) entry gate. ON run: gate {(3,2),(3,3),(4,2),(4,3)}. Same opening-range geometry; different eligibility.'
+    : '';
+  syncBacktestCompareRegimeOffUI();
 }
 
 /** Non-negative finite ticks from Performance input, or `undefined` when blank (omit from POST → defaults merge). */
@@ -444,7 +460,21 @@ function bindBacktestUI() {
   const execEnd = document.getElementById('btExecEndWindow');
   const execNextBar = document.getElementById('btExecNextBarOpen');
   const gapGuardInput = document.getElementById('btEntryGapGuardTicks');
+  const regimeScaleInput = document.getElementById('btRegimeExitScale');
+  const regimeModeInput = document.getElementById('btRegimeExitScaleMode');
   if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !qtyInput || !compareInput || !markersOnInput || !markersOffInput) return;
+
+  function syncRegimeRunParamsFromDom() {
+    if (!regimeScaleInput || !regimeModeInput) return;
+    state.backtest.runParams = {
+      ...state.backtest.runParams,
+      regimeExitScaleEnabled: !!regimeScaleInput.checked && !regimeScaleInput.disabled,
+      regimeExitScaleMode:
+        String(regimeModeInput.value || 'range_pct').trim().toLowerCase() === 'v_rank'
+          ? 'v_rank'
+          : 'range_pct',
+    };
+  }
 
   function syncGapGuardInputEnabled() {
     if (!gapGuardInput || !execNextBar) return;
@@ -488,16 +518,46 @@ function bindBacktestUI() {
   markersOnInput.checked = state.backtest.runParams.showMarkersOn !== false;
   if (showBuyHoldInput) showBuyHoldInput.checked = state.backtest.runParams.showBuyHold !== false;
   if (nhInput) nhInput.checked = !!state.backtest.runParams.nullHypothesis;
+  syncBacktestOrbScopeUI();
   syncBacktestCompareRegimeOffUI();
   syncBacktestNullHypothesisEnabledUI();
   syncExecRunParamsFromDom();
   syncGapGuardInputEnabled();
+  syncRegimeExitScaleControlsMutualExclusion();
+  syncRegimeRunParamsFromDom();
+  function onSlTpOrRegimeChange() {
+    syncRegimeExitScaleControlsMutualExclusion();
+    syncRegimeRunParamsFromDom();
+    renderBacktestPanel();
+  }
+  if (slTicksInput) {
+    slTicksInput.addEventListener('input', onSlTpOrRegimeChange);
+    slTicksInput.addEventListener('change', onSlTpOrRegimeChange);
+  }
+  if (tpTicksInput) {
+    tpTicksInput.addEventListener('input', onSlTpOrRegimeChange);
+    tpTicksInput.addEventListener('change', onSlTpOrRegimeChange);
+  }
+  if (regimeScaleInput) {
+    regimeScaleInput.addEventListener('change', () => {
+      syncRegimeExitScaleControlsMutualExclusion();
+      syncRegimeRunParamsFromDom();
+      renderBacktestPanel();
+    });
+  }
+  if (regimeModeInput) {
+    regimeModeInput.addEventListener('change', () => {
+      syncRegimeRunParamsFromDom();
+      renderBacktestPanel();
+    });
+  }
   scopeInput.addEventListener('change', () => {
     state.backtest.runParams = {
       ...state.backtest.runParams,
       scope: String(scopeInput.value || ''),
     };
     syncBtRunButtonEnabled();
+    syncBacktestOrbScopeUI();
     syncBacktestNullHypothesisEnabledUI();
     renderBacktestPanel();
   });
@@ -601,6 +661,15 @@ function bindBacktestUI() {
     const closeEndWin = execEnd ? !!execEnd.checked : true;
     const entryNextBarOpen = execNextBar ? !!execNextBar.checked : false;
     const gapGuardTicks = gapGuardInput ? _optionalTicksFromInput(gapGuardInput) : undefined;
+    syncRegimeExitScaleControlsMutualExclusion();
+    const regimeScaleEl = document.getElementById('btRegimeExitScale');
+    const regimeModeEl = document.getElementById('btRegimeExitScaleMode');
+    const regimeScaleActive =
+      regimeScaleEl && regimeScaleEl.checked && !regimeScaleEl.disabled;
+    const regimeMode =
+      regimeModeEl && String(regimeModeEl.value || 'range_pct').trim().toLowerCase() === 'v_rank'
+        ? 'v_rank'
+        : 'range_pct';
     state.backtest.runParams = {
       scope: String(scopeInput.value || 'all'),
       compareRegimeOff: !!compareInput.checked,
@@ -614,6 +683,8 @@ function bindBacktestUI() {
       qty: Math.max(1, Math.floor(Number(qtyInput.value || state.backtest.runParams.qty || 1))),
       stopLossTicks: slTicks ?? null,
       takeProfitTicks: tpTicks ?? null,
+      regimeExitScaleEnabled: !!regimeScaleActive,
+      regimeExitScaleMode: regimeMode,
       flipOnOppositeFire: flipOnOpposite,
       exitOnStopLoss: exitStopLoss,
       exitOnTakeProfit: exitTakeProfit,
@@ -657,6 +728,9 @@ function bindBacktestUI() {
         entryGapGuardMaxTicks: entryNextBarOpen ? gapGuardTicks : undefined,
         tickSize,
         pointValue,
+        ...(regimeScaleActive
+          ? { regimeExitScaleEnabled: true, regimeExitScaleMode: regimeMode }
+          : {}),
       };
       const doCompareOff = !!state.backtest.runParams.compareRegimeOff;
       const nhWant = !!(
@@ -731,6 +805,9 @@ function bindBacktestUI() {
       state.backtest.loading = false;
       syncBtRunButtonEnabled();
       renderBacktestPanel();
+      // Trades land in `state.backtest.compare` but `renderBacktestPanel` does not
+      // repaint the price canvas — refresh so E/X + entry–exit connectors show.
+      drawPriceChart();
     }
   });
   renderBacktestPanel();

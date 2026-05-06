@@ -1,29 +1,17 @@
 
+### Three "Integrity Checks" to add to your workflow
+While the plan is sound, keep these three risks in mind as you build:
 
-### 1. The Strategy Logic Shift (The "Feature, Not a Bug")
-There is a fundamental difference between your current logic and the proposed one:
-* **Current (Close):** You are fading the move *within* the signal bar.
-* **Next-Bar (Open):** You are betting that the reversal *persists* into the next bar.
+#### 1. The "Boundary Condition" Test
+What happens when `range_pct` or `v_rank` hits its extreme (e.g., 0.0 or the theoretical max)? 
+* **The Check:** Add a test case for `regime_exit_scale.py` that passes "garbage" regime values (NaN, negative, or extremely high values). Your helper should return the *template* (fallback) value rather than blowing up the `BacktestEngine` or producing a 0-tick stop loss.
 
-**The "Gotcha":** If your `value_edge_reject` logic relies on the wick of the signal bar to provide the mean reversion, shifting to the Open of the next bar might actually **kill the strategy logic entirely**, not just reduce the profitability.
-* **Recommendation:** When you implement this, **do not discard your "Close-based" results.** Keep them as a baseline. When you run the new "Open-based" logic, if the strategy collapses, you aren't necessarily failing an integrity test—you might just be discovering that your strategy *requires* near-instantaneous execution to function. That is an important finding in itself.
+#### 2. The Null Hypothesis Consistency
+Since your Null Hypothesis (NH) parity loop schedules trades based on eligible indices, ensure that the **regime-scaling is applied during the NH run exactly as it is in the baseline run.** * Because your scaling is deterministic (based on bar data at entry time), the NH parity loop *should* handle this naturally. However, verify that your NH parity test doesn't accidentally pick up "average" regime data. It must use the *exact* regime data of the randomized fire time.
 
-### 2. The "Gap" Execution Risk
-In your plan, you mention using `open_price` of the next bar. 
-* **The Risk:** ES futures often gap between bars (e.g., overnight or due to news). If you fire a signal at the close of Bar $N$, and the next bar opens with a massive gap against your position, your `open_price` entry might be significantly worse than the `close_price` of the previous bar.
-* **Refinement:** Add a **"Gap Guard"** to your implementation. If `abs(open_next_bar - close_signal_bar) > slippage_threshold`, consider it an "invalid execution" and skip the trade. This makes the backtest much more realistic for live trading, where you wouldn't want to get "gapped" into a position.
-
+#### 3. Execution/Slippage Interaction
+When you scale your SL/TP based on volatility, you are essentially tightening or widening your "Exit Zone." 
+* **The Risk:** If you tighten your stop loss significantly during low-volatility regimes, you might find that `slippage_ticks` becomes a larger percentage of your risk.
+* **The Advice:** Keep an eye on your "Slippage-to-Stop-Loss" ratio in your metadata. If your SL gets dynamically scaled to be very tight (e.g., 4 ticks) and your `slippage_ticks` is 2, your exit execution is essentially 50% slippage-dominated. This might make the strategy look "unprofitable" during low volatility simply because of slippage mechanics, not because of the signal logic.
 
 
-### 3. Strengthening the Plan
-Your plan is excellent, but I suggest adding two specific "todos" to ensure this integrates perfectly with the work you’ve already done on the Null Hypothesis (NH) and Execution Policy:
-
-* **[ ] Metadata Tracking:** Ensure the `metadata_json` explicitly flags `entry_mode: "next_bar_open"` vs `"signal_bar_close"`. If you are comparing two backtests later, you don't want to accidentally compare a "Close-filled" run with an "Open-filled" run without knowing which is which.
-* **[ ] NH Parity Logic:** You correctly identified that the NH parity logic must remain valid. Ensure that when you use `next_bar_open`, the "eligible indices" for the NH generator are recalculated accordingly. (e.g., the last bar is *still* ineligible because it has no next bar).
-
-### Summary Verdict
-This plan is **ready to build**. 
-
-The combination of the **Execution Policy** (for gating), **Null Hypothesis** (for sanity checking Alpha), and now **Next-Bar Delay** (for integrity checking) creates a "triangulation" effect. If a strategy survives all three of these filters, you are no longer dealing with "backtest luck"—you are dealing with a robust, statistically significant trading edge.
-
-**Proceed with the implementation.** When this is finished, you will have a "Sanity Scorecard" for any new strategy that is more rigorous than what 90% of retail quant developers possess.

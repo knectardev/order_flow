@@ -344,6 +344,9 @@ _FIRE_DIAGNOSTIC_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 _BACKTEST_TRADE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("exit_reason", "VARCHAR"),
+    ("stop_loss_ticks_effective", "DOUBLE"),
+    ("take_profit_ticks_effective", "DOUBLE"),
+    ("slippage_to_stop_ratio", "DOUBLE"),
 )
 
 
@@ -659,9 +662,10 @@ def write_backtest_results(
                 INSERT INTO backtest_trades (
                     run_id, trade_id, watch_id, entry_time, exit_time,
                     direction, qty, entry_price, exit_price, gross_pnl,
-                    commission, net_pnl, bars_held, exit_reason
+                    commission, net_pnl, bars_held, exit_reason,
+                    stop_loss_ticks_effective, take_profit_ticks_effective, slippage_to_stop_ratio
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     [
@@ -679,6 +683,9 @@ def write_backtest_results(
                         t["net_pnl"],
                         t["bars_held"],
                         t.get("exit_reason"),
+                        t.get("stop_loss_ticks_effective"),
+                        t.get("take_profit_ticks_effective"),
+                        t.get("slippage_to_stop_ratio"),
                     ]
                     for t in trades
                 ],

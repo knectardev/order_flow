@@ -71,6 +71,40 @@ function _barTimeMs(t) {
   return t instanceof Date ? t.getTime() : +new Date(t);
 }
 
+/** Bin width per chart timeframe (mirrors `BIN_MS_BY_TF` in `replay.js`). */
+const _BIN_MS_BY_TF = {
+  '1m': 60 * 1000,
+  '5m': 5 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+};
+
+/**
+ * Map a backtest trade timestamp to an index in the visible bar array.
+ * Uses exact bar_open ms first; otherwise the nearest bar within half the
+ * active timeframe bin so markers + entry–exit connectors still render when
+ * the chart timeframe differs from persisted trade bar times or when minor
+ * timestamp serialization differs.
+ */
+function _tradeMsToVisibleBarIndex(idxByMs, allBars, tradeMs) {
+  if (!Number.isFinite(tradeMs)) return null;
+  const exact = idxByMs.get(tradeMs);
+  if (exact != null) return exact;
+  const tf = state.activeTimeframe || DEFAULT_TIMEFRAME;
+  const bin = _BIN_MS_BY_TF[tf] || _BIN_MS_BY_TF['1m'];
+  const maxDelta = bin / 2;
+  let bestIdx = null;
+  let bestAbs = Infinity;
+  for (let i = 0; i < allBars.length; i++) {
+    const d = Math.abs(_barTimeMs(allBars[i].time) - tradeMs);
+    if (d < bestAbs) {
+      bestAbs = d;
+      bestIdx = i;
+    }
+  }
+  return bestIdx != null && bestAbs <= maxDelta ? bestIdx : null;
+}
+
 /** [y,m,d] in America/New_York for grouping tick labels across session-calendar days */
 function _etYmd(barTime) {
   const d = barTime instanceof Date ? barTime : new Date(barTime);
@@ -90,6 +124,68 @@ function _sameEtYmd(a, b) {
   const [ya, ma, da] = _etYmd(a);
   const [yb, mb, db] = _etYmd(b);
   return ya === yb && ma === mb && da === db;
+}
+
+/** `YYYY-MM-DD` in America/New_York for grouping opening-range aggregates. */
+function _etYmdKey(barTime) {
+  const [y, m, day] = _etYmd(barTime);
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+const _fmtEtHmParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: CHART_AXIS_TZ,
+  hour: 'numeric',
+  minute: 'numeric',
+  hourCycle: 'h23',
+});
+
+/** Minutes since local midnight ET (0–1439) for `barTime` (bar open instant). */
+function _etMinutesSinceMidnightEt(barTime) {
+  const d = barTime instanceof Date ? barTime : new Date(barTime);
+  let h = 0;
+  let mi = 0;
+  for (const p of _fmtEtHmParts.formatToParts(d)) {
+    if (p.type === 'hour') h = +p.value;
+    if (p.type === 'minute') mi = +p.value;
+  }
+  return h * 60 + mi;
+}
+
+const RTH_OR945_START_MIN = 9 * 60 + 30;
+const RTH_OR945_END_MIN = 9 * 60 + 45;
+
+/** True when [bar open, bar open + bin) intersects [9:30, 9:45) ET on that calendar day. */
+function _barIntersectsRthOpeningRange945(barTime, binMs) {
+  const t0 = _etMinutesSinceMidnightEt(barTime);
+  const durMin = binMs / 60000;
+  return t0 < RTH_OR945_END_MIN && (t0 + durMin) > RTH_OR945_START_MIN;
+}
+
+/**
+ * Per ET calendar day: max high / min low over `universeBars` whose bin intersects
+ * the NYSE cash 9:30–9:45 ET window (half-open on the end minute, same convention as 5m bins).
+ */
+function _computeOpeningRange945ByDay(universeBars, binMs) {
+  const map = new Map();
+  if (!Array.isArray(universeBars) || !Number.isFinite(binMs) || binMs <= 0) return map;
+  for (const b of universeBars) {
+    if (!b || b.time == null) continue;
+    if (!_barIntersectsRthOpeningRange945(b.time, binMs)) continue;
+    const k = _etYmdKey(b.time);
+    let agg = map.get(k);
+    if (!agg) {
+      agg = { hi: -Infinity, lo: Infinity };
+      map.set(k, agg);
+    }
+    const hi = +b.high;
+    const lo = +b.low;
+    if (Number.isFinite(hi) && hi > agg.hi) agg.hi = hi;
+    if (Number.isFinite(lo) && lo < agg.lo) agg.lo = lo;
+  }
+  for (const [k, agg] of [...map.entries()]) {
+    if (!Number.isFinite(agg.hi) || !Number.isFinite(agg.lo) || agg.hi < agg.lo) map.delete(k);
+  }
+  return map;
 }
 
 /**
@@ -710,6 +806,17 @@ function drawPriceChart() {
   const allBars = viewedBars;
   const phatViewportVolRange = computeViewportVolumeRange(allBars);
 
+  const overlayOr945 = state.chartOverlayVisibility || {};
+  const showOpeningRange945 = overlayOr945.openingRange945 !== false;
+  const binMsOr945 = _BIN_MS_BY_TF[activeTf] || _BIN_MS_BY_TF['1m'];
+  const or945Source =
+    state.replay.mode === 'real' && state.replay.allBars?.length
+      ? state.replay.allBars
+      : (state.bars?.length ? state.bars : []);
+  const or945ByDay = showOpeningRange945
+    ? _computeOpeningRange945ByDay(or945Source, binMsOr945)
+    : new Map();
+
   // Profile (computed from settled state.bars only — exclude state.formingBar at live edge,
   // and use the visible window when panned so the profile reflects what's
   // on screen).
@@ -950,6 +1057,14 @@ function drawPriceChart() {
   for (const b of allBars) {
     if (b.low  < lo) lo = b.low;
     if (b.high > hi) hi = b.high;
+  }
+  if (showOpeningRange945 && or945ByDay.size > 0) {
+    for (const b of allBars) {
+      const lvl = or945ByDay.get(_etYmdKey(b.time));
+      if (!lvl) continue;
+      if (lvl.lo < lo) lo = lvl.lo;
+      if (lvl.hi > hi) hi = lvl.hi;
+    }
   }
   const fitProfileToRange = (state.activeTimeframe || DEFAULT_TIMEFRAME) === DEFAULT_TIMEFRAME;
   if (
@@ -1300,90 +1415,6 @@ function drawPriceChart() {
     }
   }
 
-  // Backtest trade overlay (latest compare runs): mark entries/exits on visible bars.
-  // Teal = regime filter ON, Orange = regime filter OFF. This gives a direct
-  // visual sanity-check between chart signals and executed trade points.
-  const btFiltered = state.backtest?.compare?.filtered?.trades || [];
-  const btUnfiltered = state.backtest?.compare?.unfiltered?.trades || [];
-  const showBtMarkersOn = state.backtest?.runParams?.showMarkersOn !== false;
-  const compareRegimeOff =
-    state.backtest?.runParams?.compareRegimeOff === true &&
-    !!(state.backtest?.compare?.unfiltered?.runId);
-  const showBtMarkersOff =
-    compareRegimeOff && state.backtest?.runParams?.showMarkersOff !== false;
-  if ((showBtMarkersOn || showBtMarkersOff) && (btFiltered.length || btUnfiltered.length) && allBars.length) {
-    const idxByMs = new Map();
-    for (let i = 0; i < allBars.length; i++) {
-      idxByMs.set(_barTimeMs(allBars[i].time), i);
-    }
-    const drawTradeMarkers = (trades, color) => {
-      if (!trades || !trades.length) return;
-      for (const t of trades) {
-        const entryMs = Date.parse(t.entryTime);
-        const exitMs = Date.parse(t.exitTime);
-        const entryIdx = idxByMs.get(entryMs);
-        const exitIdx = idxByMs.get(exitMs);
-        let entryPoint = null;
-        let exitPoint = null;
-        if (entryIdx != null) {
-          const x = PAD.l + (entryIdx + 0.5) * slotW;
-          const yBase = yScaleClamped(Number(t.entryPrice));
-          const y = Math.max(PAD.t + 10, yBase - 10);
-          entryPoint = { x, y };
-          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
-          pctx.beginPath();
-          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
-          pctx.fill();
-          pctx.fillStyle = color;
-          pctx.beginPath();
-          pctx.moveTo(x, y - 5.5);
-          pctx.lineTo(x - 4.5, y + 3.5);
-          pctx.lineTo(x + 4.5, y + 3.5);
-          pctx.closePath();
-          pctx.fill();
-          pctx.fillStyle = color;
-          pctx.font = '8px "IBM Plex Mono", monospace';
-          pctx.textAlign = 'left';
-          pctx.fillText('E', x + 7, y + 2);
-        }
-        if (exitIdx != null) {
-          const x = PAD.l + (exitIdx + 0.5) * slotW;
-          const yBase = yScaleClamped(Number(t.exitPrice));
-          const y = Math.min(PAD.t + chartH - 10, yBase + 10);
-          exitPoint = { x, y };
-          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
-          pctx.beginPath();
-          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
-          pctx.fill();
-          pctx.strokeStyle = color;
-          pctx.lineWidth = 1.7;
-          pctx.beginPath();
-          pctx.moveTo(x - 4.4, y - 4.4);
-          pctx.lineTo(x + 4.4, y + 4.4);
-          pctx.moveTo(x + 4.4, y - 4.4);
-          pctx.lineTo(x - 4.4, y + 4.4);
-          pctx.stroke();
-          pctx.fillStyle = color;
-          pctx.font = '8px "IBM Plex Mono", monospace';
-          pctx.textAlign = 'left';
-          pctx.fillText('X', x + 7, y + 2);
-        }
-        if (entryPoint && exitPoint) {
-          pctx.strokeStyle = color.replace('0.95', '0.40');
-          pctx.lineWidth = 1;
-          pctx.setLineDash([3, 3]);
-          pctx.beginPath();
-          pctx.moveTo(entryPoint.x, entryPoint.y);
-          pctx.lineTo(exitPoint.x, exitPoint.y);
-          pctx.stroke();
-          pctx.setLineDash([]);
-        }
-      }
-    };
-    if (showBtMarkersOn) drawTradeMarkers(btFiltered, 'rgba(33, 160, 149, 0.95)');
-    if (showBtMarkersOff) drawTradeMarkers(btUnfiltered, 'rgba(211, 145, 69, 0.95)');
-  }
-
   // Volume sub-band — bottom of the price canvas, color-matched to candle direction.
   // Own y-scale based on max volume in view so spikes are visible.
   let maxVol = 1;
@@ -1417,6 +1448,36 @@ function drawPriceChart() {
   pctx.fillStyle = 'rgba(138, 146, 166, 0.55)';
   pctx.textAlign = 'right';
   pctx.fillText(`max ${maxVol.toLocaleString()}`, PAD.l + chartW - 4, volTop + 8);
+
+  // NYSE 9:30–9:45 ET opening range (high/low), segmented per ET day in the viewport.
+  if (showOpeningRange945 && or945ByDay.size > 0 && allBars.length) {
+    const strokeOr = 'rgba(255, 145, 85, 0.82)';
+    pctx.save();
+    pctx.strokeStyle = strokeOr;
+    pctx.lineWidth = 1.25;
+    pctx.setLineDash([5, 4]);
+    for (let i = 0; i < allBars.length; ) {
+      const dk = _etYmdKey(allBars[i].time);
+      let j = i + 1;
+      while (j < allBars.length && _etYmdKey(allBars[j].time) === dk) j++;
+      const lvl = or945ByDay.get(dk);
+      if (lvl && Number.isFinite(lvl.hi) && Number.isFinite(lvl.lo)) {
+        const xLeft = PAD.l + i * slotW;
+        const xRight = PAD.l + j * slotW;
+        const yHi = yScaleClamped(lvl.hi);
+        const yLo = yScaleClamped(lvl.lo);
+        pctx.beginPath();
+        pctx.moveTo(xLeft, yHi);
+        pctx.lineTo(xRight, yHi);
+        pctx.moveTo(xLeft, yLo);
+        pctx.lineTo(xRight, yLo);
+        pctx.stroke();
+      }
+      i = j;
+    }
+    pctx.setLineDash([]);
+    pctx.restore();
+  }
 
   // Anchored VWAP — dashed yellow line over price (settled state.bars only).
   // The polyline values were computed up front (above the y-range block).
@@ -1963,6 +2024,128 @@ function drawPriceChart() {
     pctx.textAlign = 'left';
     pctx.fillText(`PANNED · ${tEt} · bar ${end}/${state.replay.allBars.length}`,
                   PAD.l + 2, PAD.t + 8);
+  }
+
+  // Backtest trade overlay — **last** price-pane ink (after NOW / FIRE / hover
+  // guides) so entry–exit connectors are never overdrawn. Markers use E / X
+  // labels; do not confuse with pipeline **swing** triangles (▲/▼ at H/L with
+  // no letters) or sweep event glyphs.
+  const btFiltered = state.backtest?.compare?.filtered?.trades || [];
+  const btUnfiltered = state.backtest?.compare?.unfiltered?.trades || [];
+  const showBtMarkersOn = state.backtest?.runParams?.showMarkersOn !== false;
+  const compareRegimeOff =
+    state.backtest?.runParams?.compareRegimeOff === true &&
+    !!(state.backtest?.compare?.unfiltered?.runId);
+  const showBtMarkersOff =
+    compareRegimeOff && state.backtest?.runParams?.showMarkersOff !== false;
+  if ((showBtMarkersOn || showBtMarkersOff) && (btFiltered.length || btUnfiltered.length) && allBars.length) {
+    const idxByMs = new Map();
+    for (let i = 0; i < allBars.length; i++) {
+      idxByMs.set(_barTimeMs(allBars[i].time), i);
+    }
+    const drawTradeMarkers = (trades, color, connectorStroke) => {
+      if (!trades || !trades.length) return;
+      for (const t of trades) {
+        const ent = t.entryTime ?? t.entry_time;
+        const ext = t.exitTime ?? t.exit_time;
+        const entryMs = Date.parse(ent);
+        const exitMs = Date.parse(ext);
+        const entryIdx = _tradeMsToVisibleBarIndex(idxByMs, allBars, entryMs);
+        const exitIdx = _tradeMsToVisibleBarIndex(idxByMs, allBars, exitMs);
+        let entryPoint = null;
+        let exitPoint = null;
+        if (entryIdx != null) {
+          const x = PAD.l + (entryIdx + 0.5) * slotW;
+          const yBase = yScaleClamped(Number(t.entryPrice ?? t.entry_price));
+          const y = Math.max(PAD.t + 10, yBase - 10);
+          entryPoint = { x, y };
+        }
+        if (exitIdx != null) {
+          const x = PAD.l + (exitIdx + 0.5) * slotW;
+          const yBase = yScaleClamped(Number(t.exitPrice ?? t.exit_price));
+          const y = Math.min(PAD.t + chartH - 10, yBase + 10);
+          exitPoint = { x, y };
+        }
+        if (entryPoint && exitPoint) {
+          const x0 = entryPoint.x;
+          const y0 = entryPoint.y;
+          const x1 = exitPoint.x;
+          const y1 = exitPoint.y;
+          pctx.lineCap = 'round';
+          pctx.setLineDash([6, 5]);
+          // Under-glow so dashes read on busy candles / VWAP crossings.
+          pctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+          pctx.lineWidth = 4.5;
+          pctx.beginPath();
+          pctx.moveTo(x0, y0);
+          pctx.lineTo(x1, y1);
+          pctx.stroke();
+          pctx.strokeStyle = connectorStroke;
+          pctx.lineWidth = 2.25;
+          pctx.beginPath();
+          pctx.moveTo(x0, y0);
+          pctx.lineTo(x1, y1);
+          pctx.stroke();
+          pctx.setLineDash([]);
+          pctx.lineCap = 'butt';
+        }
+        if (entryIdx != null) {
+          const x = entryPoint.x;
+          const y = entryPoint.y;
+          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
+          pctx.beginPath();
+          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
+          pctx.fill();
+          pctx.fillStyle = color;
+          pctx.beginPath();
+          pctx.moveTo(x, y - 5.5);
+          pctx.lineTo(x - 4.5, y + 3.5);
+          pctx.lineTo(x + 4.5, y + 3.5);
+          pctx.closePath();
+          pctx.fill();
+          pctx.fillStyle = color;
+          pctx.font = '8px "IBM Plex Mono", monospace';
+          pctx.textAlign = 'left';
+          pctx.fillText('E', x + 7, y + 2);
+        }
+        if (exitIdx != null) {
+          const x = exitPoint.x;
+          const y = exitPoint.y;
+          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
+          pctx.beginPath();
+          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
+          pctx.fill();
+          pctx.strokeStyle = color;
+          pctx.lineWidth = 1.7;
+          pctx.beginPath();
+          pctx.moveTo(x - 4.4, y - 4.4);
+          pctx.lineTo(x + 4.4, y + 4.4);
+          pctx.moveTo(x + 4.4, y - 4.4);
+          pctx.lineTo(x - 4.4, y + 4.4);
+          pctx.stroke();
+          pctx.fillStyle = color;
+          pctx.font = '8px "IBM Plex Mono", monospace';
+          pctx.textAlign = 'left';
+          pctx.fillText('X', x + 7, y + 2);
+        }
+      }
+    };
+    pctx.save();
+    if (showBtMarkersOn) {
+      drawTradeMarkers(
+        btFiltered,
+        'rgba(33, 160, 149, 0.95)',
+        'rgba(110, 245, 220, 0.92)',
+      );
+    }
+    if (showBtMarkersOff) {
+      drawTradeMarkers(
+        btUnfiltered,
+        'rgba(211, 145, 69, 0.95)',
+        'rgba(255, 205, 120, 0.92)',
+      );
+    }
+    pctx.restore();
   }
 
   // Toggle "↺ Live" button visibility based on viewport state.
