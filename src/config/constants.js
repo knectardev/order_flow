@@ -26,7 +26,7 @@ export const TRADE_CONTEXT_DOT_WATCH = 'rgba(167, 139, 250, 0.95)';
 
 /** Muted lane fills (two rows: jitter + conviction), same hue families as dots + gray Mid. */
 export const REGIME_LANE_FILL_NEUTRAL = 'rgba(52, 56, 64, 0.45)';
-/** Brighter neutral cell when hovering the jitter row (tooltip + highlight pass). */
+/** Brighter neutral lane cell when that bar column is hover-linked (tooltip + highlight pass). */
 export const REGIME_LANE_FILL_NEUTRAL_HOVER = 'rgba(88, 94, 106, 0.82)';
 /** Jitter-row hover: higher α so the brick reads clearly against the pane. */
 export const REGIME_JITTER_LANE_FILL_HOVER = Object.freeze({
@@ -43,6 +43,12 @@ export const REGIME_CONVICTION_LANE_FILL = Object.freeze({
   Low: 'rgba(245, 158, 11, 0.22)',
   Mid: 'rgba(110, 116, 128, 0.38)',
   High: 'rgba(167, 139, 250, 0.22)',
+});
+/** Conviction-row hover fills (hue-matched Low=amber Mid=gray High=violet). */
+export const REGIME_CONVICTION_LANE_FILL_HOVER = Object.freeze({
+  Low: 'rgba(245, 158, 11, 0.55)',
+  Mid: 'rgba(124, 132, 146, 0.62)',
+  High: 'rgba(167, 139, 250, 0.55)',
 });
 
 /** Bars committed per slice in API `seekAsync` (yield between slices for UI). */

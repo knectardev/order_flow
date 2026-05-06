@@ -151,7 +151,7 @@ function _hitTestChart(x, y) {
     if (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias') return 2;
     if (hit.kind === 'priceSwing') return 1.5;
     if (hit.kind === 'divergenceSegment') return 1.45;
-    if (hit.kind === 'regimeLaneJitter') return 1.38;
+    if (hit.kind === 'regimeLaneJitter' || hit.kind === 'regimeLaneConviction') return 1.38;
     if (hit.kind === 'phatCandle' || hit.kind === 'candle') return 1;
     return 0;
   };
@@ -544,6 +544,38 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       desc,
       _velocityHtml: _velocityTooltipExtraHtml(p, _phatEsc),
     };
+  } else if (hit.kind === 'regimeLaneConviction') {
+    const p = hit.payload || {};
+    const cr = p.convictionRegime;
+    const crDisp = cr != null && cr !== '' ? String(cr) : '—';
+    let desc;
+    if (cr === 'High') {
+      desc = 'Flip rate sits in the bottom third of trailing same-session-kind priors (up to ~200 bars): fewer buy/sell dominance flips vs recent bars. Labels are inverted—low flip percentile reads as High conviction (matches pipeline velocity_regime).';
+    } else if (cr === 'Mid') {
+      desc = 'Middle third of that flip-rate distribution—typical flip churn for this window.';
+    } else if (cr === 'Low') {
+      desc = 'Top third of flip rate vs priors (inverted label → Low conviction): more flip-heavy churn, less persistent one-sided aggression.';
+    } else {
+      desc = 'Not classified: null flip rate, insufficient prior bars, or warmup—see velocity_regime ingest.';
+    }
+    const btConv = Number(p.barTimeMs);
+    meta = Number.isFinite(btConv)
+      ? new Date(btConv).toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }) + ' ET'
+      : '—';
+    info = {
+      variant: 'fade',
+      glyph: '▬',
+      name: `Lane conviction · ${crDisp}`,
+      desc,
+      _velocityHtml: _velocityTooltipExtraHtml(p, _phatEsc),
+    };
   } else if (hit.kind === 'candle') {
     const p = hit.payload || {};
     const up = p.isUp !== false;
@@ -577,6 +609,8 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       ? 'Click to highlight on regime matrix'
       : hit.kind === 'regimeLaneJitter'
         ? 'Click to highlight on regime matrix'
+        : hit.kind === 'regimeLaneConviction'
+          ? 'Click to highlight on regime matrix'
       : (hit.kind === 'priceSwing' || hit.kind === 'cvdSwing')
         ? 'Pipeline fractal (swing_events); K matches the Δ section header when uniform.'
         : hit.kind === 'divergenceSegment'
@@ -661,13 +695,13 @@ priceCanvas.addEventListener('mousemove', (e) => {
   }
   const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
   let hoverMs = null;
-  if (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'regimeLaneJitter')) {
+  if (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'regimeLaneJitter' || hit.kind === 'regimeLaneConviction')) {
     hoverMs = Number(hit.payload?.barTimeMs);
   } else if (hit && hit.kind === 'divergenceSegment') {
     hoverMs = barTimeMsFromSubchartX(priceCanvas, _lastMouse.x);
   }
   hoverBar(Number.isFinite(hoverMs) ? hoverMs : null, 'chart-hover');
-  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'divergenceSegment' || hit.kind === 'regimeLaneJitter')) {
+  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'divergenceSegment' || hit.kind === 'regimeLaneJitter' || hit.kind === 'regimeLaneConviction')) {
     _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
   } else {
     _hideTooltip();
@@ -733,7 +767,7 @@ priceCanvas.addEventListener('click', (e) => {
     } else {
       selectFire(hit.payload);
     }
-  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'regimeLaneJitter') {
+  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'regimeLaneJitter' || hit.kind === 'regimeLaneConviction') {
     const barMs = Number(hit.payload?.barTimeMs);
     if (Number.isFinite(barMs)) {
       selectBar(barMs, 'chart-click');

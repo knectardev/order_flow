@@ -10,6 +10,7 @@ import {
   MIN_CHART_VISIBLE_BARS,
   OVERLAY_STACK_STEP,
   REGIME_CONVICTION_LANE_FILL,
+  REGIME_CONVICTION_LANE_FILL_HOVER,
   REGIME_JITTER_LANE_FILL,
   REGIME_JITTER_LANE_FILL_HOVER,
   REGIME_LANE_FILL_NEUTRAL,
@@ -83,16 +84,6 @@ function _barTimeMs(t) {
   return t instanceof Date ? t.getTime() : +new Date(t);
 }
 
-function _regimeLaneCellFill(row, label) {
-  if (label == null || label === '') return REGIME_LANE_FILL_NEUTRAL;
-  const L = String(label);
-  const map = row === 'jitter' ? REGIME_JITTER_LANE_FILL : REGIME_CONVICTION_LANE_FILL;
-  if (L === 'Low') return map.Low;
-  if (L === 'Mid') return map.Mid;
-  if (L === 'High') return map.High;
-  return REGIME_LANE_FILL_NEUTRAL;
-}
-
 /** Top lane row only: brighter fill when `hoverBarTime` matches this bar (tooltip.js linkage). */
 function _regimeLaneJitterCellFill(label, hovered) {
   if (label == null || label === '') {
@@ -102,6 +93,18 @@ function _regimeLaneJitterCellFill(label, hovered) {
   if (L === 'Low') return hovered ? REGIME_JITTER_LANE_FILL_HOVER.Low : REGIME_JITTER_LANE_FILL.Low;
   if (L === 'Mid') return hovered ? REGIME_JITTER_LANE_FILL_HOVER.Mid : REGIME_JITTER_LANE_FILL.Mid;
   if (L === 'High') return hovered ? REGIME_JITTER_LANE_FILL_HOVER.High : REGIME_JITTER_LANE_FILL.High;
+  return hovered ? REGIME_LANE_FILL_NEUTRAL_HOVER : REGIME_LANE_FILL_NEUTRAL;
+}
+
+/** Bottom lane row: brighter fill when `hoverBarTime` matches this bar (`tooltip.js`). */
+function _regimeLaneConvictionCellFill(label, hovered) {
+  if (label == null || label === '') {
+    return hovered ? REGIME_LANE_FILL_NEUTRAL_HOVER : REGIME_LANE_FILL_NEUTRAL;
+  }
+  const L = String(label);
+  if (L === 'Low') return hovered ? REGIME_CONVICTION_LANE_FILL_HOVER.Low : REGIME_CONVICTION_LANE_FILL.Low;
+  if (L === 'Mid') return hovered ? REGIME_CONVICTION_LANE_FILL_HOVER.Mid : REGIME_CONVICTION_LANE_FILL.Mid;
+  if (L === 'High') return hovered ? REGIME_CONVICTION_LANE_FILL_HOVER.High : REGIME_CONVICTION_LANE_FILL.High;
   return hovered ? REGIME_LANE_FILL_NEUTRAL_HOVER : REGIME_LANE_FILL_NEUTRAL;
 }
 
@@ -1582,16 +1585,18 @@ function drawPriceChart() {
       const rb = allBars[ri];
       const laneBarMs = _barTimeMs(rb.time);
       const slotLeft = PAD.l + ri * slotW;
-      const jRowHover =
+      const laneColHover =
         Number.isFinite(laneBarMs)
         && state.selection.hoverBarTime != null
         && state.selection.hoverBarTime === laneBarMs;
       const jr = rb.jitterRegime ?? rb.jitter_regime ?? null;
-      const jFill = _regimeLaneJitterCellFill(jr, jRowHover);
-      const cFill = _regimeLaneCellFill('conviction', rb.convictionRegime ?? rb.conviction_regime);
+      const cr = rb.convictionRegime ?? rb.conviction_regime ?? null;
+      const convictionY0 = regimeTop + REGIME_ROW_PX + REGIME_SEP_PX;
+      const jFill = _regimeLaneJitterCellFill(jr, laneColHover);
+      const cFill = _regimeLaneConvictionCellFill(cr, laneColHover);
       pctx.fillStyle = jFill;
       pctx.fillRect(slotLeft, regimeTop, slotW, REGIME_ROW_PX);
-      if (jRowHover) {
+      if (laneColHover) {
         pctx.strokeStyle = 'rgba(248, 250, 255, 0.35)';
         pctx.lineWidth = 1;
         pctx.strokeRect(slotLeft + 0.5, regimeTop + 0.5, slotW - 1, REGIME_ROW_PX - 1);
@@ -1599,11 +1604,17 @@ function drawPriceChart() {
       pctx.fillStyle = cFill;
       pctx.fillRect(
         slotLeft,
-        regimeTop + REGIME_ROW_PX + REGIME_SEP_PX,
+        convictionY0,
         slotW,
         REGIME_ROW_PX,
       );
+      if (laneColHover) {
+        pctx.strokeStyle = 'rgba(248, 250, 255, 0.35)';
+        pctx.lineWidth = 1;
+        pctx.strokeRect(slotLeft + 0.5, convictionY0 + 0.5, slotW - 1, REGIME_ROW_PX - 1);
+      }
       const jitterY1 = regimeTop + REGIME_ROW_PX;
+      const convictionY1 = convictionY0 + REGIME_ROW_PX;
       state.chartHits.push({
         hitShape: 'rect',
         x: slotLeft + slotW / 2,
@@ -1618,6 +1629,29 @@ function drawPriceChart() {
           barTimeMs: laneBarMs,
           jitterRegime: jr,
           convictionRegime: rb.convictionRegime ?? rb.conviction_regime ?? null,
+          pldRatio: Number.isFinite(Number(rb.pldRatio ?? rb.pld_ratio))
+            ? Number(rb.pldRatio ?? rb.pld_ratio)
+            : null,
+          flipRate: Number.isFinite(Number(rb.flipRate ?? rb.flip_rate))
+            ? Number(rb.flipRate ?? rb.flip_rate)
+            : null,
+          tradeContext: rb.tradeContext ?? rb.trade_context ?? null,
+        },
+      });
+      state.chartHits.push({
+        hitShape: 'rect',
+        x: slotLeft + slotW / 2,
+        y: convictionY0 + REGIME_ROW_PX / 2,
+        r: 4,
+        x0: slotLeft,
+        x1: slotLeft + slotW,
+        y0: convictionY0,
+        y1: convictionY1,
+        kind: 'regimeLaneConviction',
+        payload: {
+          barTimeMs: laneBarMs,
+          jitterRegime: jr,
+          convictionRegime: cr,
           pldRatio: Number.isFinite(Number(rb.pldRatio ?? rb.pld_ratio))
             ? Number(rb.pldRatio ?? rb.pld_ratio)
             : null,
