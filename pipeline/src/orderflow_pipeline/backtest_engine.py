@@ -60,6 +60,60 @@ def signal_bar_allows_next_bar_entry(
     return not gap_blocks_next_bar_entry(bars, signal_idx, tick_size, gap_max_ticks)
 
 
+_ORB_STRUCTURE_SL_BUFFER_TICKS = 4.0
+
+
+def _orb_structure_sl_floor_ticks(
+    fire: dict,
+    side: int,
+    eff_sl_ticks: float | None,
+    *,
+    broker_stop_loss_ticks: float | None,
+    tick_size: float,
+) -> float | None:
+    """Floor simulated ORB stop distance so protective stop can sit beyond opposite OR extreme.
+
+    Without this, a fixed template (e.g. 20 ticks) tags stops mid-structure when entries occur
+    well inside extension above/below the opening range — realistic pullback shakes out before trend.
+
+    Skipped when the operator sets a run-wide broker SL override.
+    """
+    if broker_stop_loss_ticks is not None:
+        return eff_sl_ticks
+    if eff_sl_ticks is None:
+        return None
+    if str(fire.get("watch_id")) != "orb":
+        return eff_sl_ticks
+    diag = fire.get("diagnostics")
+    if not isinstance(diag, dict):
+        return eff_sl_ticks
+    px = fire.get("price")
+    if px is None:
+        return eff_sl_ticks
+    try:
+        entry = float(px)
+    except (TypeError, ValueError):
+        return eff_sl_ticks
+    if tick_size <= 0:
+        return eff_sl_ticks
+    buf = float(_ORB_STRUCTURE_SL_BUFFER_TICKS)
+    try:
+        if side > 0:
+            ol = diag.get("or_low")
+            if ol is None:
+                return eff_sl_ticks
+            structural = (float(entry) - float(ol)) / tick_size + buf
+        else:
+            oh = diag.get("or_high")
+            if oh is None:
+                return eff_sl_ticks
+            structural = (float(oh) - float(entry)) / tick_size + buf
+    except (TypeError, ValueError):
+        return eff_sl_ticks
+    structural = max(0.0, structural)
+    return max(float(eff_sl_ticks), structural)
+
+
 def barrier_prices_from_ticks(
     entry_fill: float,
     side: int,
@@ -613,6 +667,13 @@ class BacktestEngine:
                 eff_sl, eff_tp = finalize_exit_ticks(
                     pend["tpl_sl"], pend["tpl_tp"], entry_bar_idx
                 )
+                eff_sl = _orb_structure_sl_floor_ticks(
+                    pend["fire"],
+                    int(pend["side"]),
+                    eff_sl,
+                    broker_stop_loss_ticks=config.stop_loss_ticks,
+                    tick_size=config.tick_size,
+                )
                 broker.open_position(
                     entry_ts,
                     px_open,
@@ -688,6 +749,13 @@ class BacktestEngine:
                         schedule_next_bar_open(fire, idx, side, tpl_sl, tpl_tp)
                     else:
                         eff_sl, eff_tp = finalize_exit_ticks(tpl_sl, tpl_tp, idx)
+                        eff_sl = _orb_structure_sl_floor_ticks(
+                            fire,
+                            side,
+                            eff_sl,
+                            broker_stop_loss_ticks=config.stop_loss_ticks,
+                            tick_size=config.tick_size,
+                        )
                         broker.open_position(
                             ts,
                             px_fire,
@@ -711,6 +779,13 @@ class BacktestEngine:
                         schedule_next_bar_open(fire, idx, side, tpl_sl, tpl_tp)
                     else:
                         eff_sl, eff_tp = finalize_exit_ticks(tpl_sl, tpl_tp, idx)
+                        eff_sl = _orb_structure_sl_floor_ticks(
+                            fire,
+                            side,
+                            eff_sl,
+                            broker_stop_loss_ticks=config.stop_loss_ticks,
+                            tick_size=config.tick_size,
+                        )
                         broker.open_position(
                             ts,
                             px_fire,
@@ -784,12 +859,7 @@ class BacktestEngine:
                     use_regime_filter=use_regime_filter,
                 )
                 sig = "derived_runtime"
-                if not fires_by_time:
-                    scope = sorted(watch_ids) if watch_ids else ["all"]
-                    raise ValueError(
-                        "No derived fires in requested window/scope for runtime-derived watch "
-                        f"(scope={scope}, timeframe={timeframe})."
-                    )
+                # Empty derived fires are allowed (narrow windows / regime gate): finish as zero-trade run.
             elif use_regime_filter:
                 fires_by_time = self._load_fires(timeframe, from_time, to_time, watch_ids=watch_ids)
                 if not fires_by_time:

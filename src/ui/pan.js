@@ -50,6 +50,7 @@ function _setViewEnd(idx) {
   // current cursor — keeps subsequent streaming state.bars sliding in naturally.
   if (clamped === state.replay.cursor) {
     state.chartViewEnd = null;
+    state.chartFutureBlankSlots = 0;
   } else {
     state.chartViewEnd = clamped;
   }
@@ -72,6 +73,7 @@ function _setViewEnd(idx) {
 
 function returnToLiveEdge() {
   state.chartViewEnd = null;
+  state.chartFutureBlankSlots = 0;
   drawPriceChart();
   drawFlowChart();
   drawCvdChart();
@@ -167,6 +169,37 @@ let _panStartX = 0;
 let _panStartViewEnd = null;
 let _panSlotW = 1;
 let _panMovedDuringDown = false;
+let _playheadDragStartFut = 0;
+let _playheadDragStartMouseX = 0;
+let _playheadDragMoved = false;
+
+function _playheadGeomAllowsDrag() {
+  return !!(state._chartStripGeom?.playheadDragAvailable);
+}
+
+function nearPriceChartPlayhead(cssX, cssY) {
+  const g = state._chartStripGeom;
+  if (!g?.playheadDragAvailable || !Number.isFinite(g.xPlayhead)) return false;
+  if (cssY < g.stripTop || cssY > g.stripBottom) return false;
+  return Math.abs(cssX - g.xPlayhead) <= 12;
+}
+
+function _continuePlayheadDrag(e) {
+  const rect = priceCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const g = state._chartStripGeom;
+  if (!g?.slotW) return;
+  const dx = mx - _playheadDragStartMouseX;
+  const slotDelta = Math.round(dx / g.slotW);
+  const vbReq = clamp(state.chartVisibleBars, MIN_CHART_VISIBLE_BARS, MAX_CHART_VISIBLE_BARS);
+  // Subtract slotDelta so the playhead tracks drag direction (right-drag ⇒ playhead moves right).
+  state.chartFutureBlankSlots = clamp(_playheadDragStartFut - slotDelta, 0, vbReq - 1);
+  if (Math.abs(dx) > 2) _playheadDragMoved = true;
+  drawPriceChart();
+  drawFlowChart();
+  drawCvdChart();
+  if (state.replay.mode === 'real') _renderReplayChrome();
+}
 /** True while pointer is over `#priceChart` — gates arrow-key pan. */
 let _pointerOverPriceChart = false;
 
@@ -176,8 +209,9 @@ const CHART_ARROW_PAN_STEP = 3;
 // mousedown crossed the drag threshold. If so, suppress the click → modal-open
 // chain so panning can't accidentally open modals. Always clears the flag.
 function consumePanMoved() {
-  const moved = _panMovedDuringDown;
+  const moved = _panMovedDuringDown || _playheadDragMoved;
   _panMovedDuringDown = false;
+  _playheadDragMoved = false;
   return moved;
 }
 
@@ -237,6 +271,8 @@ function handlePriceChartWheelZoom(e) {
   const step = 3;
   state.chartVisibleBars += delta > 0 ? step : -step;
   _clampChartVisibleBars();
+  const mxFut = Math.max(0, state.chartVisibleBars - 1);
+  state.chartFutureBlankSlots = clamp(state.chartFutureBlankSlots, 0, mxFut);
   drawPriceChart();
   drawFlowChart();
   drawCvdChart();
@@ -249,11 +285,21 @@ priceCanvas.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 priceCanvas.addEventListener('mousedown', (e) => {
-  if (!_panAvailable()) return;
   if (e.button !== 0) return;
+  const rect = priceCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  if (_playheadGeomAllowsDrag() && nearPriceChartPlayhead(mx, my)) {
+    state.isDraggingPlayhead = true;
+    _playheadDragStartFut = state.chartFutureBlankSlots;
+    _playheadDragStartMouseX = mx;
+    _playheadDragMoved = false;
+    _hideTooltip();
+    return;
+  }
+  if (!_panAvailable()) return;
   state.isPanningChart = true;
   _panMovedDuringDown = false;
-  const rect = priceCanvas.getBoundingClientRect();
   _panStartX = e.clientX - rect.left;
   _panStartViewEnd = _currentViewEnd();
   // Estimate slot width once at drag-start (matches drawPriceChart logic).
@@ -266,6 +312,7 @@ priceCanvas.addEventListener('mousedown', (e) => {
 
 
 window.addEventListener('mouseup', () => {
+  if (state.isDraggingPlayhead) state.isDraggingPlayhead = false;
   if (!state.isPanningChart) return;
   state.isPanningChart = false;
   priceCanvas.classList.remove('panning');
@@ -280,6 +327,8 @@ export {
   returnToLiveEdge,
   _refreshMatrixForView,
   _continuePan,
+  _continuePlayheadDrag,
   consumePanMoved,
   handlePriceChartWheelZoom,
+  nearPriceChartPlayhead,
 };

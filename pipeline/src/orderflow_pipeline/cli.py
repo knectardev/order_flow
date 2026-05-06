@@ -34,6 +34,7 @@ from .aggregate import (
     Bar,
     aggregate_trades,
 )
+from .velocity_regime import stamp_trade_context, stamp_velocity_regimes
 from .decode import iter_trades
 from .serialize import DEFAULT_TUNINGS, write_index, write_session_json
 from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
@@ -170,7 +171,22 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
             # either writer runs, with optional cross-session seed
             # history loaded from DB for higher timeframes.
             seed_df = _load_seed_history(db_con, session_date, tf) if db_con is not None else None
-            _stamp_ranks(result.bars, session_date, tf, seed_df)
+            _stamp_ranks(
+                result.bars,
+                session_date,
+                tf,
+                seed_df,
+                session_kind=args.session,
+            )
+
+            if db_con is not None:
+                stamp_velocity_regimes(
+                    result.bars,
+                    timeframe=tf,
+                    session_kind=args.session,
+                    con=db_con,
+                )
+            stamp_trade_context(result.bars)
 
             # JSON output is 1m only (legacy compat with verify_phase1 +
             # the JSON-mode fallback path; higher timeframes are DB-only).
@@ -280,7 +296,14 @@ def _load_seed_history(con, session_date: date, timeframe: str):
     )
 
 
-def _stamp_ranks(bars: list, session_date: date, timeframe: str, seed_df) -> None:
+def _stamp_ranks(
+    bars: list,
+    session_date: date,
+    timeframe: str,
+    seed_df,
+    *,
+    session_kind: str | None = None,
+) -> None:
     """Run `regime.compute_ranks` on a session's bars and write back.
 
     Builds a small pandas DataFrame from the bar-level scalars the
@@ -302,7 +325,7 @@ def _stamp_ranks(bars: list, session_date: date, timeframe: str, seed_df) -> Non
 
     from . import regime
 
-    rows = [b.to_dict(session_date, timeframe) for b in bars]
+    rows = [b.to_dict(session_date, timeframe, session_kind=session_kind) for b in bars]
     bars_df = pd.DataFrame(rows)
     bars_df = regime.compute_ranks(bars_df, timeframe=timeframe, seed_history_df=seed_df)
 
@@ -364,7 +387,9 @@ def _write_session_to_db(
 
     from . import bias as bias_module
 
-    bar_rows = [b.to_dict(session_date, timeframe) for b in result.bars]
+    bar_rows = [
+        b.to_dict(session_date, timeframe, session_kind=result.session) for b in result.bars
+    ]
     bars_df = pd.DataFrame(bar_rows)
     # Phase 6: stamp the per-bar 7-level bias_state in place. This reads
     # the v_rank / d_rank / vwap that `_stamp_ranks` and

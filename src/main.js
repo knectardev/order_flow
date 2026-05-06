@@ -184,9 +184,41 @@ function _hideChartPanTooltip() {
   tooltipEl.setAttribute('aria-hidden', 'true');
 }
 
+const OVERLAY_VIS_STORAGE_KEY = 'orderflow_dashboard_chart_overlay_visibility';
+
+function _loadChartOverlayVisibilityPrefs() {
+  try {
+    const raw = localStorage.getItem(OVERLAY_VIS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _saveChartOverlayVisibilityPrefs() {
+  try {
+    localStorage.setItem(
+      OVERLAY_VIS_STORAGE_KEY,
+      JSON.stringify(state.chartOverlayVisibility || {}),
+    );
+  } catch (_) {
+    // localStorage unavailable/quota exceeded/private mode: ignore.
+  }
+}
+
 function bindChartOverlayLegendToggles() {
   const buttons = Array.from(document.querySelectorAll('[data-overlay-toggle]'));
   if (!buttons.length) return;
+  const validKeys = new Set(Object.keys(state.chartOverlayVisibility || {}));
+  const saved = _loadChartOverlayVisibilityPrefs();
+  if (saved) {
+    for (const [key, value] of Object.entries(saved)) {
+      if (!validKeys.has(key) || typeof value !== 'boolean') continue;
+      state.chartOverlayVisibility[key] = value;
+    }
+  }
 
   const syncButtonStates = () => {
     for (const btn of buttons) {
@@ -195,6 +227,12 @@ function bindChartOverlayLegendToggles() {
       btn.classList.toggle('is-off', !on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
+    for (const el of document.querySelectorAll('[data-overlay-hint-for]')) {
+      const key = String(el.getAttribute('data-overlay-hint-for') || '');
+      if (!(key in state.chartOverlayVisibility)) continue;
+      const on = state.chartOverlayVisibility[key] !== false;
+      el.classList.toggle('is-off', !on);
+    }
   };
 
   for (const btn of buttons) {
@@ -202,12 +240,152 @@ function bindChartOverlayLegendToggles() {
       const key = String(btn.getAttribute('data-overlay-toggle') || '');
       if (!(key in state.chartOverlayVisibility)) return;
       state.chartOverlayVisibility[key] = !(state.chartOverlayVisibility[key] !== false);
+      _saveChartOverlayVisibilityPrefs();
       syncButtonStates();
       drawPriceChart();
     });
   }
 
   syncButtonStates();
+}
+
+function bindVelocityLegendExplainers() {
+  const legend = document.querySelector('.profile-legend');
+  if (!legend) return;
+  const explainerTargets = Array.from(legend.querySelectorAll('[data-explainer-key]'));
+  if (!explainerTargets.length) return;
+  const tooltip = document.getElementById('velocityLegendExplainerTooltip');
+  if (!tooltip) return;
+
+  const explainers = {
+    'regime-lane': {
+      title: 'Regime lane',
+      body: [
+        'Top row = jitter regime (price geometry: chop vs directional).',
+        'Bottom row = conviction regime (order flow: sustained pressure vs flipping).',
+        'Read top-down: what is price doing, then what is flow doing.',
+        'Computed from rolling 200-bar percentile buckets (Low/Mid/High terciles).',
+      ],
+    },
+    'trade-dots': {
+      title: 'Trade dots',
+      body: [
+        '<span class="velocity-inline-dot velocity-inline-dot--fav"></span> favorable (clean trend context).',
+        '<span class="velocity-inline-dot velocity-inline-dot--avoid"></span> avoid (high jitter + low conviction, chop/no edge).',
+        '<span class="velocity-inline-dot velocity-inline-dot--watch"></span> watch (high jitter + high conviction, one-sided pressure).',
+        'No dot does not mean missing data; most bars are intentionally unmarked.',
+      ],
+    },
+  };
+
+  // Disable legacy native browser tooltips (`title`) on explainer targets;
+  // they visually collide with our custom hover/click explainers.
+  for (const target of explainerTargets) {
+    const title = target.getAttribute('title');
+    if (title) {
+      if (!target.getAttribute('aria-label')) target.setAttribute('aria-label', title);
+      target.removeAttribute('title');
+    }
+  }
+
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const renderExplainer = (key) => {
+    const ex = explainers[key];
+    if (!ex) return '';
+    return `<div class="velocity-explainer-block"><div class="velocity-explainer-title">${esc(ex.title)}</div>${ex.body.map((row) => `<div class="velocity-explainer-row">${row}</div>`).join('')}</div>`;
+  };
+
+  let pinnedKey = null;
+  let pinnedTarget = null;
+
+  const placeTooltipNear = (target) => {
+    const rect = target.getBoundingClientRect();
+    const ttW = tooltip.offsetWidth || 320;
+    const ttH = tooltip.offsetHeight || 140;
+    const pad = 10;
+    let left = rect.right + 12;
+    let top = rect.top - 4;
+    if (left + ttW > window.innerWidth - 8) left = rect.left - ttW - 12;
+    if (left < 8) left = 8;
+    if (top + ttH > window.innerHeight - 8) top = window.innerHeight - ttH - 8;
+    if (top < 8) top = 8;
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    tooltip.style.transform = 'none';
+    tooltip.style.position = 'fixed';
+  };
+
+  const showTooltip = (target, key, { pin = false } = {}) => {
+    const html = renderExplainer(key);
+    if (!html) return;
+    tooltip.innerHTML = html;
+    tooltip.classList.add('visible');
+    tooltip.setAttribute('aria-hidden', 'false');
+    placeTooltipNear(target);
+    if (pin) {
+      pinnedKey = key;
+      pinnedTarget = target;
+      tooltip.classList.add('is-pinned');
+    }
+  };
+
+  const hideTooltip = () => {
+    pinnedKey = null;
+    pinnedTarget = null;
+    tooltip.classList.remove('visible', 'is-pinned');
+    tooltip.setAttribute('aria-hidden', 'true');
+    tooltip.innerHTML = '';
+  };
+
+  const syncPinnedTooltip = () => {
+    if (!pinnedKey || !pinnedTarget || !document.contains(pinnedTarget)) return;
+    showTooltip(pinnedTarget, pinnedKey, { pin: true });
+  };
+
+  for (const target of explainerTargets) {
+    target.addEventListener('mouseenter', () => {
+      const key = String(target.getAttribute('data-explainer-key') || '');
+      if (!key || pinnedKey) return;
+      showTooltip(target, key, { pin: false });
+    });
+    target.addEventListener('mouseleave', () => {
+      if (pinnedKey) return;
+      hideTooltip();
+    });
+    target.addEventListener('focus', () => {
+      const key = String(target.getAttribute('data-explainer-key') || '');
+      if (!key || pinnedKey) return;
+      showTooltip(target, key, { pin: false });
+    });
+    target.addEventListener('blur', () => {
+      if (pinnedKey) return;
+      hideTooltip();
+    });
+    target.addEventListener('click', (e) => {
+      const key = String(target.getAttribute('data-explainer-key') || '');
+      if (!key) return;
+      if (pinnedKey === key && pinnedTarget === target) {
+        hideTooltip();
+      } else {
+        showTooltip(target, key, { pin: true });
+      }
+      e.stopPropagation();
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (pinnedKey) hideTooltip();
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (pinnedKey && !tooltip.contains(e.target) && !explainerTargets.some((el) => el.contains(e.target))) {
+      hideTooltip();
+    }
+  });
+  window.addEventListener('resize', () => {
+    syncPinnedTooltip();
+  });
 }
 
 function onChartPanSliderInput() {
@@ -269,6 +447,7 @@ bindSelectionUI();
 bindEventLogClicks();
 bindBacktestUI();
 bindChartOverlayLegendToggles();
+bindVelocityLegendExplainers();
 bindDivergenceNavUI();
 
 document.addEventListener('orderflow:section-collapse', (ev) => {
@@ -295,9 +474,30 @@ window.addEventListener('orderflow:replay-ready', async () => {
   syncDivergenceNavButtons();
 });
 
-function _windowBoundsIso() {
-  if (state.replay.mode === 'real' && state.replay.dateRange?.min && state.replay.dateRange?.max) {
-    return { from: state.replay.dateRange.min, to: state.replay.dateRange.max };
+/**
+ * Bounds POST /api/backtest/run sends as `from`/`to`.
+ * Prefer replay.dateRange after successful API bar load; if missing (race before replay-ready,
+ * or stale gate), fall back to GET /date-range for this timeframe so historical DuckDB windows
+ * are used instead of a bogus rolling last-24h clock slice.
+ */
+async function _resolveBacktestWindowIso(timeframe) {
+  const dr = state.replay.dateRange;
+  if (dr?.min && dr?.max) {
+    return { from: dr.min, to: dr.max };
+  }
+  const base = String(state.replay.apiBase || '').replace(/\/+$/, '');
+  if (base) {
+    try {
+      const tf = timeframe || state.activeTimeframe || '1m';
+      const r = await fetch(
+        `${base}/date-range?timeframe=${encodeURIComponent(tf)}`,
+        { cache: 'no-store' },
+      );
+      if (r.ok) {
+        const j = await r.json();
+        if (j.min && j.max) return { from: j.min, to: j.max };
+      }
+    } catch (_) { /* noop */ }
   }
   const now = new Date();
   const from = new Date(now.getTime() - (24 * 60 * 60 * 1000));
@@ -695,7 +895,6 @@ function bindBacktestUI() {
     syncBacktestCompareRegimeOffUI();
     renderBacktestPanel();
     try {
-      const { from, to } = _windowBoundsIso();
       const defs = state.backtest.brokerDefaultsFromApi || {};
       const tickSize = Number.isFinite(Number(defs.tick_size)) && Number(defs.tick_size) > 0
         ? Number(defs.tick_size)
@@ -708,6 +907,8 @@ function bindBacktestUI() {
         btTfEl && btTfEl.value && TIMEFRAMES.includes(btTfEl.value)
           ? btTfEl.value
           : state.activeTimeframe || '1m';
+
+      const { from, to } = await _resolveBacktestWindowIso(timeframe);
 
       const common = {
         from,

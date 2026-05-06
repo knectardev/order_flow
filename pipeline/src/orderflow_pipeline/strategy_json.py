@@ -36,7 +36,7 @@ ALLOWED_TIMEFRAME_FIELD_KEYS = frozenset(
         "watch_exit_ticks",
     }
 )
-ALLOWED_WATCH_IDS = frozenset({"breakout", "fade", "absorptionWall", "valueEdgeReject"})
+ALLOWED_WATCH_IDS = frozenset({"breakout", "fade", "absorptionWall", "valueEdgeReject", "orb"})
 ALLOWED_WATCH_EXIT_FIELD_KEYS = frozenset({"stop_loss_ticks", "take_profit_ticks"})
 
 

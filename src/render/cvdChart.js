@@ -34,7 +34,8 @@ function drawCvdChart() {
   cvdCtx.fillStyle = CHART_CANVAS_BG;
   cvdCtx.fillRect(0, 0, w, h);
 
-  const { viewedBars: allBars } = _getViewedBars();
+  const { viewedBars: allBars, viewportSlotCount } = _getViewedBars();
+  const layoutSlots = viewportSlotCount ?? allBars.length;
   const meta = document.getElementById('sessionCvdMeta');
 
   if (allBars.length === 0) {
@@ -43,7 +44,7 @@ function drawCvdChart() {
   }
 
   const PAD = { t: 6, b: 18 };
-  const { padL: PAD_L, chartW, slotW } = layoutViewportStripForSubchart(w, allBars.length);
+  const { padL: PAD_L, chartW, slotW } = layoutViewportStripForSubchart(w, layoutSlots);
   const chartH = h - PAD.t - PAD.b;
 
   const pts = allBars.map((b, i) => ({

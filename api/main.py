@@ -381,6 +381,13 @@ def _bar_to_json_shape(b: dict, tf: str = DEFAULT_TIMEFRAME) -> dict:
         "avgAggressiveBuySize": b.get("avg_aggressive_buy_size"),
         "avgAggressiveSellSize": b.get("avg_aggressive_sell_size"),
         "sizeImbalanceRatio": b.get("size_imbalance_ratio"),
+        "pldRatio":          b.get("pld_ratio"),
+        "flipRate":          b.get("flip_rate"),
+        "vwPathLength":      b.get("vw_path_length"),
+        "pathLengthTicks":   b.get("path_length_ticks"),
+        "jitterRegime":      b.get("jitter_regime"),
+        "convictionRegime":  b.get("conviction_regime"),
+        "tradeContext":      b.get("trade_context"),
         "time":            bt.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "barEndTime": (
             b["bar_end_time"].strftime("%Y-%m-%dT%H:%M:%SZ")

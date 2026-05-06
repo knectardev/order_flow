@@ -47,7 +47,8 @@
             "breakout": { "$ref": "#/$defs/watchExitTicks" },
             "fade": { "$ref": "#/$defs/watchExitTicks" },
             "absorptionWall": { "$ref": "#/$defs/watchExitTicks" },
-            "valueEdgeReject": { "$ref": "#/$defs/watchExitTicks" }
+            "valueEdgeReject": { "$ref": "#/$defs/watchExitTicks" },
+            "orb": { "$ref": "#/$defs/watchExitTicks" }
           }
         }
       }

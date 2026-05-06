@@ -22,7 +22,8 @@ function drawFlowChart() {
     return;
   }
 
-  const { viewedBars: allBars } = _getViewedBars();
+  const { viewedBars: allBars, viewportSlotCount } = _getViewedBars();
+  const layoutSlots = viewportSlotCount ?? allBars.length;
   if (allBars.length === 0) {
     const sumEl = document.getElementById('deltaWindowSum');
     if (sumEl) sumEl.textContent = 'ΣΔ —';
@@ -30,7 +31,7 @@ function drawFlowChart() {
   }
 
   const PAD = { t: 4, b: 4 };
-  const { padL: PAD_L, chartW, slotW } = layoutViewportStripForSubchart(w, allBars.length);
+  const { padL: PAD_L, chartW, slotW } = layoutViewportStripForSubchart(w, layoutSlots);
   const chartH = h - PAD.t - PAD.b;
 
   let maxAbs = 1;

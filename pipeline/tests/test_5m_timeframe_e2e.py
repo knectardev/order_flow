@@ -91,7 +91,7 @@ def test_5m_aggregate_regime_api_bars(monkeypatch, tmp_path):
     con = db_module.connect(db_file)
     db_module.init_schema(con)
     try:
-        _stamp_ranks(result.bars, SESSION_DATE, "5m", None)
+        _stamp_ranks(result.bars, SESSION_DATE, "5m", None, session_kind="rth")
         _write_session_to_db(
             con,
             result,

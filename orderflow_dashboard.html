@@ -164,7 +164,35 @@
       <button type="button" class="item profile-legend-toggle" data-overlay-toggle="openingRange945" aria-pressed="true" title="Toggle NYSE 9:30–9:45 ET opening range (high/low) from loaded bars">
         <span class="swatch or945"></span><strong>OR 9:45</strong> NYSE 9:30–9:45 ET high / low
       </button>
+      <button type="button" class="item profile-legend-toggle" data-overlay-toggle="velocityRegimeLane" data-explainer-key="regime-lane" aria-pressed="true" title="Toggle velocity regime lane (two rows between price and volume)">
+        <span class="swatch regime-lane-mid"></span><strong>Regime lane</strong> jitter + conviction (17px)
+      </button>
+      <button type="button" class="item profile-legend-toggle" data-overlay-toggle="tradeContextDots" data-explainer-key="trade-dots" aria-pressed="true" title="Toggle composite trade-context dots above bars">
+        <span class="swatch trade-dot-fav" aria-hidden="true"></span><strong>Trade dots</strong> favorable · avoid · watch
+      </button>
+      <button type="button" class="item profile-legend-toggle" data-overlay-toggle="velocityMatrixDev" aria-pressed="false" title="Show velocity-matrix cell (1–9) in bar tooltip only">
+        <span class="swatch velocity-dev-icon" aria-hidden="true">#</span><strong>Dev matrix</strong> cell in tooltip
+      </button>
+      <div class="item velocity-legend-swatches" aria-hidden="true">
+        <span class="velocity-leg-label">Lane jitter</span>
+        <span class="leg-chip" style="background:rgba(45,212,191,.22)">Low</span>
+        <span class="leg-chip" style="background:rgba(110,116,128,.38)">Mid</span>
+        <span class="leg-chip" style="background:rgba(245,158,11,.22)">High</span>
+        <span class="velocity-leg-label">Lane conviction</span>
+        <span class="leg-chip" style="background:rgba(245,158,11,.22)">Low</span>
+        <span class="leg-chip" style="background:rgba(110,116,128,.38)">Mid</span>
+        <span class="leg-chip" style="background:rgba(167,139,250,.22)">High</span>
+        <span class="velocity-leg-label">Dots</span>
+        <span class="leg-dot leg-dot--fav" title="favorable"></span>
+        <span class="leg-dot leg-dot--avoid" title="avoid"></span>
+        <span class="leg-dot leg-dot--watch" title="watch"></span>
+        <span class="velocity-leg-muted">no dot = neutral</span>
+      </div>
+      <div class="item velocity-dev-hint" data-overlay-hint-for="velocityMatrixDev">
+        Dev: matrix cell # (1–9) appears in bar tooltip when enabled above.
+      </div>
       <div class="item"><strong style="color: var(--muted-2);">forming bar</strong> dashed = unsettled</div>
+      <div class="velocity-legend-explainer-tooltip" id="velocityLegendExplainerTooltip" role="tooltip" aria-hidden="true"></div>
     </div>
   </div>
 
@@ -279,13 +307,13 @@
       <label title="Positive distance in ticks on the adverse side from entry fill (not Webull-style -25 for longs; enter 25). Long: stop is below fill. Maps to stop_loss_ticks. Blank → merged defaults.">Stop loss (ticks) <input id="btStopLossTicks" type="number" step="any" min="0" placeholder=""></label>
       <label title="Positive distance in ticks to the profit target from fill. Long: target above fill. Maps to take_profit_ticks. Blank → merged defaults.">Take profit (ticks) <input id="btTakeProfitTicks" type="number" step="any" min="0" placeholder=""></label>
       <label class="bt-regime-scale-toggle" title="Scales strategy template SL/TP using persisted regime on the entry bar. Unclear Stop loss / Take profit above to enable—run-wide tick overrides disable scaling.">
-        <input id="btRegimeExitScale" type="checkbox">
+        <input id="btRegimeExitScale" type="checkbox" checked>
         Scale template SL/TP by regime (entry bar)
       </label>
       <label class="bt-regime-scale-mode" title="range_pct: interpolate from bar range_pct; v_rank: discrete multipliers from v_rank (1–5).">
         Regime mode
         <select id="btRegimeExitScaleMode" aria-label="Regime scaling mode" disabled>
-          <option value="range_pct">range_pct</option>
+          <option value="range_pct" selected>range_pct</option>
           <option value="v_rank">v_rank</option>
         </select>
       </label>

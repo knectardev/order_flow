@@ -23,8 +23,8 @@ function toggleStream() {
     // hits Resume Stream, treat the panned position as their new "now":
     // align state.replay.cursor with state.chartViewEnd so the next streamed bar
     // appears immediately on-screen rather than committing off-screen at
-    // the prior live edge. seek() also clears state.chartViewEnd, re-coupling
-    // the viewport to the cursor so subsequent state.bars slide in naturally.
+    // the prior live edge. seek() clears state.chartViewEnd (live coupling)
+    // but preserves chartFutureBlankSlots so the simulated future strip stays put.
     if (state.replay.mode === 'real'
         && state.chartViewEnd !== null
         && state.chartViewEnd !== state.replay.cursor) {

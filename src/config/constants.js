@@ -11,6 +11,31 @@ export const CHART_CANDLE_UP = '#00c087';
 export const CHART_CANDLE_DOWN = '#ff3b30';
 export const CHART_CANDLE_UP_RGB = Object.freeze([0, 192, 135]);
 export const CHART_CANDLE_DOWN_RGB = Object.freeze([255, 59, 48]);
+
+/** Velocity regime lane + composite dots — teal / amber / violet only (never candle bull/bear hues). */
+export const REGIME_ROW_PX = 8;
+export const REGIME_SEP_PX = 1;
+export const REGIME_LANE_TOTAL = REGIME_ROW_PX + REGIME_SEP_PX + REGIME_ROW_PX;
+/** Vertical stack ladder from `yScale(high)` up (negative Y): tier 1 = composite dot anchor. */
+export const OVERLAY_STACK_STEP = 6;
+
+/** Composite `tradeContext` dot fills (~α 0.95). */
+export const TRADE_CONTEXT_DOT_FAVORABLE = 'rgba(45, 212, 191, 0.95)';
+export const TRADE_CONTEXT_DOT_AVOID = 'rgba(245, 158, 11, 0.95)';
+export const TRADE_CONTEXT_DOT_WATCH = 'rgba(167, 139, 250, 0.95)';
+
+/** Muted lane fills (two rows: jitter + conviction), same hue families as dots + gray Mid. */
+export const REGIME_JITTER_LANE_FILL = Object.freeze({
+  Low: 'rgba(45, 212, 191, 0.22)',
+  Mid: 'rgba(110, 116, 128, 0.38)',
+  High: 'rgba(245, 158, 11, 0.22)',
+});
+export const REGIME_CONVICTION_LANE_FILL = Object.freeze({
+  Low: 'rgba(245, 158, 11, 0.22)',
+  Mid: 'rgba(110, 116, 128, 0.38)',
+  High: 'rgba(167, 139, 250, 0.22)',
+});
+
 /** Bars committed per slice in API `seekAsync` (yield between slices for UI). */
 export const SEEK_ASYNC_BATCH_BARS = 1000;
 export const PROFILE_BINS = 36;

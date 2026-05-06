@@ -1,17 +1,25 @@
+Tooltips 
 
-### Three "Integrity Checks" to add to your workflow
-While the plan is sound, keep these three risks in mind as you build:
+Specifically, hovering each legend item should answer "what is this and how do I use it?":
 
-#### 1. The "Boundary Condition" Test
-What happens when `range_pct` or `v_rank` hits its extreme (e.g., 0.0 or the theoretical max)? 
-* **The Check:** Add a test case for `regime_exit_scale.py` that passes "garbage" regime values (NaN, negative, or extremely high values). Your helper should return the *template* (fallback) value rather than blowing up the `BacktestEngine` or producing a 0-tick stop loss.
+- **Regime lane** → "Top row: jitter regime (price geometry — chop vs. directional). Bottom row: conviction regime (order flow — sustained pressure vs. flipping). Read top-down: what's the price doing, what's the flow doing." Maybe a one-line aside: "rolling 200-bar percentile, terciles."
 
-#### 2. The Null Hypothesis Consistency
-Since your Null Hypothesis (NH) parity loop schedules trades based on eligible indices, ensure that the **regime-scaling is applied during the NH run exactly as it is in the baseline run.** * Because your scaling is deterministic (based on bar data at entry time), the NH parity loop *should* handle this naturally. However, verify that your NH parity test doesn't accidentally pick up "average" regime data. It must use the *exact* regime data of the randomized fire time.
+- **Trade dots** → Brief table-style tooltip: teal = favorable (clean trend), amber = avoid (chop with no edge), violet = watch (chop with one-sided pressure — could be a real break or a phake-out). One sentence on what's missing: "no dot ≠ data missing; dot is a high-confidence composite, most bars are intentionally unmarked."
 
-#### 3. Execution/Slippage Interaction
-When you scale your SL/TP based on volatility, you are essentially tightening or widening your "Exit Zone." 
-* **The Risk:** If you tighten your stop loss significantly during low-volatility regimes, you might find that `slippage_ticks` becomes a larger percentage of your risk.
-* **The Advice:** Keep an eye on your "Slippage-to-Stop-Loss" ratio in your metadata. If your SL gets dynamically scaled to be very tight (e.g., 4 ticks) and your `slippage_ticks` is 2, your exit execution is essentially 50% slippage-dominated. This might make the strategy look "unprofitable" during low volatility simply because of slippage mechanics, not because of the signal logic.
+- **Vel tint legacy strip (advanced)** → "Older single-strip encoding kept for comparison/debugging. Less legible than the dedicated lane. Toggle off in normal use."
 
+Two suggestions for execution:
 
+1. **Make the explainer tooltips click-to-pin, not just hover.** Hover-only tooltips disappear the moment you reach for the mouse to look at the chart. A persistent tooltip you can dismiss with click or escape lets you read while looking. The bar-hover data tooltip should stay hover-only since you're scanning many bars.
+
+2. **Use the (i) info icon, not just legend hover, as the entry point.** That icon I see at the top is sitting unused for what looks like its native purpose. Clicking it could open a single help panel with all the explainers in one place — useful when you don't remember which legend item to hover. Hover-on-legend stays available for quick refreshers, the panel handles "I want to read everything in context."
+
+A few other observations from the screenshot worth flagging:
+
+**Those vertical bands behind the candles look like they're still rendering.** The plan had legacy tint defaulting OFF and the new lane handling regime visualization. If those bands are the legacy tint, the toggle didn't take effect — possibly because the default state isn't being applied to existing user state, or the toggle is wired but `velocityJitterTint` is still being drawn somewhere. Worth verifying. If they're something else (session highlights, RTH bands, etc.), ignore. If the legacy tint really is on by default still, the chart is double-encoding jitter (lane + tint) and competing with itself.
+
+**Dot density looks high.** Almost every bar has a dot. If `favorable`/`avoid`/`watch` are firing on ~70%+ of bars, the composite isn't filtering enough — it's supposed to be a high-confidence signal where most bars stay unmarked. Could be the tercile cutoffs are too loose for the composite logic, or it could be a genuinely active period of tape. Quick gut check: count dots per session over a few days. If it's consistently high, consider tightening — e.g., require quintile extremes (top/bottom 20%) for the composite even though the underlying regimes are classified at terciles. The lane stays at terciles for full coverage; the composite uses stricter cutoffs for action signal.
+
+**Lane height looks tight at this zoom.** Hard to assess from a screenshot but the 17px lane is reading as a thin gradient strip rather than two scannable rows. Stand back from your monitor and see if you can read the regime sequence at a glance without zooming in. If not, consider 20-22px (two 10px rows + 1 separator) — costs you 3-5px of price pane real estate but might be worth it for the readability.
+
+Last thing: regardless of what you do with tooltips, screenshot a few bars that *visibly* match what the dots claim (e.g., a clear teal-dot bar that's obviously a clean trend bar by eye) and a few that don't, and use those as your sanity check that the metrics are doing what the names say. That's still the most important test before you start trusting the labels.

@@ -148,7 +148,7 @@ export const state = {
       stopLossTicks: null,
       takeProfitTicks: null,
       /** When true, POST regime_exit_scale_enabled (requires blank run-wide SL/TP per server). */
-      regimeExitScaleEnabled: false,
+      regimeExitScaleEnabled: true,
       /** `range_pct` | `v_rank` — maps to regime_exit_scale_mode when scaling is ON. */
       regimeExitScaleMode: 'range_pct',
       flipOnOppositeFire: true,
@@ -182,6 +182,10 @@ export const state = {
   // When the user pans, chartViewEnd is locked to a specific value and a "↺ Live"
   // button appears to return to live edge.
   chartViewEnd: null,
+  /** UI-only (API replay, panned behind live): empty bar-slots to the right of data — simulated "future". */
+  chartFutureBlankSlots: 0,
+  /** True while dragging the dashed NOW / playhead to resize the simulated future strip. */
+  isDraggingPlayhead: false,
   // Bottom chart-legend overlay toggles. Each key controls whether its
   // associated reference line/labels are rendered in priceChart.
   chartOverlayVisibility: {
@@ -190,6 +194,12 @@ export const state = {
     vwap: true,
     /** NYSE cash session: high/low of bars whose [open, open+bin) intersects 9:30–9:45 ET (reference only). */
     openingRange945: true,
+    /** Two-row regime lane (17px) between price pane and volume — teal/amber/violet lane encoding. */
+    velocityRegimeLane: true,
+    /** Composite trade-context dots above bars (`tradeContext` from API). */
+    tradeContextDots: true,
+    /** Dev: append velocity-matrix cell index (1–9) to bar tooltip only; no on-chart labels. */
+    velocityMatrixDev: false,
   },
   /** How many candles to fit horizontally (wheel zoom); rolling buffer size remains MAX_BARS. */
   chartVisibleBars: MAX_BARS,

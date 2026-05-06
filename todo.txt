@@ -1,9 +1,17 @@
+VELOCITY layer 
 
-Your Stop Loss (SL) and Take Profit (TP) values should be dynamic, not static.
+add PL utility to drawing tools
+Add box to drawing tools
+Add long and short trade sim
+Practice using various regime signals
+Add standard ema’s
+
+Between phat candles, standard Ema, regime filter, and derived signals such as absorption and exhaustion, build a plausible manual strategy. If it works then code it.
+
+
 
 Test / bracket by various time sessions during day. 
 Consider off-hours. 
-
 
 Refine Backtesting logic / params 
 C:\Users\chris\.cursor\plans

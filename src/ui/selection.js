@@ -148,6 +148,7 @@ function selectFire(fire) {
   if (state.replay.mode === 'real' && all.length) {
     const endExclusive = Math.max(1, Math.min(last + 1, all.length));
     state.chartViewEnd = endExclusive;
+    state.chartFutureBlankSlots = 0;
     _syncCurrentSession();
   }
 

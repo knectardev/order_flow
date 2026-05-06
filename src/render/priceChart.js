@@ -8,6 +8,15 @@ import {
   ES_MIN_TICK,
   MAX_CHART_VISIBLE_BARS,
   MIN_CHART_VISIBLE_BARS,
+  OVERLAY_STACK_STEP,
+  REGIME_CONVICTION_LANE_FILL,
+  REGIME_JITTER_LANE_FILL,
+  REGIME_LANE_TOTAL,
+  REGIME_ROW_PX,
+  REGIME_SEP_PX,
+  TRADE_CONTEXT_DOT_AVOID,
+  TRADE_CONTEXT_DOT_FAVORABLE,
+  TRADE_CONTEXT_DOT_WATCH,
 } from '../config/constants.js';
 import { state } from '../state.js';
 import { computeProfile } from '../analytics/profile.js';
@@ -71,6 +80,16 @@ function _barTimeMs(t) {
   return t instanceof Date ? t.getTime() : +new Date(t);
 }
 
+function _regimeLaneCellFill(row, label) {
+  if (label == null || label === '') return 'rgba(52, 56, 64, 0.45)';
+  const L = String(label);
+  const map = row === 'jitter' ? REGIME_JITTER_LANE_FILL : REGIME_CONVICTION_LANE_FILL;
+  if (L === 'Low') return map.Low;
+  if (L === 'Mid') return map.Mid;
+  if (L === 'High') return map.High;
+  return 'rgba(52, 56, 64, 0.45)';
+}
+
 /** Bin width per chart timeframe (mirrors `BIN_MS_BY_TF` in `replay.js`). */
 const _BIN_MS_BY_TF = {
   '1m': 60 * 1000,
@@ -103,6 +122,59 @@ function _tradeMsToVisibleBarIndex(idxByMs, allBars, tradeMs) {
     }
   }
   return bestIdx != null && bestAbs <= maxDelta ? bestIdx : null;
+}
+
+function _drawTradeSignalBadge(ctx, {
+  x, y, text, fillStyle, borderStyle = 'rgba(0, 0, 0, 0.55)', textStyle = 'rgba(245, 248, 255, 0.98)', pointTo = 'down',
+}) {
+  const pointerH = 6;
+  const pointerHalfW = 5;
+  const padX = 7;
+  const padY = 4;
+  const fontPx = 11;
+  ctx.save();
+  ctx.font = `700 ${fontPx}px "IBM Plex Mono", monospace`;
+  const textW = Math.ceil(ctx.measureText(text).width);
+  const boxW = Math.max(18, textW + padX * 2);
+  const boxH = fontPx + padY * 2;
+  const x0 = Math.round(x - boxW / 2);
+  const y0 = pointTo === 'down'
+    ? Math.round(y - boxH - pointerH)
+    : Math.round(y + pointerH);
+  const r = 5;
+
+  // Drop shadow keeps labels readable over dense candle clusters.
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 5;
+  ctx.shadowOffsetY = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0 + r, y0);
+  ctx.arcTo(x0 + boxW, y0, x0 + boxW, y0 + boxH, r);
+  ctx.arcTo(x0 + boxW, y0 + boxH, x0, y0 + boxH, r);
+  ctx.arcTo(x0, y0 + boxH, x0, y0, r);
+  ctx.arcTo(x0, y0, x0 + boxW, y0, r);
+  if (pointTo === 'down') {
+    ctx.moveTo(x - pointerHalfW, y0 + boxH);
+    ctx.lineTo(x, y0 + boxH + pointerH);
+    ctx.lineTo(x + pointerHalfW, y0 + boxH);
+  } else {
+    ctx.moveTo(x - pointerHalfW, y0);
+    ctx.lineTo(x, y0 - pointerH);
+    ctx.lineTo(x + pointerHalfW, y0);
+  }
+  ctx.closePath();
+  ctx.fillStyle = fillStyle;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = borderStyle;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = textStyle;
+  ctx.fillText(text, x, y0 + boxH / 2);
+  ctx.restore();
 }
 
 /** [y,m,d] in America/New_York for grouping tick labels across session-calendar days */
@@ -215,6 +287,30 @@ function _bottomAxisTickText(bars, idx, prevTickIdx, multiDay) {
     return `${_fmtEtMonthDay.format(d)} ${_formatEtClock12(b.time)} ET`;
   }
   return `${_formatEtClock12(b.time)} ET`;
+}
+
+/** Epoch-ms at viewport slot `slotIdx` (may lie beyond `bars.length` for synthetic future ticks). */
+function _barTimeMsAtViewportSlot(bars, slotIdx, binMs) {
+  if (!bars?.length || !Number.isFinite(binMs) || binMs <= 0) return NaN;
+  if (slotIdx < bars.length) return _barTimeMs(bars[slotIdx].time);
+  const lastMs = _barTimeMs(bars[bars.length - 1].time);
+  const ahead = slotIdx - bars.length + 1;
+  return lastMs + ahead * binMs;
+}
+
+/** Axis label for tick at `slotIdx`, including synthetic slots past the last loaded bar. */
+function _axisTickLabelAtSlot(bars, slotIdx, binMs, prevTickSlotIdx, multiDay) {
+  if (slotIdx < bars.length) return _bottomAxisTickText(bars, slotIdx, prevTickSlotIdx, multiDay);
+  const ms = _barTimeMsAtViewportSlot(bars, slotIdx, binMs);
+  const d = new Date(ms);
+  if (!multiDay) return `${_formatEtClock12(d)} ET`;
+  let prevMs = NaN;
+  if (prevTickSlotIdx >= 0) prevMs = _barTimeMsAtViewportSlot(bars, prevTickSlotIdx, binMs);
+  const prevD = Number.isFinite(prevMs) ? new Date(prevMs) : null;
+  if (!prevD || !_sameEtYmd(prevD, d)) {
+    return `${_fmtEtMonthDay.format(d)} ${_formatEtClock12(d)} ET`;
+  }
+  return `${_formatEtClock12(d)} ET`;
 }
 
 /** Matches `catalogKeyFromPrimitiveEvent` in replay.js (keep in sync). */
@@ -549,6 +645,12 @@ function _buildPhatHoverPayload(bar, isUp, layout = null) {
   const rticks = _phatRejectionSideWickTicks(bar);
   const rejectionSideWickTicks = Number.isFinite(rticks) ? rticks : null;
 
+  const jr = bar?.jitterRegime ?? bar?.jitter_regime ?? null;
+  const cr = bar?.convictionRegime ?? bar?.conviction_regime ?? null;
+  const tc = bar?.tradeContext ?? bar?.trade_context ?? null;
+  const pl = bar?.pldRatio ?? bar?.pld_ratio ?? null;
+  const fr = bar?.flipRate ?? bar?.flip_rate ?? null;
+
   return {
     shape: body.shape,
     shapeLabel,
@@ -569,6 +671,11 @@ function _buildPhatHoverPayload(bar, isUp, layout = null) {
     layout: layout && typeof layout.volNorm === 'number'
       ? { volNorm: layout.volNorm, narrowBody: !!layout.narrowBody }
       : null,
+    pldRatio: Number.isFinite(Number(pl)) ? Number(pl) : null,
+    flipRate: Number.isFinite(Number(fr)) ? Number(fr) : null,
+    jitterRegime: jr,
+    convictionRegime: cr,
+    tradeContext: tc,
   };
 }
 
@@ -701,20 +808,33 @@ function _getViewedBars() {
 
   if (replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== replay.cursor) {
     const end = clamp(state.chartViewEnd, 1, replay.allBars.length);
-    const effVb = Math.min(vbReq, end, MAX_CHART_VISIBLE_BARS);
-    const panViewStart = Math.max(0, end - effVb);
+    let nFut = clamp(Math.round(Number(state.chartFutureBlankSlots) || 0), 0, vbReq - 1);
+    let nData = vbReq - nFut;
+    if (end < nData) {
+      nData = end;
+      nFut = vbReq - nData;
+    }
+    const panViewStart = Math.max(0, end - nData);
     return {
       viewedBars: replay.allBars.slice(panViewStart, end),
       isPanned: true,
       panViewStart,
+      viewportSlotCount: vbReq,
     };
   }
 
   if (replay.mode === 'real') {
     const cursor = replay.cursor;
     const forming = state.formingBar;
-    const settleWant = Math.max(0, vbReq - (forming ? 1 : 0));
-    const nSettle = Math.min(settleWant, cursor);
+    const formingSlots = forming ? 1 : 0;
+    let nFut = clamp(Math.round(Number(state.chartFutureBlankSlots) || 0), 0, vbReq - 1);
+    let nDataTarget = vbReq - nFut;
+    const maxContent = cursor + formingSlots;
+    if (maxContent < nDataTarget) {
+      nDataTarget = maxContent;
+      nFut = vbReq - nDataTarget;
+    }
+    const nSettle = Math.min(Math.max(0, nDataTarget - formingSlots), cursor);
     const start = Math.max(0, cursor - nSettle);
     const settledSlice = replay.allBars.slice(start, cursor);
     const viewedBars = forming ? [...settledSlice, forming] : settledSlice;
@@ -722,6 +842,7 @@ function _getViewedBars() {
       viewedBars,
       isPanned: false,
       panViewStart: start,
+      viewportSlotCount: vbReq,
     };
   }
 
@@ -735,6 +856,7 @@ function _getViewedBars() {
     viewedBars,
     isPanned: false,
     panViewStart: 0,
+    viewportSlotCount: viewedBars.length,
   };
 }
 
@@ -745,6 +867,9 @@ function drawPriceChart() {
   state.chartHits = [];
 
   // Background grid
+  // Paint phases (requirements): (1) background (2) POC/VA ref lines (3) bias ribbon
+  // (4) session dividers (5) optional legacy full-pane jitter tint (6) candles+wicks
+  // (7) regime lane (8) volume (9) composite dots (10+) OR box, VWAP, fires, events, profile…
   pctx.fillStyle = CHART_CANVAS_BG;
   pctx.fillRect(0, 0, w, h);
 
@@ -756,6 +881,7 @@ function drawPriceChart() {
   const viewedBars = view.viewedBars;
   const isPanned = view.isPanned;
   const panViewStart = view.panViewStart;
+  const layoutSlots = view.viewportSlotCount ?? viewedBars.length;
   let viewedEvents;
   if (state.replay.mode === 'real' && viewedBars.length) {
     if (state.replay.allEvents?.length) {
@@ -779,7 +905,10 @@ function drawPriceChart() {
     }
   }
 
-  if (viewedBars.length === 0) return;
+  if (viewedBars.length === 0) {
+    state._chartStripGeom = null;
+    return;
+  }
 
   const activeTf = state.activeTimeframe || DEFAULT_TIMEFRAME;
 
@@ -797,11 +926,13 @@ function drawPriceChart() {
   const chartW = w - PROFILE_W - PAD.l - PAD.r - 8;
   // Reserve bottom ~22% for the volume sub-band; price chart uses the rest.
   const VOL_BAND_FRAC = 0.22;
-  const VOL_BAND_GAP  = 4;        // small visual gap between price and volume bands
+  const VOL_BAND_GAP  = 4;        // gap above regime lane; gap between lane and volume (same as notes)
   const fullChartH = h - PAD.t - PAD.b;
   const volBandH = Math.round(fullChartH * VOL_BAND_FRAC);
-  const chartH = fullChartH - volBandH - VOL_BAND_GAP;
-  const volTop = PAD.t + chartH + VOL_BAND_GAP;
+  // Reserve REGIME_LANE_TOTAL (17px) between the price pane and the volume band.
+  const chartH = fullChartH - volBandH - REGIME_LANE_TOTAL - 2 * VOL_BAND_GAP;
+  const regimeTop = PAD.t + chartH + VOL_BAND_GAP;
+  const volTop = regimeTop + REGIME_LANE_TOTAL + VOL_BAND_GAP;
 
   const allBars = viewedBars;
   const phatViewportVolRange = computeViewportVolumeRange(allBars);
@@ -1203,9 +1334,9 @@ function drawPriceChart() {
     }
   }
 
-  // Candles
-  const totalBars = allBars.length;
-  const slotW = chartW / Math.max(totalBars, 12);
+  // Candles — horizontal layout uses `layoutSlots` so panned history can reserve
+  // empty slots to the right (simulated future) without changing bar fetch semantics.
+  const slotW = chartW / Math.max(layoutSlots, 12);
   const baseCandleW = Math.max(2, Math.min(slotW * 0.65, 14));
 
   // Phase 6: directional-bias ribbon. Drawn first inside the reserved
@@ -1280,6 +1411,8 @@ function drawPriceChart() {
   // accent halo. O(visible) per frame because we only check membership
   // for the candles we're drawing — Set lookup is O(1).
   const selectionActive = state.selection.kind !== null && state.selection.barTimes !== null;
+
+  const overlayVel = state.chartOverlayVisibility || {};
 
   for (let i = 0; i < allBars.length; i++) {
     const b = allBars[i];
@@ -1410,9 +1543,44 @@ function drawPriceChart() {
         y0: top,
         y1: top + bodyH,
         kind: 'candle',
-        payload: { barTimeMs, isUp, open: b.open, high: b.high, low: b.low, close: b.close },
+          payload: {
+            barTimeMs,
+            isUp,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            pldRatio: Number.isFinite(Number(b.pldRatio)) ? Number(b.pldRatio) : null,
+            flipRate: Number.isFinite(Number(b.flipRate)) ? Number(b.flipRate) : null,
+            jitterRegime: b.jitterRegime ?? null,
+            convictionRegime: b.convictionRegime ?? null,
+            tradeContext: b.tradeContext ?? null,
+          },
       });
     }
+  }
+
+  // Regime lane (two rows): jitter + conviction, locked teal/amber/violet palette.
+  if (overlayVel.velocityRegimeLane !== false) {
+    pctx.save();
+    for (let ri = 0; ri < allBars.length; ri++) {
+      const rb = allBars[ri];
+      const slotLeft = PAD.l + ri * slotW;
+      const jFill = _regimeLaneCellFill('jitter', rb.jitterRegime);
+      const cFill = _regimeLaneCellFill('conviction', rb.convictionRegime);
+      pctx.fillStyle = jFill;
+      pctx.fillRect(slotLeft, regimeTop, slotW, REGIME_ROW_PX);
+      pctx.fillStyle = cFill;
+      pctx.fillRect(
+        slotLeft,
+        regimeTop + REGIME_ROW_PX + REGIME_SEP_PX,
+        slotW,
+        REGIME_ROW_PX,
+      );
+    }
+    pctx.fillStyle = 'rgba(42, 46, 54, 0.85)';
+    pctx.fillRect(PAD.l, regimeTop + REGIME_ROW_PX, chartW, REGIME_SEP_PX);
+    pctx.restore();
   }
 
   // Volume sub-band — bottom of the price canvas, color-matched to candle direction.
@@ -1449,33 +1617,72 @@ function drawPriceChart() {
   pctx.textAlign = 'right';
   pctx.fillText(`max ${maxVol.toLocaleString()}`, PAD.l + chartW - 4, volTop + 8);
 
-  // NYSE 9:30–9:45 ET opening range (high/low), segmented per ET day in the viewport.
+  // Composite tradeContext dots — tier 1 above wick (`OVERLAY_STACK_STEP`); after volume so z-order clears lane.
+  if (overlayVel.tradeContextDots !== false) {
+    pctx.save();
+    for (let di = 0; di < allBars.length; di++) {
+      const db = allBars[di];
+      const tc = db.tradeContext ?? db.trade_context;
+      let fill = null;
+      if (tc === 'favorable') fill = TRADE_CONTEXT_DOT_FAVORABLE;
+      else if (tc === 'avoid') fill = TRADE_CONTEXT_DOT_AVOID;
+      else if (tc === 'watch') fill = TRADE_CONTEXT_DOT_WATCH;
+      if (!fill) continue;
+      const xCenter = PAD.l + (di + 0.5) * slotW;
+      const yDot = yScale(db.high) - OVERLAY_STACK_STEP;
+      pctx.fillStyle = fill;
+      pctx.beginPath();
+      pctx.arc(xCenter, yDot, 3.5, 0, Math.PI * 2);
+      pctx.fill();
+    }
+    pctx.restore();
+  }
+
+  // NYSE opening-range box per ET day in viewport.
+  // Vertical bounds = OR(9:30–9:45) hi/lo (same aggregation as runtime ORB on 5m); horizontal span is
+  // only that formation window (9:30–9:45 ET), not the full morning — wide boxes misread vs ORB fills.
   if (showOpeningRange945 && or945ByDay.size > 0 && allBars.length) {
-    const strokeOr = 'rgba(255, 145, 85, 0.82)';
+    const strokeOr = 'rgba(186, 160, 255, 0.9)';
+    const fillOr = 'rgba(186, 160, 255, 0.14)';
     pctx.save();
     pctx.strokeStyle = strokeOr;
-    pctx.lineWidth = 1.25;
-    pctx.setLineDash([5, 4]);
+    pctx.fillStyle = fillOr;
+    pctx.lineWidth = 1;
     for (let i = 0; i < allBars.length; ) {
       const dk = _etYmdKey(allBars[i].time);
       let j = i + 1;
       while (j < allBars.length && _etYmdKey(allBars[j].time) === dk) j++;
       const lvl = or945ByDay.get(dk);
       if (lvl && Number.isFinite(lvl.hi) && Number.isFinite(lvl.lo)) {
-        const xLeft = PAD.l + i * slotW;
-        const xRight = PAD.l + j * slotW;
+        let leftIdx = i;
+        for (let k = i; k < j; k++) {
+          if (_etMinutesSinceMidnightEt(allBars[k].time) >= RTH_OR945_START_MIN) {
+            leftIdx = k;
+            break;
+          }
+        }
+        let rightIdx = j;
+        for (let k = i; k < j; k++) {
+          if (_etMinutesSinceMidnightEt(allBars[k].time) >= RTH_OR945_END_MIN) {
+            rightIdx = k;
+            break;
+          }
+        }
+        const xLeft = PAD.l + leftIdx * slotW;
+        const xRight = PAD.l + rightIdx * slotW;
+        if (xRight <= xLeft) {
+          i = j;
+          continue;
+        }
         const yHi = yScaleClamped(lvl.hi);
         const yLo = yScaleClamped(lvl.lo);
-        pctx.beginPath();
-        pctx.moveTo(xLeft, yHi);
-        pctx.lineTo(xRight, yHi);
-        pctx.moveTo(xLeft, yLo);
-        pctx.lineTo(xRight, yLo);
-        pctx.stroke();
+        const yTop = Math.min(yHi, yLo);
+        const boxH = Math.max(1, Math.abs(yLo - yHi));
+        pctx.fillRect(xLeft, yTop, xRight - xLeft, boxH);
+        pctx.strokeRect(xLeft + 0.5, yTop + 0.5, xRight - xLeft - 1, boxH - 1);
       }
       i = j;
     }
-    pctx.setLineDash([]);
     pctx.restore();
   }
 
@@ -1860,22 +2067,41 @@ function drawPriceChart() {
     }
   }
 
+  const axisFloorY = volTop + volBandH;
+  const dataSlots = allBars.length;
+  // Simulated future: repaint OHLC/lane/volume strip so POC/VWAP/session ink does not bleed into blank slots.
+  if (layoutSlots > dataSlots && dataSlots >= 0) {
+    const xMask = PAD.l + dataSlots * slotW;
+    const maskW = PAD.l + chartW - xMask;
+    if (maskW > 0) {
+      pctx.fillStyle = CHART_CANVAS_BG;
+      pctx.fillRect(xMask, PAD.t, maskW, chartH);
+      pctx.fillRect(xMask, regimeTop, maskW, REGIME_LANE_TOTAL);
+      pctx.fillRect(xMask, volTop, maskW, volBandH);
+    }
+  }
+
   // Bottom axis strip (canvas area above HTML “Chart view” slider): US Eastern 12h clock + “ ET”.
   // 5m / 15m use fewer candidate ticks + larger min gap so long date+time labels never overlap.
   // Mirrored session dates on a second row are skipped on 5m / 15m and when clock ticks already
   // carry day changes (multi-day window).
-  const axisFloorY = volTop + volBandH;
-  const multiDayVp = _viewportSpansMultipleEtDays(allBars);
+  let multiDayVp = _viewportSpansMultipleEtDays(allBars);
+  if (!multiDayVp && layoutSlots > allBars.length && allBars.length > 0) {
+    const tLast = _barTimeMsAtViewportSlot(allBars, layoutSlots - 1, binMsOr945);
+    if (Number.isFinite(tLast)) {
+      multiDayVp = !_sameEtYmd(allBars[0].time, new Date(tLast));
+    }
+  }
   const useSparseTfAxis = activeTf === '15m' || activeTf === '5m';
 
-  if (totalBars >= 1) {
+  if (layoutSlots >= 1) {
     pctx.save();
     pctx.font = '9px "IBM Plex Mono", monospace';
     pctx.strokeStyle = 'rgba(148, 156, 172, 0.4)';
     pctx.fillStyle = 'rgba(178, 186, 200, 0.92)';
     pctx.lineWidth = 1;
     pctx.textBaseline = 'bottom';
-    const nBars = totalBars;
+    const nBars = layoutSlots;
     const pxPerSlot = useSparseTfAxis && multiDayVp ? 100 : useSparseTfAxis ? 88 : 52;
     const capTicks = useSparseTfAxis && multiDayVp ? 4 : useSparseTfAxis ? 5 : 12;
     let wantTicks = clamp(Math.floor(chartW / pxPerSlot), Math.min(nBars, useSparseTfAxis ? 3 : 4), Math.min(capTicks, nBars));
@@ -1896,7 +2122,7 @@ function drawPriceChart() {
     let lastRight = -Infinity;
     let prevLblIdx = -1;
     for (const idx of uniq) {
-      const lbl = _bottomAxisTickText(allBars, idx, prevLblIdx, multiDayVp);
+      const lbl = _axisTickLabelAtSlot(allBars, idx, binMsOr945, prevLblIdx, multiDayVp);
       const wTxt = Math.ceil(pctx.measureText(lbl).width) + 4;
       const x = PAD.l + (idx + 0.5) * slotW;
       const left = x - wTxt / 2;
@@ -1910,7 +2136,7 @@ function drawPriceChart() {
     }
     if (uniq.length && acceptedTicks.length === 0) {
       const idx = uniq[Math.floor(uniq.length / 2)];
-      const lbl = _bottomAxisTickText(allBars, idx, -1, multiDayVp);
+      const lbl = _axisTickLabelAtSlot(allBars, idx, binMsOr945, -1, multiDayVp);
       acceptedTicks.push({ idx, lbl, x: PAD.l + (idx + 0.5) * slotW });
     }
     for (const t of acceptedTicks) {
@@ -1989,27 +2215,41 @@ function drawPriceChart() {
     }
   }
 
-  // Vertical "NOW" line — anchors the user's perception to "what bar drives
-  // the regime matrix". At live edge: the rightmost (forming or last
-  // committed) bar; when panned: the right edge of the visible slice (the bar
-  // whose vol×depth state the matrix is displaying — see _refreshMatrixForView).
+  // Vertical "NOW" line — simulated-time boundary when blank future slots exist; else centered on last bar.
+  const simulatedFutureStrip = layoutSlots > allBars.length;
   if (allBars.length) {
-    const lastIdx = allBars.length - 1;
-    const xNow = PAD.l + (lastIdx + 0.5) * slotW;
+    const xNow = simulatedFutureStrip
+      ? PAD.l + allBars.length * slotW
+      : PAD.l + (allBars.length - 0.5) * slotW;
     pctx.save();
-    pctx.strokeStyle = isPanned ? 'rgba(212, 160, 74, 0.55)' : 'rgba(33, 160, 149, 0.40)';
+    pctx.strokeStyle = simulatedFutureStrip || isPanned ? 'rgba(212, 160, 74, 0.55)' : 'rgba(33, 160, 149, 0.40)';
     pctx.lineWidth = 1;
     pctx.setLineDash([3, 4]);
     pctx.beginPath();
     pctx.moveTo(xNow, PAD.t);
-    pctx.lineTo(xNow, PAD.t + chartH);
+    pctx.lineTo(xNow, axisFloorY);
     pctx.stroke();
     pctx.setLineDash([]);
-    pctx.fillStyle = isPanned ? 'rgba(212, 160, 74, 0.85)' : 'rgba(33, 160, 149, 0.75)';
+    pctx.fillStyle = simulatedFutureStrip || isPanned ? 'rgba(212, 160, 74, 0.85)' : 'rgba(33, 160, 149, 0.75)';
     pctx.font = '8px "IBM Plex Mono", monospace';
     pctx.textAlign = 'center';
     pctx.fillText('NOW', xNow, PAD.t + 8);
     pctx.restore();
+
+    const playheadDrag = state.replay.mode === 'real';
+    state._chartStripGeom = {
+      padL: PAD.l,
+      chartW,
+      slotW,
+      dataSlots: allBars.length,
+      viewportSlots: layoutSlots,
+      stripTop: PAD.t,
+      stripBottom: axisFloorY,
+      xPlayhead: xNow,
+      playheadDragAvailable: playheadDrag,
+    };
+  } else {
+    state._chartStripGeom = null;
   }
 
   // "Panned" hint: dim, mono, top-left of the price chart so it never overlaps
@@ -2092,41 +2332,30 @@ function drawPriceChart() {
         if (entryIdx != null) {
           const x = entryPoint.x;
           const y = entryPoint.y;
-          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
-          pctx.beginPath();
-          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
-          pctx.fill();
-          pctx.fillStyle = color;
-          pctx.beginPath();
-          pctx.moveTo(x, y - 5.5);
-          pctx.lineTo(x - 4.5, y + 3.5);
-          pctx.lineTo(x + 4.5, y + 3.5);
-          pctx.closePath();
-          pctx.fill();
-          pctx.fillStyle = color;
-          pctx.font = '8px "IBM Plex Mono", monospace';
-          pctx.textAlign = 'left';
-          pctx.fillText('E', x + 7, y + 2);
+          const direction = String(t.direction ?? '').toLowerCase();
+          const entryLabel = (direction === 'up' || direction === 'long')
+            ? 'L'
+            : (direction === 'down' || direction === 'short')
+              ? 'S'
+              : 'E';
+          _drawTradeSignalBadge(pctx, {
+            x,
+            y,
+            text: entryLabel,
+            fillStyle: color,
+            pointTo: 'down',
+          });
         }
         if (exitIdx != null) {
           const x = exitPoint.x;
           const y = exitPoint.y;
-          pctx.fillStyle = 'rgba(9, 13, 20, 0.74)';
-          pctx.beginPath();
-          pctx.arc(x, y, 6.5, 0, Math.PI * 2);
-          pctx.fill();
-          pctx.strokeStyle = color;
-          pctx.lineWidth = 1.7;
-          pctx.beginPath();
-          pctx.moveTo(x - 4.4, y - 4.4);
-          pctx.lineTo(x + 4.4, y + 4.4);
-          pctx.moveTo(x + 4.4, y - 4.4);
-          pctx.lineTo(x - 4.4, y + 4.4);
-          pctx.stroke();
-          pctx.fillStyle = color;
-          pctx.font = '8px "IBM Plex Mono", monospace';
-          pctx.textAlign = 'left';
-          pctx.fillText('X', x + 7, y + 2);
+          _drawTradeSignalBadge(pctx, {
+            x,
+            y,
+            text: 'X',
+            fillStyle: color,
+            pointTo: 'up',
+          });
         }
       }
     };

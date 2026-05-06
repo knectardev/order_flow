@@ -20,6 +20,7 @@ import {
   getLoadedBarsForMatrixVolumeLadder,
   matrixVolumeBaseRadiusPx,
 } from '../analytics/matrixVolumeRadiusNorm.js';
+import { _getViewedBars } from './priceChart.js';
 
 const POINT_MIN_OPACITY = 0.18;
 const POINT_MAX_OPACITY = 0.95;
@@ -407,29 +408,7 @@ function _aggregateScatterExtents(eligible) {
 }
 
 function _getViewedBarsForMatrix() {
-  const replay = state.replay;
-  const vbReqRaw = Number(state.chartVisibleBars);
-  const vbReq = Number.isFinite(vbReqRaw) ? Math.max(10, Math.min(vbReqRaw, 240)) : 60;
-  if (replay.mode === 'real' && state.chartViewEnd !== null && state.chartViewEnd !== replay.cursor) {
-    const end = Math.max(1, Math.min(state.chartViewEnd, replay.allBars.length));
-    const eff = Math.min(vbReq, end, 240);
-    const start = Math.max(0, end - eff);
-    return replay.allBars.slice(start, end);
-  }
-  if (replay.mode === 'real') {
-    const forming = state.formingBar;
-    const settleWant = Math.max(0, vbReq - (forming ? 1 : 0));
-    const nSettle = Math.min(settleWant, replay.cursor);
-    const start = Math.max(0, replay.cursor - nSettle);
-    const settledSlice = replay.allBars.slice(start, replay.cursor);
-    return forming ? [...settledSlice, forming] : settledSlice;
-  }
-  const forming = state.formingBar;
-  const maxAvail = state.bars.length + (forming ? 1 : 0);
-  const eff = Math.min(vbReq, Math.max(maxAvail, 1));
-  const nBase = Math.min(eff - (forming ? 1 : 0), state.bars.length);
-  const base = nBase > 0 ? state.bars.slice(-nBase) : [];
-  return forming ? [...base, forming] : base;
+  return _getViewedBars().viewedBars;
 }
 
 function _barTimeMsForMatrix(bar) {

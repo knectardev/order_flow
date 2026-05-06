@@ -19,7 +19,12 @@
       "warmup_start": 10,
       "stop_loss_ticks": null,
       "take_profit_ticks": null,
-      "watch_exit_ticks": {}
+      "watch_exit_ticks": {
+        "orb": {
+          "stop_loss_ticks": 28,
+          "take_profit_ticks": 56
+        }
+      }
     },
     "15m": {
       "cooldown_bars": 2,

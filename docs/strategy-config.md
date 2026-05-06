@@ -58,6 +58,7 @@ Object keys are **`watch_id`** strings. Allowed values match backtest / API scop
 - `fade`
 - `absorptionWall`
 - `valueEdgeReject`
+- `orb` (runtime-derived on `5m`; exit templates still resolve through this JSON path)
 
 Each value is an object with optional `stop_loss_ticks` and `take_profit_ticks` (number or `null`). For a matching watch, each **non-null** field overrides the timeframe-level default for that field only; the other field can still inherit from the timeframe defaults ([`exit_ticks.py`](../pipeline/src/orderflow_pipeline/strategies/exit_ticks.py)).
 

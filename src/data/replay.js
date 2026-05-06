@@ -364,6 +364,8 @@ function seek(targetIdx) {
   // step buttons, jump-to-fire, Reset). Free-form pan is preserved only across
   // streaming/forming-bar updates, which never call seek().
   state.chartViewEnd = null;
+  // Simulated future strip (`chartFutureBlankSlots`) is preserved across seek —
+  // e.g. Resume Stream coupling cursor to the panned bar — so playhead offset survives streaming.
   // Re-derive state.replay.current/tunings + dropdown selection now that the
   // cursor (and thus the right-edge bar) has moved.
   _syncCurrentSession();
@@ -1122,6 +1124,7 @@ async function _loadAllSessionsFromApi(apiBase, metas, timeframe) {
   state.replay.allDivergences = [];
   state.replay.swingLookbackDisplay = null;
   state.chartViewEnd = null;
+  state.chartFutureBlankSlots = 0;
 
   const drMerged = drFetch
     ? { min: drFetch.min, max: drFetch.max, minMs: Date.parse(drFetch.min), maxMs: Date.parse(drFetch.max) }

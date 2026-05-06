@@ -1,5 +1,66 @@
 import { state } from '../state.js';
-import { _continuePan, consumePanMoved } from './pan.js';
+
+/** Notes.txt 3×3: rows Low→High jitter, cols Low→High conviction → cells 1–9. */
+function _velocityMatrixCellFromRegimes(jitterRegime, convictionRegime) {
+  const jMap = { Low: 0, Mid: 1, High: 2 };
+  const cMap = { Low: 0, Mid: 1, High: 2 };
+  const jr = jMap[String(jitterRegime ?? '')];
+  const cr = cMap[String(convictionRegime ?? '')];
+  if (jr === undefined || cr === undefined) return null;
+  return jr * 3 + cr + 1;
+}
+
+function _velocityTooltipExtraHtml(p, esc) {
+  const rows = [];
+  let matrixHtml = '';
+  if (Number.isFinite(Number(p.pldRatio))) {
+    rows.push(`PLD ratio: ${Number(p.pldRatio).toFixed(6)}`);
+  } else if (p.pldRatio != null && p.pldRatio !== '') {
+    rows.push(`PLD ratio: ${esc(String(p.pldRatio))}`);
+  }
+  if (Number.isFinite(Number(p.flipRate))) {
+    rows.push(`Flip rate: ${Number(p.flipRate).toFixed(6)}`);
+  } else if (p.flipRate != null && p.flipRate !== '') {
+    rows.push(`Flip rate: ${esc(String(p.flipRate))}`);
+  }
+  if (p.jitterRegime != null && p.jitterRegime !== '') {
+    rows.push(`Jitter regime: ${esc(String(p.jitterRegime))}`);
+  }
+  if (p.convictionRegime != null && p.convictionRegime !== '') {
+    rows.push(`Conviction regime: ${esc(String(p.convictionRegime))}`);
+  }
+  if (p.tradeContext != null && p.tradeContext !== '') {
+    rows.push(`Trade context: ${esc(String(p.tradeContext))}`);
+  }
+  if (state.chartOverlayVisibility?.velocityMatrixDev === true) {
+    const cell = _velocityMatrixCellFromRegimes(p.jitterRegime, p.convictionRegime);
+    if (cell != null) {
+      rows.push(`Matrix cell (dev): ${cell}`);
+      const rowIdx = Math.floor((cell - 1) / 3);
+      const colIdx = (cell - 1) % 3;
+      const labels = ['Low', 'Mid', 'High'];
+      matrixHtml =
+        `<div class="tt-velocity-matrix-wrap">`
+        + `<div class="tt-velocity-matrix-head">Dev matrix view</div>`
+        + `<div class="tt-velocity-matrix-grid">`
+        + [0, 1, 2].map((r) =>
+          [0, 1, 2].map((c) => {
+            const n = r * 3 + c + 1;
+            const active = r === rowIdx && c === colIdx;
+            return `<div class="tt-velocity-cell${active ? ' is-active' : ''}">${n}</div>`;
+          }).join(''),
+        ).join('')
+        + `</div>`
+        + `<div class="tt-velocity-matrix-meta">`
+        + `jitter=${labels[rowIdx]} · conviction=${labels[colIdx]}`
+        + `</div>`
+        + `</div>`;
+    }
+  }
+  if (!rows.length) return '';
+  return `<div class="tt-desc tt-velocity">${rows.map(r => `<div>${r}</div>`).join('')}${matrixHtml}</div>`;
+}
+import { _continuePan, consumePanMoved, _continuePlayheadDrag, nearPriceChartPlayhead } from './pan.js';
 import { openModal } from './modal.js';
 import { selectFire, selectBar, hoverBar, clearSelection } from './selection.js';
 import { priceCanvas, flowCanvas, cvdCanvas } from '../util/dom.js';
@@ -359,6 +420,7 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       : '';
 
     const kvHtml = `<div class="tt-phat-kv">${kvCore}${rejHtml}</div>`;
+    const velPhatHtml = _velocityTooltipExtraHtml(p, _phatEsc);
 
     const btPhat = Number(p.barTimeMs);
     const divSpansPhat = _divergenceSpansForBarMs(btPhat);
@@ -388,6 +450,7 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
         + `<p class="tt-phat-lede">“${_phatEsc(tpl.line3)}”</p>`
         + warnHtml
         + kvHtml
+        + velPhatHtml
         + divPhatHtml
         + `<div class="tt-hint tt-phat-disclaimer">PHAT read is descriptive, not predictive</div>`,
     };
@@ -465,6 +528,7 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       name: up ? 'Bull bar (close ≥ open)' : 'Bear bar (close < open)',
       desc: `O ${Number(p.open).toFixed(2)} · H ${Number(p.high).toFixed(2)} · L ${Number(p.low).toFixed(2)} · C ${Number(p.close).toFixed(2)}`,
       detail,
+      _velocityHtml: _velocityTooltipExtraHtml(p, _phatEsc),
     };
     meta = 'OHLC';
   } else {
@@ -493,6 +557,7 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
         `<span class="tt-meta">${meta}</span>` +
       `</div>` +
       `<div class="tt-desc">${info.desc}</div>` +
+      `${info._velocityHtml ?? ''}` +
       `${info.detail ? `<div class="tt-desc">${info.detail}</div>` : ''}` +
       `<div class="tt-hint">${hint}</div>`;
   }
@@ -548,6 +613,10 @@ let _lastMouse = null;   // {x, y} CSS-pixel coords inside the canvas
 priceCanvas.addEventListener('mousemove', (e) => {
   const rect = priceCanvas.getBoundingClientRect();
   _lastMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  if (state.isDraggingPlayhead) {
+    _hideTooltip();
+    return;
+  }
   // If we're actively click-dragging a pan, suppress the tooltip — pan UX wins.
   if (state.isPanningChart) {
     _continuePan(e);
@@ -568,7 +637,17 @@ priceCanvas.addEventListener('mousemove', (e) => {
   } else {
     _hideTooltip();
   }
+  if (nearPriceChartPlayhead(_lastMouse.x, _lastMouse.y)) {
+    priceCanvas.style.cursor = 'col-resize';
+  }
 });
+document.addEventListener('mousemove', (e) => {
+  if (!state.isDraggingPlayhead) return;
+  _continuePlayheadDrag(e);
+  hoverBar(null, 'chart-playhead');
+  priceCanvas.style.cursor = 'col-resize';
+});
+
 priceCanvas.addEventListener('mouseleave', () => {
   _lastMouse = null;
   hoverBar(null, 'chart-leave');

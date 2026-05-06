@@ -35,6 +35,16 @@ Tables (Phase 5):
         bias_state                   VARCHAR     - Phase 6 7-level bias for THIS bar's timeframe
         parent_1h_bias               VARCHAR     - Phase 6 denormalized 1h bias covering this bar
         parent_15m_bias              VARCHAR     - Phase 6 denormalized 15m bias covering this bar
+        session_kind                 VARCHAR     - 'rth' | 'globex' (ingest session filter)
+        path_length_ticks            BIGINT      - sum |Δticks| trade-to-trade within session
+        vw_path_length               DOUBLE      - Σ |Δticks|×size per edge (volume-weighted path)
+        displacement_ticks           INTEGER     - close_ticks − open_ticks (rounded)
+        abs_displacement_ticks       INTEGER
+        pld_ratio                    DOUBLE      - path / max(|displacement|,1), capped
+        flip_count                   INTEGER     - within-bar aggressor side flips only
+        flip_rate                    DOUBLE      - flip_count / (trade_count−1), NULL if ≤1 trade
+        jitter_regime                VARCHAR     - Low | Mid | High | NULL (warmup)
+        conviction_regime            VARCHAR     - Low | Mid | High | NULL (inverted vs flip)
         PRIMARY KEY (bar_time, timeframe)
 
     events
@@ -334,6 +344,20 @@ _CVD_FLOW_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("avg_aggressive_sell_size", "DOUBLE"),
     ("size_imbalance_ratio", "DOUBLE"),
 )
+# Velocity matrix (path-length / displacement, flip rate, regimes).
+_VELOCITY_BAR_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("session_kind", "VARCHAR"),
+    ("path_length_ticks", "BIGINT"),
+    ("vw_path_length", "DOUBLE"),
+    ("displacement_ticks", "INTEGER"),
+    ("abs_displacement_ticks", "INTEGER"),
+    ("pld_ratio", "DOUBLE"),
+    ("flip_count", "INTEGER"),
+    ("flip_rate", "DOUBLE"),
+    ("jitter_regime", "VARCHAR"),
+    ("conviction_regime", "VARCHAR"),
+    ("trade_context", "VARCHAR"),
+)
 _BAR_SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("bar_end_time", "TIMESTAMP"),
 )
@@ -380,6 +404,8 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     for col_name, col_type in _BAR_REGIME_CONTINUOUS_COLUMNS:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _CVD_FLOW_BAR_COLUMNS:
+        con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    for col_name, col_type in _VELOCITY_BAR_COLUMNS:
         con.execute(f"ALTER TABLE bars ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
     for col_name, col_type in _FIRE_DIAGNOSTIC_COLUMNS:
         con.execute(f"ALTER TABLE fires ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
@@ -480,7 +506,18 @@ def write_session(
             # NULL so a partially-stamped frame still writes cleanly. The
             # cli.py rebuild always populates them, so this fallback is
             # only exercised by tests / direct API users.
-            for col in ("bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm", "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity", "lower_wick_liquidity", "upper_wick_ticks", "lower_wick_ticks", "high_before_low", "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias", "parent_15m_bias", "vol_score", "depth_score", "session_cvd", "aggressive_buy_count", "aggressive_sell_count", "avg_aggressive_buy_size", "avg_aggressive_sell_size", "size_imbalance_ratio"):
+            for col in (
+                "bar_end_time", "vwap", "top_cvd", "bottom_cvd", "top_cvd_norm", "bottom_cvd_norm",
+                "cvd_imbalance", "top_body_volume_ratio", "bottom_body_volume_ratio", "upper_wick_liquidity",
+                "lower_wick_liquidity", "upper_wick_ticks", "lower_wick_ticks", "high_before_low",
+                "rejection_side", "rejection_strength", "rejection_type", "bias_state", "parent_1h_bias",
+                "parent_15m_bias", "vol_score", "depth_score", "session_cvd", "aggressive_buy_count",
+                "aggressive_sell_count", "avg_aggressive_buy_size", "avg_aggressive_sell_size",
+                "size_imbalance_ratio",
+                "session_kind", "path_length_ticks", "vw_path_length", "displacement_ticks",
+                "abs_displacement_ticks", "pld_ratio", "flip_count", "flip_rate",
+                "jitter_regime", "conviction_regime", "trade_context",
+            ):
                 if col not in bars_df.columns:
                     bars_df[col] = None
             con.execute(
@@ -493,7 +530,10 @@ def write_session(
                      vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type,
                      bias_state, parent_1h_bias, parent_15m_bias,
                      session_cvd, aggressive_buy_count, aggressive_sell_count,
-                     avg_aggressive_buy_size, avg_aggressive_sell_size, size_imbalance_ratio)
+                     avg_aggressive_buy_size, avg_aggressive_sell_size, size_imbalance_ratio,
+                     session_kind, path_length_ticks, vw_path_length, displacement_ticks,
+                     abs_displacement_ticks, pld_ratio, flip_count, flip_rate,
+                     jitter_regime, conviction_regime, trade_context)
                 SELECT session_date, bar_time, bar_end_time, timeframe, open, high, low, close,
                        volume, delta, trade_count, large_print_count,
                        distinct_prices, range_pct, vpt, concentration,
@@ -501,7 +541,10 @@ def write_session(
                        vwap, top_cvd, bottom_cvd, top_cvd_norm, bottom_cvd_norm, cvd_imbalance, top_body_volume_ratio, bottom_body_volume_ratio, upper_wick_liquidity, lower_wick_liquidity, upper_wick_ticks, lower_wick_ticks, high_before_low, rejection_side, rejection_strength, rejection_type,
                        bias_state, parent_1h_bias, parent_15m_bias,
                        session_cvd, aggressive_buy_count, aggressive_sell_count,
-                       avg_aggressive_buy_size, avg_aggressive_sell_size, size_imbalance_ratio
+                       avg_aggressive_buy_size, avg_aggressive_sell_size, size_imbalance_ratio,
+                       session_kind, path_length_ticks, vw_path_length, displacement_ticks,
+                       abs_displacement_ticks, pld_ratio, flip_count, flip_rate,
+                       jitter_regime, conviction_regime, trade_context
                 FROM bars_df
                 """
             )

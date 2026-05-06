@@ -72,6 +72,9 @@ RTH_CLOSE = time(16, 0)
 # `bar_volume_profile` PRIMARY KEY exact and the indexes cheap.
 TICK_SIZE = 0.25
 
+# Cap path-length / displacement ratio when displacement rounds to ~0 (chop).
+PLD_RATIO_CAP = 100.0
+
 
 @dataclass(slots=True)
 class Bar:
@@ -130,6 +133,18 @@ class Bar:
     aggressive_sell_count: int = 0
     sum_aggressive_buy_size: int = 0
     sum_aggressive_sell_size: int = 0
+    # Velocity (path-length / displacement, within-bar flip rate). Populated in
+    # `aggregate_trades` + `_stamp_velocity_derived`; regimes in velocity_regime.
+    path_length_ticks: int = 0
+    vw_path_length: float = 0.0
+    flip_count: int = 0
+    displacement_ticks: int = 0
+    abs_displacement_ticks: int = 0
+    pld_ratio: float | None = None
+    flip_rate: float | None = None
+    jitter_regime: str | None = None
+    conviction_regime: str | None = None
+    trade_context: str | None = None
 
     @property
     def distinct_prices(self) -> int:
@@ -240,11 +255,18 @@ class Bar:
                 self.sum_aggressive_sell_size / self.aggressive_sell_count, 4
             ) if self.aggressive_sell_count else 0.0,
             "sizeImbalanceRatio": self._size_imbalance_ratio(),
+            "pldRatio":       round(self.pld_ratio, 6) if self.pld_ratio is not None else None,
+            "flipRate":       round(self.flip_rate, 6) if self.flip_rate is not None else None,
+            "vwPathLength":   round(self.vw_path_length, 6),
+            "pathLengthTicks": int(self.path_length_ticks),
+            "jitterRegime":   self.jitter_regime,
+            "convictionRegime": self.conviction_regime,
+            "tradeContext":   self.trade_context,
             "time":            self._iso_time(),
             "barEnd":          self._iso_bar_end(),
         }
 
-    def to_dict(self, session_date: date, timeframe: str) -> dict:
+    def to_dict(self, session_date: date, timeframe: str, *, session_kind: str | None = None) -> dict:
         """DuckDB-mode row dict (column names = bars table column names).
 
         Consumed by db.write_session(). `bar_time` / `bar_end_time` are
@@ -254,6 +276,8 @@ class Bar:
         `timeframe` is the canonical Phase 5 keying ('1m' / '15m' / '1h').
         It is stamped on every row for the active aggregation pass; the DB
         writer uses it to scope DELETE/INSERT to the active timeframe.
+
+        `session_kind` should match the ingest session filter ('rth' | 'globex').
         """
         vpt, concentration = self._vpt_concentration()
         return {
@@ -301,6 +325,17 @@ class Bar:
                 self.sum_aggressive_sell_size / self.aggressive_sell_count, 4
             ) if self.aggressive_sell_count else 0.0,
             "size_imbalance_ratio": self._size_imbalance_ratio_db(),
+            "session_kind":      session_kind,
+            "path_length_ticks": int(self.path_length_ticks),
+            "vw_path_length":    round(self.vw_path_length, 6),
+            "displacement_ticks": int(self.displacement_ticks),
+            "abs_displacement_ticks": int(self.abs_displacement_ticks),
+            "pld_ratio":         round(self.pld_ratio, 6) if self.pld_ratio is not None else None,
+            "flip_count":        int(self.flip_count),
+            "flip_rate":         round(self.flip_rate, 6) if self.flip_rate is not None else None,
+            "jitter_regime":     self.jitter_regime,
+            "conviction_regime": self.conviction_regime,
+            "trade_context":    self.trade_context,
         }
 
     def _size_imbalance_ratio_db(self) -> float | None:
@@ -434,6 +469,22 @@ def _stamp_session_vwap(bars: list[Bar]) -> None:
         b.vwap = last_vwap
 
 
+def _stamp_velocity_derived(bars: list[Bar]) -> None:
+    """Finalize displacement, capped `pld_ratio`, and `flip_rate` per bar."""
+    for b in bars:
+        open_ticks = int(round(b.open / TICK_SIZE))
+        close_ticks = int(round(b.close / TICK_SIZE))
+        b.displacement_ticks = close_ticks - open_ticks
+        b.abs_displacement_ticks = abs(b.displacement_ticks)
+        denom = max(b.abs_displacement_ticks, 1)
+        raw_ratio = b.path_length_ticks / denom
+        b.pld_ratio = round(min(float(raw_ratio), PLD_RATIO_CAP), 6)
+        if b.trade_count <= 1:
+            b.flip_rate = None
+        else:
+            b.flip_rate = round(b.flip_count / (b.trade_count - 1), 6)
+
+
 def _stamp_phat_features(bars: list[Bar]) -> None:
     """Compute PHAT candle features for each bar in place."""
     for b in bars:
@@ -519,6 +570,8 @@ def aggregate_trades(
     bars: list[Bar] = []
     cur: Bar | None = None
     cur_bin_ns = -1
+    lag_price_ticks: int | None = None
+    bar_last_non_n: str | None = None
 
     for t in trades:
         if t.instrument_id != front_month_id:
@@ -542,6 +595,21 @@ def aggregate_trades(
                 low_first_ns=t.ts_event_ns,
             )
             cur_bin_ns = bin_ns_start
+            bar_last_non_n = None
+
+        price_ticks = int(round(t.price / TICK_SIZE))
+
+        if lag_price_ticks is not None:
+            seg = abs(price_ticks - lag_price_ticks)
+            cur.path_length_ticks += seg
+            cur.vw_path_length += float(seg * t.size)
+
+        if t.side in ("A", "B"):
+            if bar_last_non_n is not None and bar_last_non_n != t.side:
+                cur.flip_count += 1
+            bar_last_non_n = t.side
+
+        lag_price_ticks = price_ticks
 
         # Update OHLCV
         cur.close = t.price
@@ -580,6 +648,8 @@ def aggregate_trades(
     rc = rth_close_ns if session == "rth" else None
     for b in bars:
         b.bar_end_ns = session_bar_end_ns(b.bin_start_ns, bin_ns, session=session, rth_close_ns=rc)
+
+    _stamp_velocity_derived(bars)
 
     # Phase 6: stamp running session VWAP after bars are finalized (trade
     # filtering already enforced RTH bounds).
