@@ -104,7 +104,11 @@
                     aria-label="Text">T</button>
             <button type="button" class="chart-draw-tool" data-draw-tool="box" title="Draw translucent box"
                     aria-label="Box">▢</button>
-            <label class="chart-draw-color-label" title="Stroke, text, and box outline / fill tint">
+            <button type="button" class="chart-draw-tool" data-draw-tool="longShort" data-ls-side="long"
+                    title="Long zones (reward above entry)" aria-label="Long zones">L</button>
+            <button type="button" class="chart-draw-tool" data-draw-tool="longShort" data-ls-side="short"
+                    title="Short zones (reward below entry)" aria-label="Short zones">S</button>
+            <label class="chart-draw-color-label" title="Stroke, text, box fill tint, long/short entry line">
               <span class="sr-only">Color</span>
               <input type="color" id="chartDrawColor" value="#26a69a" aria-label="Annotation color">
             </label>

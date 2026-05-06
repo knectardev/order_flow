@@ -1,9 +1,10 @@
-// Session-only annotations on `#chartDrawOverlay` (freehand paths + text + boxes).
+// Session-only annotations on `#chartDrawOverlay` (freehand paths + text + boxes + long/short zones).
 // Drawing mode steals pointer events from `#priceChart`; disable annotations to pan/zoom/hover the chart.
 import { resizeCanvas } from '../util/dom.js';
 import { handlePriceChartWheelZoom } from './pan.js';
 
 const DRAW_FONT = '600 11px "IBM Plex Mono", Menlo, Consolas, monospace';
+const LS_LABEL_FONT = '600 10px "IBM Plex Mono", Menlo, Consolas, monospace';
 const PEN_WIDTH = 2;
 const HIT_DIST_PATH = 10;
 const HIT_PAD_TEXT = 6;
@@ -11,19 +12,27 @@ const MIN_PEN_POINTS = 2;
 const MIN_SEGMENT_SKIP_SQ = 1;
 const MIN_BOX_SIDE = 4;
 const BOX_FILL_ALPHA = 0.22;
+const LONG_SHORT_FILL_ALPHA = 0.24;
+/** Profit / loss tint (match dashboard candle palette; fills ignore `longShort.color`). */
+const LS_PROFIT_HEX = '#00c087';
+const LS_LOSS_HEX = '#ff3b30';
+const LS_HANDLE_DRAW_R = 4.5;
+const LS_LABEL_RADIUS = 3;
 const HANDLE_HIT = 10;
 const HANDLE_DRAW = 4;
 
-/** @type {{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string } | { id: string, type: 'box', color: string, x: number, y: number, w: number, h: number }} */
+/** @type {{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string } | { id: string, type: 'box', color: string, x: number, y: number, w: number, h: number } | { id: string, type: 'longShort', side?: 'long'|'short', color: string, x: number, yEntry: number, w: number, hProfit: number, hLoss: number } }} */
 
 let overlayCanvas = null;
 let overlayCtx = null;
 let priceWrap = null;
 
 let interactActive = false;
-let tool = 'select'; // 'select' | 'pen' | 'text' | 'box'
+let tool = 'select'; // 'select' | 'pen' | 'text' | 'box' | 'longShort'
+/** Orientation for placing **L** / **S** anchors (`hProfit` = green reward span, `hLoss` = red risk span). */
+let longShortPlaceSide = 'long'; // 'long' | 'short'
 
-/** @type {Array<{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string } | { id: string, type: 'box', color: string, x: number, y: number, w: number, h: number }>} */
+/** @type {Array<{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string } | { id: string, type: 'box', color: string, x: number, y: number, w: number, h: number } | { id: string, type: 'longShort', side?: 'long'|'short', color: string, x: number, yEntry: number, w: number, hProfit: number, hLoss: number }>} */
 let objects = [];
 
 let selectedId = null;
@@ -34,7 +43,10 @@ let draftPen = null;
 /** @type {{ x0: number, y0: number, pointerId: number, previewX?: number, previewY?: number } | null} */
 let draftBox = null;
 
-/** @type {{ id: string, lastX: number, lastY: number, pointerId: number, mode?: 'move' | 'resize', fx?: number, fy?: number } | null} */
+/** @type {{ x0: number, y0: number, pointerId: number, side: 'long'|'short', previewX?: number, previewY?: number } | null} */
+let draftLongShort = null;
+
+/** @type {{ id: string, lastX: number, lastY: number, pointerId: number, mode?: 'move' | 'resize' | 'resizeLongShort', fx?: number, fy?: number, lsHandle?: 'tl' | 'ml' | 'mr' | 'bl', xr?: number, xl?: number, yEntry?: number } | null} */
 let dragMove = null;
 
 function _nid() {
@@ -53,7 +65,16 @@ function _syncDeleteBtn() {
 
 function _syncToolButtons() {
   document.querySelectorAll('.chart-draw-tool[data-draw-tool]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.drawTool === tool);
+    const dt = btn.dataset.drawTool ?? 'select';
+    if (dt === 'longShort' && btn.dataset.lsSide) {
+      btn.classList.toggle(
+        'active',
+        tool === 'longShort' &&
+          btn.dataset.lsSide === longShortPlaceSide,
+      );
+    } else {
+      btn.classList.toggle('active', dt === tool);
+    }
   });
 }
 
@@ -64,12 +85,21 @@ function _updateOverlayCursor() {
     return;
   }
   overlayCanvas.style.cursor =
-    tool === 'pen' || tool === 'box' ? 'crosshair' : tool === 'text' ? 'text' : 'default';
+    tool === 'pen' || tool === 'box' || tool === 'longShort'
+      ? 'crosshair'
+      : tool === 'text'
+        ? 'text'
+        : 'default';
 }
 
 function _localXY(e) {
   const r = overlayCanvas.getBoundingClientRect();
   return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+/** Reward (green) / risk (red) geometry; omit `side` → long. */
+function _lsSide(o) {
+  return o.side === 'short' ? 'short' : 'long';
 }
 
 function _distPointSeg(px, py, x1, y1, x2, y2) {
@@ -153,15 +183,221 @@ function _nearestBoxHandle(px, py, o) {
   return best;
 }
 
-/** @returns {{ id: string, handle: 'nw'|'ne'|'sw'|'se' } | null} */
-function _hitBoxResizeTop(px, py) {
+/** @returns {{ kind: 'box', id: string, handle: 'nw'|'ne'|'sw'|'se' } | { kind: 'longShort', id: string, handle: 'tl'|'ml'|'mr'|'bl' } | null} */
+function _hitAnnotationResizeTop(px, py) {
   for (let i = objects.length - 1; i >= 0; i--) {
     const o = objects[i];
-    if (o.type !== 'box') continue;
-    const h = _nearestBoxHandle(px, py, o);
-    if (h) return { id: o.id, handle: h };
+    if (o.type === 'longShort') {
+      const h = _nearestLsHandle(px, py, o);
+      if (h) return { kind: 'longShort', id: o.id, handle: h };
+    } else if (o.type === 'box') {
+      const h = _nearestBoxHandle(px, py, o);
+      if (h) return { kind: 'box', id: o.id, handle: h };
+    }
   }
   return null;
+}
+
+function _longShortOuterBB(o) {
+  if (_lsSide(o) === 'short') {
+    const yTop = o.yEntry - o.hLoss;
+    const yBot = o.yEntry + o.hProfit;
+    return { minx: o.x, miny: yTop, maxx: o.x + o.w, maxy: yBot };
+  }
+  const yTop = o.yEntry - o.hProfit;
+  const yBot = o.yEntry + o.hLoss;
+  return { minx: o.x, miny: yTop, maxx: o.x + o.w, maxy: yBot };
+}
+
+/** @returns {'tl'|'ml'|'mr'|'bl'|null} */
+function _nearestLsHandle(px, py, o) {
+  const bb = _longShortOuterBB(o);
+  const yTop = bb.miny;
+  const yBot = bb.maxy;
+  const xr = o.x + o.w;
+  /** @type {Array<{ name: 'tl'|'ml'|'mr'|'bl', cx: number, cy: number }>} */
+  const handles = [
+    { name: 'tl', cx: o.x, cy: yTop },
+    { name: 'ml', cx: o.x, cy: o.yEntry },
+    { name: 'mr', cx: xr, cy: o.yEntry },
+    { name: 'bl', cx: o.x, cy: yBot },
+  ];
+  let best = null;
+  let bestD = HANDLE_HIT + 1;
+  for (const { name, cx, cy } of handles) {
+    const d = Math.hypot(px - cx, py - cy);
+    if (d <= HANDLE_HIT && d <= bestD) {
+      bestD = d;
+      best = name;
+    }
+  }
+  return best;
+}
+
+/** Green reward span ÷ red risk span (pixels). */
+function _longShortRiskRatioText(o) {
+  if (o.hLoss < 1e-6 || !Number.isFinite(o.hLoss)) return 'Risk Ratio: —';
+  const r = o.hProfit / o.hLoss;
+  if (!Number.isFinite(r)) return 'Risk Ratio: —';
+  return `Risk Ratio: ${r.toFixed(2)}`;
+}
+
+/** Maps drag bbox halves to stored bands; upper half ↔ first band above entry varies by side. */
+function _normalizedLongShortFromDiagonal(x0, y0, x1, y1, lsSide = 'long') {
+  const xl = Math.min(x0, x1);
+  const xr = Math.max(x0, x1);
+  const yTop = Math.min(y0, y1);
+  const yBot = Math.max(y0, y1);
+  const w = xr - xl;
+  const yEntry = (yTop + yBot) / 2;
+  const hUp = yEntry - yTop;
+  const hDn = yBot - yEntry;
+  if (w < MIN_BOX_SIDE || hUp < MIN_BOX_SIDE || hDn < MIN_BOX_SIDE) return null;
+  if (lsSide === 'short') {
+    return { x: xl, yEntry, w, hProfit: hDn, hLoss: hUp };
+  }
+  return { x: xl, yEntry, w, hProfit: hUp, hLoss: hDn };
+}
+
+/** Freeze geometry for resizing from the handle opposite fixed edges. */
+function _longShortResizeFreeze(o, handle) {
+  const xr = o.x + o.w;
+  switch (handle) {
+    case 'tl':
+      return { xr, yEntry: o.yEntry };
+    case 'bl':
+      return { xr, yEntry: o.yEntry };
+    case 'mr':
+      return { xl: o.x };
+    default:
+      return {};
+  }
+}
+
+/** @param {typeof dragMove} dm */
+function _applyLongShortResize(o, dm, mx, my) {
+  const tag = dm.lsHandle;
+  const side = _lsSide(o);
+  if (!tag) return;
+  const xrFrozen = dm.xr;
+  const yE = dm.yEntry;
+  const xlFreeze = dm.xl;
+  if (tag === 'tl') {
+    if (xrFrozen === undefined || yE === undefined) return;
+    const xl = Math.min(mx, xrFrozen - MIN_BOX_SIDE);
+    const top = Math.min(my, yE - MIN_BOX_SIDE);
+    o.x = xl;
+    o.w = xrFrozen - xl;
+    if (side === 'long') {
+      o.hProfit = yE - top;
+    } else {
+      o.hLoss = yE - top;
+    }
+  } else if (tag === 'bl') {
+    if (xrFrozen === undefined || yE === undefined) return;
+    const xl = Math.min(mx, xrFrozen - MIN_BOX_SIDE);
+    o.x = xl;
+    o.w = xrFrozen - xl;
+    if (side === 'long') {
+      o.hLoss = Math.max(MIN_BOX_SIDE, my - yE);
+    } else {
+      o.hProfit = Math.max(MIN_BOX_SIDE, my - yE);
+    }
+  } else if (tag === 'mr') {
+    if (xlFreeze === undefined) return;
+    o.w = Math.max(MIN_BOX_SIDE, mx - xlFreeze);
+  }
+}
+
+function _drawLsRiskBadge(ctx, o, colorEntry) {
+  const text = _longShortRiskRatioText(o);
+  ctx.save();
+  ctx.font = LS_LABEL_FONT;
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(text).width;
+  const padX = 7;
+  const padY = 4;
+  const bw = Math.min(Math.max(o.w - 8, MIN_BOX_SIDE * 4), Math.max(MIN_BOX_SIDE * 10, tw + padX * 2));
+  const bh = padY * 2 + 12;
+  const cx = o.x + o.w / 2;
+
+  /** Vertical center target inside green (reward) band */
+  let yGreenMid;
+  if (_lsSide(o) === 'short') {
+    yGreenMid = o.yEntry + o.hProfit * 0.5;
+  } else {
+    yGreenMid = o.yEntry - o.hProfit * 0.5;
+  }
+  const bb = _longShortOuterBB(o);
+  let cy = yGreenMid;
+  cy = Math.min(bb.maxy - bh / 2 - 4, Math.max(bb.miny + bh / 2 + 4, cy));
+
+  let bx = cx - bw / 2;
+  bx = Math.max(o.x + 3, Math.min(bx, o.x + o.w - bw - 3));
+  const by = cy - bh / 2;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') ctx.roundRect(bx, by, bw, bh, LS_LABEL_RADIUS);
+  else ctx.rect(bx, by, bw, bh);
+  ctx.fillStyle = 'rgba(22,22,26,0.92)';
+  ctx.fill();
+  ctx.strokeStyle = colorEntry;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(240,243,246,0.95)';
+  ctx.fillText(text, bx + bw / 2, by + bh / 2);
+  ctx.restore();
+}
+
+/** Draw translucent profit/loss rectangles, entry line (uses `colorEntry`), risk pill. */
+function _drawLongShortBody(ctx, o, colorEntry) {
+  ctx.save();
+  if (_lsSide(o) === 'short') {
+    ctx.fillStyle = _hexToRgbaFill(LS_LOSS_HEX, LONG_SHORT_FILL_ALPHA);
+    ctx.fillRect(o.x, o.yEntry - o.hLoss, o.w, o.hLoss);
+    ctx.fillStyle = _hexToRgbaFill(LS_PROFIT_HEX, LONG_SHORT_FILL_ALPHA);
+    ctx.fillRect(o.x, o.yEntry, o.w, o.hProfit);
+  } else {
+    ctx.fillStyle = _hexToRgbaFill(LS_PROFIT_HEX, LONG_SHORT_FILL_ALPHA);
+    ctx.fillRect(o.x, o.yEntry - o.hProfit, o.w, o.hProfit);
+    ctx.fillStyle = _hexToRgbaFill(LS_LOSS_HEX, LONG_SHORT_FILL_ALPHA);
+    ctx.fillRect(o.x, o.yEntry, o.w, o.hLoss);
+  }
+
+  ctx.strokeStyle = colorEntry;
+  ctx.lineWidth = PEN_WIDTH + 0.5;
+  ctx.beginPath();
+  ctx.moveTo(o.x, o.yEntry);
+  ctx.lineTo(o.x + o.w, o.yEntry);
+  ctx.stroke();
+  ctx.restore();
+
+  _drawLsRiskBadge(ctx, o, colorEntry);
+}
+
+function _drawLsHandleDots(ctx, o) {
+  const bb = _longShortOuterBB(o);
+  const yTop = bb.miny;
+  const yBot = bb.maxy;
+  const xr = o.x + o.w;
+  const pts = [
+    [o.x, yTop],
+    [o.x, o.yEntry],
+    [xr, o.yEntry],
+    [o.x, yBot],
+  ];
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(60,132,246,0.95)';
+  ctx.strokeStyle = 'rgba(230,237,246,0.95)';
+  ctx.lineWidth = 1;
+  for (const [hx, hy] of pts) {
+    ctx.beginPath();
+    ctx.arc(hx, hy, LS_HANDLE_DRAW_R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function _hexToRgbaFill(hex, alpha) {
@@ -221,6 +457,9 @@ function _hitTest(px, py) {
     } else if (o.type === 'box') {
       const bb = _boxBB(o);
       if (_pointInBBox(px, py, bb)) return o.id;
+    } else if (o.type === 'longShort') {
+      const bb = _longShortOuterBB(o);
+      if (_pointInBBox(px, py, bb)) return o.id;
     }
   }
   return null;
@@ -253,6 +492,11 @@ function _drawSelection(ctx, o) {
       ctx.strokeStyle = 'rgba(255,255,255,0.9)';
       ctx.strokeRect(cx - hs / 2, cy - hs / 2, hs, hs);
     }
+  } else if (o.type === 'longShort') {
+    const bb = _longShortOuterBB(o);
+    ctx.strokeRect(bb.minx - 1, bb.miny - 1, bb.maxx - bb.minx + 2, bb.maxy - bb.miny + 2);
+    ctx.setLineDash([]);
+    _drawLsHandleDots(ctx, o);
   }
   ctx.restore();
 }
@@ -267,6 +511,10 @@ export function redrawChartDrawOverlay() {
   overlayCtx.clearRect(0, 0, w, h);
 
   for (const o of objects) {
+    if (o.type === 'longShort') {
+      _drawLongShortBody(overlayCtx, o, o.color);
+      continue;
+    }
     overlayCtx.save();
     overlayCtx.strokeStyle = o.color;
     overlayCtx.fillStyle = o.color;
@@ -328,6 +576,38 @@ export function redrawChartDrawOverlay() {
     overlayCtx.restore();
   }
 
+  if (draftLongShort) {
+    const px = draftLongShort.previewX ?? draftLongShort.x0;
+    const py = draftLongShort.previewY ?? draftLongShort.y0;
+    const g = _normalizedLongShortFromDiagonal(
+      draftLongShort.x0,
+      draftLongShort.y0,
+      px,
+      py,
+      draftLongShort.side,
+    );
+    const col = _colorInputValue();
+    if (!g) {
+      const xl = Math.min(draftLongShort.x0, px);
+      const yTop = Math.min(draftLongShort.y0, py);
+      const rw = Math.abs(px - draftLongShort.x0);
+      const rh = Math.abs(py - draftLongShort.y0);
+      overlayCtx.save();
+      overlayCtx.strokeStyle = col;
+      overlayCtx.lineWidth = 1;
+      overlayCtx.setLineDash([4, 3]);
+      overlayCtx.strokeRect(xl + 0.5, yTop + 0.5, Math.max(rw - 1, 0), Math.max(rh - 1, 0));
+      overlayCtx.restore();
+    } else {
+      _drawLongShortBody(
+        overlayCtx,
+        /** @type {{ side: string, x: number, yEntry: number, w: number, hProfit: number, hLoss: number }} */
+        ({ ...g, side: draftLongShort.side }),
+        col,
+      );
+    }
+  }
+
   if (selectedId) {
     const o = objects.find(x => x.id === selectedId);
     if (o) _drawSelection(overlayCtx, o);
@@ -375,6 +655,30 @@ function _finalizeDraftBox(x1, y1) {
   redrawChartDrawOverlay();
 }
 
+function _finalizeDraftLongShort(x1, y1) {
+  const dc = draftLongShort;
+  draftLongShort = null;
+  if (!dc) {
+    redrawChartDrawOverlay();
+    return;
+  }
+  const n = _normalizedLongShortFromDiagonal(dc.x0, dc.y0, x1, y1, dc.side);
+  if (!n) {
+    redrawChartDrawOverlay();
+    return;
+  }
+  objects.push({
+    id: _nid(),
+    type: 'longShort',
+    side: dc.side,
+    color: _colorInputValue(),
+    ...n,
+  });
+  selectedId = objects[objects.length - 1].id;
+  _syncDeleteBtn();
+  redrawChartDrawOverlay();
+}
+
 function _finalizeDraftPen() {
   const col = _colorInputValue();
   if (!draftPen || draftPen.points.length < MIN_PEN_POINTS) {
@@ -403,6 +707,7 @@ function _setInteract(on) {
   if (toggle) toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
   draftPen = null;
   draftBox = null;
+  draftLongShort = null;
   dragMove = null;
   if (!on) selectedId = null;
   _syncDeleteBtn();
@@ -428,8 +733,12 @@ export function bindChartDrawUI() {
     const btn = e.target.closest('[data-draw-tool]');
     if (!btn) return;
     tool = btn.dataset.drawTool || 'select';
+    if (tool === 'longShort' && (btn.dataset.lsSide === 'long' || btn.dataset.lsSide === 'short')) {
+      longShortPlaceSide = btn.dataset.lsSide;
+    }
     draftPen = null;
     draftBox = null;
+    draftLongShort = null;
     _syncToolButtons();
     _updateOverlayCursor();
     redrawChartDrawOverlay();
@@ -477,6 +786,18 @@ export function bindChartDrawUI() {
       return;
     }
 
+    if (tool === 'longShort') {
+      draftLongShort = {
+        x0: x,
+        y0: y,
+        pointerId: e.pointerId,
+        side: longShortPlaceSide,
+      };
+      overlayCanvas.setPointerCapture(e.pointerId);
+      redrawChartDrawOverlay();
+      return;
+    }
+
     if (tool === 'text') {
       const raw = window.prompt('Annotation text:', '');
       if (raw != null && String(raw).trim()) {
@@ -495,13 +816,13 @@ export function bindChartDrawUI() {
       return;
     }
 
-    // select — box corners resize before body hit-testing
-    const rs = _hitBoxResizeTop(x, y);
-    if (rs) {
-      const o = objects.find(z => z.id === rs.id && z.type === 'box');
+    // select — annotation resize handles before body hit-testing
+    const ar = _hitAnnotationResizeTop(x, y);
+    if (ar?.kind === 'box') {
+      const o = objects.find(z => z.id === ar.id && z.type === 'box');
       if (o) {
-        const { fx, fy } = _oppositeCornerForHandle(o, rs.handle);
-        selectedId = rs.id;
+        const { fx, fy } = _oppositeCornerForHandle(o, ar.handle);
+        selectedId = ar.id;
         _syncDeleteBtn();
         if (colorEl) colorEl.value = o.color;
         dragMove = {
@@ -513,6 +834,29 @@ export function bindChartDrawUI() {
           fx,
           fy,
         };
+        overlayCanvas.setPointerCapture(e.pointerId);
+        redrawChartDrawOverlay();
+        return;
+      }
+    } else if (ar?.kind === 'longShort') {
+      const o = objects.find(z => z.id === ar.id && z.type === 'longShort');
+      if (o) {
+        selectedId = ar.id;
+        _syncDeleteBtn();
+        if (colorEl) colorEl.value = o.color;
+        if (ar.handle === 'ml') {
+          dragMove = { id: o.id, lastX: x, lastY: y, pointerId: e.pointerId };
+        } else {
+          dragMove = {
+            id: o.id,
+            lastX: x,
+            lastY: y,
+            pointerId: e.pointerId,
+            mode: 'resizeLongShort',
+            lsHandle: ar.handle,
+            ..._longShortResizeFreeze(o, ar.handle),
+          };
+        }
         overlayCanvas.setPointerCapture(e.pointerId);
         redrawChartDrawOverlay();
         return;
@@ -538,6 +882,19 @@ export function bindChartDrawUI() {
     const { x, y } = _localXY(e);
 
     if (
+      dragMove?.mode === 'resizeLongShort' &&
+      dragMove.pointerId === e.pointerId &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      const o = objects.find(z => z.id === dragMove.id);
+      if (o && o.type === 'longShort') {
+        _applyLongShortResize(o, dragMove, x, y);
+      }
+      redrawChartDrawOverlay();
+      return;
+    }
+
+    if (
       dragMove?.mode === 'resize' &&
       dragMove.pointerId === e.pointerId &&
       overlayCanvas.hasPointerCapture(e.pointerId)
@@ -546,6 +903,18 @@ export function bindChartDrawUI() {
       if (o && o.type === 'box' && dragMove.fx !== undefined && dragMove.fy !== undefined) {
         _resizeBoxDiagonal(o, dragMove.fx, dragMove.fy, x, y);
       }
+      redrawChartDrawOverlay();
+      return;
+    }
+
+    if (
+      draftLongShort &&
+      tool === 'longShort' &&
+      draftLongShort.pointerId === e.pointerId &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      draftLongShort.previewX = x;
+      draftLongShort.previewY = y;
       redrawChartDrawOverlay();
       return;
     }
@@ -587,6 +956,9 @@ export function bindChartDrawUI() {
         } else if (o.type === 'box') {
           o.x += dx;
           o.y += dy;
+        } else if (o.type === 'longShort') {
+          o.x += dx;
+          o.yEntry += dy;
         }
       }
       redrawChartDrawOverlay();
@@ -594,6 +966,17 @@ export function bindChartDrawUI() {
   });
 
   overlayCanvas.addEventListener('pointerup', e => {
+    if (
+      tool === 'longShort' &&
+      draftLongShort &&
+      draftLongShort.pointerId === e.pointerId &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      overlayCanvas.releasePointerCapture(e.pointerId);
+      const xy = _localXY(e);
+      _finalizeDraftLongShort(xy.x, xy.y);
+      return;
+    }
     if (
       tool === 'box' &&
       draftBox &&
@@ -621,6 +1004,17 @@ export function bindChartDrawUI() {
   });
 
   overlayCanvas.addEventListener('pointercancel', e => {
+    if (
+      draftLongShort &&
+      typeof overlayCanvas.hasPointerCapture === 'function' &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      try {
+        overlayCanvas.releasePointerCapture(e.pointerId);
+      } catch (_) { /* noop */ }
+      draftLongShort = null;
+      redrawChartDrawOverlay();
+    }
     if (
       draftBox &&
       typeof overlayCanvas.hasPointerCapture === 'function' &&

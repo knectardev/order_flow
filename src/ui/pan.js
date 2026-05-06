@@ -1,4 +1,4 @@
-import { MAX_BARS, MIN_CHART_VISIBLE_BARS, MAX_CHART_VISIBLE_BARS, TRAIL_LEN } from '../config/constants.js';
+import { MIN_CHART_VISIBLE_BARS, MAX_CHART_VISIBLE_BARS, TRAIL_LEN } from '../config/constants.js';
 import { state } from '../state.js';
 import { evaluateAbsorptionWallCanonical, evaluateBreakoutCanonical, evaluateFadeCanonical, evaluateValueEdgeReject } from '../analytics/canonical.js';
 import { computeMatrixScores, deriveRegimeState } from '../analytics/regime.js';
@@ -13,7 +13,13 @@ import { clamp } from '../util/math.js';
 import { isPhatLegendModalOpen } from './phatLegendModal.js';
 
 function _panAvailable() {
-  return state.replay.mode === 'real' && state.replay.allBars.length > MAX_BARS;
+  if (state.replay.mode !== 'real') return false;
+  const n = state.replay.allBars.length;
+  if (n < 2) return false;
+  const vb = clamp(state.chartVisibleBars, MIN_CHART_VISIBLE_BARS, MAX_CHART_VISIBLE_BARS);
+  const behindLive =
+    state.chartViewEnd !== null && state.chartViewEnd !== state.replay.cursor;
+  return n > vb || behindLive;
 }
 
 function _chartWheelZoomAvailable() {
@@ -49,8 +55,8 @@ function _setViewEnd(idx) {
   // Snap back to live-edge tracking when the user pans all the way to the
   // current cursor — keeps subsequent streaming state.bars sliding in naturally.
   if (clamped === state.replay.cursor) {
+    // Re-couple viewport to streaming cursor; keep chartFutureBlankSlots — horizontal pan must not reset NOW strip.
     state.chartViewEnd = null;
-    state.chartFutureBlankSlots = 0;
   } else {
     state.chartViewEnd = clamped;
   }
@@ -184,6 +190,13 @@ function nearPriceChartPlayhead(cssX, cssY) {
   return Math.abs(cssX - g.xPlayhead) <= 12;
 }
 
+/** Clear stuck drag modes — mouseup, blur, tab-away (lost buttons cancel reliably). */
+function _clearChartDragModes() {
+  state.isDraggingPlayhead = false;
+  state.isPanningChart = false;
+  priceCanvas.classList.remove('panning');
+}
+
 function _continuePlayheadDrag(e) {
   const rect = priceCanvas.getBoundingClientRect();
   const mx = e.clientX - rect.left;
@@ -290,6 +303,8 @@ priceCanvas.addEventListener('mousedown', (e) => {
   const mx = e.clientX - rect.left;
   const my = e.clientY - rect.top;
   if (_playheadGeomAllowsDrag() && nearPriceChartPlayhead(mx, my)) {
+    state.isPanningChart = false;
+    priceCanvas.classList.remove('panning');
     state.isDraggingPlayhead = true;
     _playheadDragStartFut = state.chartFutureBlankSlots;
     _playheadDragStartMouseX = mx;
@@ -298,6 +313,7 @@ priceCanvas.addEventListener('mousedown', (e) => {
     return;
   }
   if (!_panAvailable()) return;
+  state.isDraggingPlayhead = false;
   state.isPanningChart = true;
   _panMovedDuringDown = false;
   _panStartX = e.clientX - rect.left;
@@ -311,11 +327,10 @@ priceCanvas.addEventListener('mousedown', (e) => {
 });
 
 
-window.addEventListener('mouseup', () => {
-  if (state.isDraggingPlayhead) state.isDraggingPlayhead = false;
-  if (!state.isPanningChart) return;
-  state.isPanningChart = false;
-  priceCanvas.classList.remove('panning');
+window.addEventListener('mouseup', _clearChartDragModes);
+window.addEventListener('blur', _clearChartDragModes);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _clearChartDragModes();
 });
 
 // ───────────────────────────────────────────────────────────

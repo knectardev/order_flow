@@ -1,25 +1,236 @@
-Tooltips 
+# Box Breakout Framework — Decouple, then Generalize
 
-Specifically, hovering each legend item should answer "what is this and how do I use it?":
+## Scope and intent
 
-- **Regime lane** → "Top row: jitter regime (price geometry — chop vs. directional). Bottom row: conviction regime (order flow — sustained pressure vs. flipping). Read top-down: what's the price doing, what's the flow doing." Maybe a one-line aside: "rolling 200-bar percentile, terciles."
+This work has three sequential phases, each independently shippable. **Do not roll them into one PR.** Each phase should produce reviewable diffs and pass its own validation gate before the next phase begins.
 
-- **Trade dots** → Brief table-style tooltip: teal = favorable (clean trend), amber = avoid (chop with no edge), violet = watch (chop with one-sided pressure — could be a real break or a phake-out). One sentence on what's missing: "no dot ≠ data missing; dot is a high-confidence composite, most bars are intentionally unmarked."
+1. **Phase 1 — Refactor:** Decouple box detection from breakout execution. **No behavior change.** Existing ORB results must match exactly before/after.
+2. **Phase 2 — Post-lunch range:** Add a second time-anchored box detector. Tests whether the breakout dynamic generalizes beyond the morning auction.
+3. **Phase 3 — Yesterday's range:** Add a multi-day box detector. Tests whether breakouts of overnight/inter-session boxes behave like intraday ones.
 
-- **Vel tint legacy strip (advanced)** → "Older single-strip encoding kept for comparison/debugging. Less legible than the dedicated lane. Toggle off in normal use."
+The motivation is sample size and information value, not feature breadth. ORB alone gives ~one trade per day; adding two more time-anchored detectors triples potential trade count without adding any parametric tuning surface (no thresholds, no contraction rules — boxes are still defined by fixed time anchors or prior-session boundaries).
 
-Two suggestions for execution:
+Critically, this work also creates the architectural foundation for eventual non-time-anchored detectors (NR4, ATR contraction, etc.) but **none of those are in scope here.** Resist the temptation to over-generalize.
 
-1. **Make the explainer tooltips click-to-pin, not just hover.** Hover-only tooltips disappear the moment you reach for the mouse to look at the chart. A persistent tooltip you can dismiss with click or escape lets you read while looking. The bar-hover data tooltip should stay hover-only since you're scanning many bars.
+---
 
-2. **Use the (i) info icon, not just legend hover, as the entry point.** That icon I see at the top is sitting unused for what looks like its native purpose. Clicking it could open a single help panel with all the explainers in one place — useful when you don't remember which legend item to hover. Hover-on-legend stays available for quick refreshers, the panel handles "I want to read everything in context."
+## Phase 1 — Decouple detection from execution
 
-A few other observations from the screenshot worth flagging:
+### Goal
 
-**Those vertical bands behind the candles look like they're still rendering.** The plan had legacy tint defaulting OFF and the new lane handling regime visualization. If those bands are the legacy tint, the toggle didn't take effect — possibly because the default state isn't being applied to existing user state, or the toggle is wired but `velocityJitterTint` is still being drawn somewhere. Worth verifying. If they're something else (session highlights, RTH bands, etc.), ignore. If the legacy tint really is on by default still, the chart is double-encoding jitter (lane + tint) and competing with itself.
+Today, ORB logic almost certainly lives as a mixed function that simultaneously identifies the 9:30–9:45 range AND trades breakouts of it. Separate these concerns so that:
 
-**Dot density looks high.** Almost every bar has a dot. If `favorable`/`avoid`/`watch` are firing on ~70%+ of bars, the composite isn't filtering enough — it's supposed to be a high-confidence signal where most bars stay unmarked. Could be the tercile cutoffs are too loose for the composite logic, or it could be a genuinely active period of tape. Quick gut check: count dots per session over a few days. If it's consistently high, consider tightening — e.g., require quintile extremes (top/bottom 20%) for the composite even though the underlying regimes are classified at terciles. The lane stays at terciles for full coverage; the composite uses stricter cutoffs for action signal.
+- Anything that produces a `(high, low, valid_until)` tuple can be a "box source"
+- The executor doesn't know or care which detector produced a given box
+- The visualization layer renders any box, regardless of source
+- Backtest output tags every trade with the source detector
 
-**Lane height looks tight at this zoom.** Hard to assess from a screenshot but the 17px lane is reading as a thin gradient strip rather than two scannable rows. Stand back from your monitor and see if you can read the regime sequence at a glance without zooming in. If not, consider 20-22px (two 10px rows + 1 separator) — costs you 3-5px of price pane real estate but might be worth it for the readability.
+This is **internal refactoring only.** No new strategies, no new boxes, no new UI. ORB results before and after must be byte-identical.
 
-Last thing: regardless of what you do with tooltips, screenshot a few bars that *visibly* match what the dots claim (e.g., a clear teal-dot bar that's obviously a clean trend bar by eye) and a few that don't, and use those as your sanity check that the metrics are doing what the names say. That's still the most important test before you start trusting the labels.
+### Core abstractions
+
+```python
+@dataclass
+class Box:
+    source: str                 # detector name, e.g. "opening_range"
+    high: float
+    low: float
+    established_at: datetime    # moment the box becomes tradeable
+    valid_until: datetime       # moment the box expires (end of session at latest)
+    metadata: dict = field(default_factory=dict)  # source-specific extras
+```
+
+```python
+class BoxDetector(ABC):
+    name: str  # stable identifier, used in trade tagging and UI labels
+    
+    @abstractmethod
+    def detect(self, session_bars, session_date) -> list[Box]:
+        """Return all boxes this detector identifies for the given session."""
+```
+
+```python
+class BoxBreakoutExecutor:
+    """Consumes Box objects from any source. Trades breakouts using existing
+    SL/TP/gap-guard/flip rules. Does not care about box origin."""
+```
+
+### Existing ORB becomes a detector
+
+Wrap the existing ORB logic in an `OpeningRangeDetector` class implementing `BoxDetector`. Configurable parameters mirror current ORB config: `start_time`, `end_time`, `valid_until_time`, all defaulting to current values (`09:30`, `09:45`, `16:00` ET).
+
+Internally, this detector inspects the session's 1m or 5m bars, computes high/low of the formation window, and emits a single `Box` with `source="opening_range"` once the window completes.
+
+### Executor responsibilities
+
+The executor takes:
+- A stream of bars (existing iteration)
+- A list of active `Box` objects (filtered by `valid_until > current_bar_ts`)
+- The existing config (SL ticks, TP ticks, gap guard, flip-on-opposite-signal, etc.)
+
+For each bar, it checks each active box for breakout conditions (close above high → long, close below low → short, with whatever existing trigger semantics — confirmed bar close vs intra-bar — already in use). When a breakout fires, the resulting trade carries `source=box.source` in its record.
+
+If multiple boxes break in the same bar, decide explicitly: first by establishment order, by source priority, or all simultaneously? **Default for Phase 1: only one active box exists (ORB), so the question is theoretical.** But document the chosen rule for Phase 2/3 use.
+
+### Trade tagging and backtest output
+
+Add a `source` column to the trades table / backtest results dataframe. For Phase 1 this column will always be `"opening_range"`, but the schema needs to support per-source aggregation in Phase 2.
+
+The performance pane should be **unchanged in Phase 1** — same metrics, same display. The plumbing for per-source breakdown can be added but hidden until there's something to break down.
+
+### Visualization
+
+The existing purple ORB box rendering is already conceptually a "render a Box." Refactor it into a `BoxRenderer` (or equivalent) that takes a list of Box objects and draws each. Color/label per source — for Phase 1, only `opening_range` boxes exist, so visual output is identical.
+
+### Phase 1 validation gate (REQUIRED before Phase 2)
+
+1. **Regression test:** run a backtest on the existing 90-day window with current ORB config. Compare trade list, equity curve, win rate, Sharpe, max DD against the pre-refactor results. They must match **byte-for-byte** (or to floating-point tolerance, but identical trade list and identical aggregate metrics).
+2. **Architectural review:** confirm that adding a hypothetical second detector requires zero changes to `BoxBreakoutExecutor` or `BoxRenderer`. If either needs touching to support a new detector type, the abstraction is wrong.
+3. **Unit tests:** `Box` dataclass round-trip, `OpeningRangeDetector.detect()` produces correct box for a synthetic session, executor handles empty box list / expired box correctly.
+
+Do not start Phase 2 until all three gates pass.
+
+---
+
+## Phase 2 — Post-lunch range detector
+
+### Goal
+
+Add a second time-anchored box: the post-lunch range, defined by the high/low of bars between **13:00 and 13:30 ET**. The box becomes tradeable at 13:30 ET and expires at session close.
+
+This is a low-risk, high-information experiment. Implementation is trivial (it's another instance of the same time-range detector pattern). The interesting question is empirical: does ORB-style breakout-trading work in the afternoon, or is the morning auction structurally special?
+
+### Implementation
+
+Generalize `OpeningRangeDetector` into a `TimeRangeDetector` (or keep ORB as a subclass of a more generic base) parameterized by:
+- `name`
+- `formation_start` (e.g., "13:00")
+- `formation_end` (e.g., "13:30")
+- `valid_until` (e.g., "16:00")
+- timezone (default America/New_York)
+
+Register two detectors in config:
+
+```yaml
+detectors:
+  - type: time_range
+    name: opening_range
+    formation_start: "09:30"
+    formation_end: "09:45"
+    valid_until: "16:00"
+  - type: time_range
+    name: post_lunch_range
+    formation_start: "13:00"
+    formation_end: "13:30"
+    valid_until: "16:00"
+```
+
+Both detectors run independently. The executor sees both boxes as soon as they're established and trades breakouts of either.
+
+### Multi-box conflict resolution (resolve explicitly here)
+
+Now that two boxes can be simultaneously active, the executor needs an explicit rule for:
+
+1. **Same-bar breakouts of different boxes.** If price breaks both ORB high and post-lunch high in the same bar, what happens? Recommend: trade only the first one breached chronologically (use the bar's path: open → high vs low order is already needed for SL/TP precedence). If both are broken at the same close, prefer the more recently established box (post-lunch over ORB). Document and stick to it.
+
+2. **Stacking.** If already in a long from ORB breakout, and post-lunch box breaks long, do we add? Recommend: **no.** Honor the existing single-contract semantic. The post-lunch breakout is informationally redundant if we're already long.
+
+3. **Opposite-direction signals.** If long from ORB and post-lunch box breaks short, the existing "flip on opposite signal" toggle handles this. Verify it still works correctly when the new signal comes from a different source.
+
+### UI changes
+
+- **Chart:** render post-lunch box in a distinct color from ORB box. Suggest amber or violet outline (matching the regime palette) — pick something visually distinct from the existing purple ORB box. Lock the color in code, document in legend.
+- **Performance pane:** add per-source breakdown. Show ORB stats and post-lunch stats independently, plus combined. This is the whole point of the experiment — you need to see per-detector results to learn anything.
+- **Trade list / events:** show source label on each trade marker.
+
+### Phase 2 validation gate
+
+1. **Regression:** ORB-only config (post-lunch detector disabled) must still produce identical results to Phase 1.
+2. **Empirical sanity check:** run with both detectors active on the 90-day window. Inspect trade count — should be roughly 1.5x to 2x the ORB-only count (post-lunch range may have lower fill rate than ORB). Inspect a few specific post-lunch trades visually against the chart — does the box look right? Did the executor trigger at the right bar?
+3. **Per-source metrics report:** the dashboard should clearly show ORB and post-lunch performance side-by-side. Eyeball whether they look similar or different — that's the actual research output.
+
+---
+
+## Phase 3 — Yesterday's range detector
+
+### Goal
+
+Add a `PriorSessionRangeDetector` that produces a single box per session, defined by the high and low of the **previous RTH session** (9:30–16:00 ET prior trading day). Box is established at the start of the current session and valid until session close.
+
+Tests whether multi-day boxes (overnight gaps, prior-day support/resistance) generate breakout dynamics similar to intraday boxes.
+
+### Implementation
+
+Detector reads from the bars database. For session date `D`:
+- Find the previous trading day `D-1` (skip weekends/holidays — use existing session calendar logic)
+- Query high/low of RTH bars on `D-1`
+- Emit a single `Box(source="yesterdays_range", high=..., low=..., established_at=session_open, valid_until=session_close)`
+
+Configurable parameters:
+- `session` — `"rth"` or `"globex"` (default rth)
+- `lookback_days` — defaults to 1, but support 2 or more for "two-day range" experiments later
+- `valid_until` — defaults to session close
+
+### Considerations specific to multi-day boxes
+
+- **Box established at open.** Unlike ORB or post-lunch which need formation time, this box exists from the first bar of the session. The executor sees it from bar 1.
+- **Gap behavior.** If price gaps above yesterday's high at the open, technically the "breakout" already happened. Decide: does the gap-open count as a trade trigger? Recommend: **no** — require an actual bar close above the box high during the session. The existing gap_guard logic may or may not cover this; verify and extend if needed.
+- **Stale box risk.** Yesterday's range can be far from current price (e.g., during strong trends). The executor will mostly see this box as untouched all day. That's fine — empty bars contribute no trades.
+
+### UI changes
+
+- **Chart:** render yesterday's range as horizontal lines (high and low) extending across the session, distinct visual from the rectangular intraday boxes. Lines + faint shading between them works well. Different color again (third in the palette).
+- **Performance pane:** third row in the per-source breakdown.
+
+### Phase 3 validation gate
+
+1. **Regression:** with only ORB active, results match Phase 1/2 baseline.
+2. **Box correctness:** for 5 randomly chosen sessions, manually verify that the rendered yesterday's-range box matches the prior session's actual high/low (look at the prior day's chart, confirm). This is the cheapest way to catch session-calendar bugs.
+3. **Per-source metrics:** all three detectors visible side-by-side. Look for whether yesterday's-range trades have meaningfully different characteristics (longer hold time? larger moves? different win rate?).
+
+---
+
+## Cross-cutting concerns
+
+### Configuration
+
+Move from hardcoded ORB parameters to a detector-list config (YAML or whatever the codebase already uses). Each detector has its own block. Disabling a detector is just commenting out its config block. This makes A/B comparisons trivial.
+
+### Regime filter interaction
+
+The existing `Regime filter ON/OFF` toggle should apply uniformly to all detectors for now. **Do not** add per-detector regime filtering yet — that's an additional research dimension that should wait until you know whether the detectors themselves have edge.
+
+Note however that the per-source breakdown will reveal whether the regime filter has different effects on different detectors. That observation alone is interesting research output and may inform future per-detector filtering.
+
+### Documentation
+
+Update `requirements.md` with:
+- Box / BoxDetector / BoxBreakoutExecutor abstractions
+- Multi-box conflict resolution rules
+- Detector config format
+- Per-source trade tagging convention
+- Visual conventions per detector type (rectangle for intraday, lines for multi-day)
+
+---
+
+## Out of scope — do not implement
+
+- NR4 / NR7 detectors
+- ATR contraction / Bollinger squeeze detectors
+- Volume profile balance area detectors
+- European session / overnight session boxes
+- Per-detector regime filtering
+- Stacking / pyramiding logic (multiple positions from multiple boxes)
+- Box-detector parameter optimization
+
+These are explicitly deferred. If any of them seem necessary to complete Phase 1/2/3, that's a signal something is wrong with the abstraction — surface the issue rather than expanding scope.
+
+---
+
+## Sequence and review checkpoints
+
+1. Plan Phase 1, get sign-off on architecture, implement, hit validation gate, ship.
+2. Plan Phase 2, get sign-off on multi-box conflict rules, implement, hit validation gate, ship.
+3. Plan Phase 3, get sign-off on multi-day box semantics (gap behavior especially), implement, hit validation gate, ship.
+
+After Phase 3, the research question becomes: do the per-source backtest results (with ~3x trade count) tell a different story about ORB-style strategies than Phase 1's ORB-only results? That's the actual scientific yield of this work.

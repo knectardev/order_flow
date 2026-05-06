@@ -613,14 +613,14 @@ let _lastMouse = null;   // {x, y} CSS-pixel coords inside the canvas
 priceCanvas.addEventListener('mousemove', (e) => {
   const rect = priceCanvas.getBoundingClientRect();
   _lastMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  if (state.isDraggingPlayhead) {
-    _hideTooltip();
-    return;
-  }
-  // If we're actively click-dragging a pan, suppress the tooltip — pan UX wins.
+  // Pan wins over playhead if both flags were stuck — avoids blocking horizontal scrub after playhead drags.
   if (state.isPanningChart) {
     _continuePan(e);
     hoverBar(null, 'chart-pan');
+    _hideTooltip();
+    return;
+  }
+  if (state.isDraggingPlayhead) {
     _hideTooltip();
     return;
   }

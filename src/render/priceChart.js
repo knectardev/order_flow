@@ -1851,6 +1851,16 @@ function drawPriceChart() {
   // null doesn't poison `toFixed`.
   if (profile && profile.bins && profile.vahPrice != null && profile.valPrice != null && profile.pocPrice != null) {
     const px = PAD.l + chartW + 8;
+    const profileSepBottom = volTop + volBandH;
+    pctx.save();
+    pctx.strokeStyle = 'rgba(138, 146, 166, 0.42)';
+    pctx.lineWidth = 1;
+    const xHair = Math.round(px) - 0.5;
+    pctx.beginPath();
+    pctx.moveTo(xHair, PAD.t);
+    pctx.lineTo(xHair, profileSepBottom);
+    pctx.stroke();
+    pctx.restore();
     // Sidebar width normalization should use what the user can actually see in
     // the chart pane, not a far-tail max bin that may be off-screen. We score
     // bins by pixel visibility first, then fall back to value-area bins, then
