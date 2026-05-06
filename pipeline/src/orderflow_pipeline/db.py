@@ -40,7 +40,7 @@ Tables (Phase 5):
         vw_path_length               DOUBLE      - Σ |Δticks|×size per edge (volume-weighted path)
         displacement_ticks           INTEGER     - close_ticks − open_ticks (rounded)
         abs_displacement_ticks       INTEGER
-        pld_ratio                    DOUBLE      - path / max(|displacement|,1), capped
+        pld_ratio                    DOUBLE      - path_length_ticks / bar range in ticks; NULL if range is 0
         flip_count                   INTEGER     - within-bar aggressor side flips only
         flip_rate                    DOUBLE      - flip_count / (trade_count−1), NULL if ≤1 trade
         jitter_regime                VARCHAR     - Low | Mid | High | NULL (warmup)
@@ -94,6 +94,7 @@ in one transaction. Re-running one timeframe never disturbs another.
 """
 from __future__ import annotations
 
+import os
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -379,10 +380,33 @@ def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
 
     The parent directory is created if needed. Initial connection does NOT
     auto-init the schema — call `init_schema(con)` once after connecting.
+
+    Optional environment (large ingest / memory pressure):
+
+    - ``ORDERFLOW_DUCKDB_MEMORY_LIMIT`` — ``SET memory_limit`` (e.g. ``8GB``). Empty = default.
+    - ``ORDERFLOW_DUCKDB_TEMP_DIR`` — spill/temp directory (use forward slashes on Windows).
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    return duckdb.connect(str(p))
+    con = duckdb.connect(str(p))
+    mem = os.environ.get("ORDERFLOW_DUCKDB_MEMORY_LIMIT", "").strip()
+    if mem:
+        con.execute(f"SET memory_limit = '{mem}'")
+    tmp = os.environ.get("ORDERFLOW_DUCKDB_TEMP_DIR", "").strip()
+    if tmp:
+        tmp_esc = tmp.replace("\\", "/")
+        con.execute(f"SET temp_directory = '{tmp_esc}'")
+    return con
+
+
+def _profile_insert_chunk_rows() -> int:
+    raw = os.environ.get("ORDERFLOW_DUCKDB_PROFILE_CHUNK", "").strip()
+    if raw:
+        try:
+            return max(10_000, int(raw))
+        except ValueError:
+            pass
+    return 250_000
 
 
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
@@ -570,12 +594,28 @@ def write_session(
                 """
             )
         if len(profile_df) > 0:
-            con.execute(
-                """
-                INSERT INTO bar_volume_profile (bar_time, timeframe, price_tick, volume, delta)
-                SELECT bar_time, timeframe, price_tick, volume, delta FROM profile_df
-                """
-            )
+            chunk_n = _profile_insert_chunk_rows()
+            nprof = len(profile_df)
+            if nprof <= chunk_n:
+                con.execute(
+                    """
+                    INSERT INTO bar_volume_profile (bar_time, timeframe, price_tick, volume, delta)
+                    SELECT bar_time, timeframe, price_tick, volume, delta FROM profile_df
+                    """
+                )
+            else:
+                for start in range(0, nprof, chunk_n):
+                    sub = profile_df.iloc[start : start + chunk_n]
+                    con.register("_bvp_chunk", sub)
+                    try:
+                        con.execute(
+                            """
+                            INSERT INTO bar_volume_profile (bar_time, timeframe, price_tick, volume, delta)
+                            SELECT bar_time, timeframe, price_tick, volume, delta FROM _bvp_chunk
+                            """
+                        )
+                    finally:
+                        con.unregister("_bvp_chunk")
         if swing_df is not None and len(swing_df) > 0:
             con.execute(
                 """

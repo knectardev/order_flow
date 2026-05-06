@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pytest
 
 _SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
@@ -15,12 +16,12 @@ if str(_SRC) not in sys.path:
 
 from orderflow_pipeline.aggregate import (  # noqa: E402
     NS_PER_MINUTE,
-    PLD_RATIO_CAP,
     aggregate_trades,
 )
 from orderflow_pipeline.decode import Trade  # noqa: E402
 from orderflow_pipeline.velocity_regime import (  # noqa: E402
     MIN_PRIOR_BARS,
+    _midrank_percentile,
     stamp_trade_context,
     stamp_velocity_regimes,
     trade_context_from_regimes,
@@ -119,15 +120,30 @@ def test_velocity_single_trade_flip_rate_null():
     assert res.bars[0].flip_rate is None
 
 
-def test_pld_ratio_capped():
+def test_pld_ratio_null_when_flat_bar():
+    """Zero tick range -> NULL pld_ratio (degenerate OHLC)."""
     base_ns = _ts_ns_at(9, 30)
-    trades = []
-    p = 4500.0
-    for k in range(40):
-        p += 0.25 if k % 2 == 0 else -0.25
-        trades.append(
-            _trade(base_ns + (k + 1) * 50_000_000, price=p, size=1, side="A"),
-        )
+    trades = [
+        _trade(base_ns + 1_000_000_000, price=4500.0, size=1, side="A"),
+        _trade(base_ns + 2_000_000_000, price=4500.0, size=1, side="A"),
+    ]
+    res = aggregate_trades(
+        trades,
+        front_month_id=FRONT_ID,
+        session_date=SESSION_DATE,
+        timeframe="1m",
+    )
+    assert res.bars[0].pld_ratio is None
+
+
+def test_pld_ratio_path_over_range_ticks():
+    """path_length_ticks / (high_ticks - low_ticks); zigzag increases path vs range."""
+    base_ns = _ts_ns_at(9, 30)
+    trades = [
+        _trade(base_ns + 1_000_000_000, price=4500.0, size=1, side="A"),
+        _trade(base_ns + 2_000_000_000, price=4501.0, size=1, side="A"),
+        _trade(base_ns + 3_000_000_000, price=4500.0, size=1, side="A"),
+    ]
     res = aggregate_trades(
         trades,
         front_month_id=FRONT_ID,
@@ -135,8 +151,23 @@ def test_pld_ratio_capped():
         timeframe="1m",
     )
     b = res.bars[0]
-    assert b.pld_ratio is not None
-    assert b.pld_ratio <= PLD_RATIO_CAP + 1e-9
+    assert b.path_length_ticks == 8
+    assert b.pld_ratio == pytest.approx(2.0)
+
+
+def test_jitter_midrank_log_matches_linear_for_positive_samples():
+    """Midrank is rank-only; log is monotonic, so percentiles match on positive PLD.
+
+    Ingest still uses ``log(pld_ratio)`` explicitly as the contract for jitter (plan);
+    filtering to positive finite priors matches the ranking domain.
+    """
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        priors = rng.uniform(0.5, 200.0, size=40)
+        current = float(rng.uniform(0.5, 200.0))
+        lin = _midrank_percentile(priors, current)
+        log_r = _midrank_percentile(np.log(priors), np.log(current))
+        assert lin == pytest.approx(log_r)
 
 
 def test_stamp_velocity_regimes_no_db_noop():

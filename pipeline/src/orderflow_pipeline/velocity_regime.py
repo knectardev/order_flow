@@ -4,6 +4,12 @@ Trailing window: up to 200 prior bars with the **same** ``session_kind`` as the
 current row (no mixing RTH vs globex). Percentiles are computed only from prior
 rows (current bar excluded). Warmup rows emit NULL regime labels.
 
+**Jitter** midrank applies ``log`` to positive finite ``pld_ratio`` values before
+``_midrank_percentile`` (bars with non-positive or NULL ``pld_ratio`` emit NULL
+jitter). Empirical midrank depends only on **order** among samples; for strictly
+positive PLD, ranking ``log(pld_ratio)`` yields the same percentile as ranking raw
+``pld_ratio`` — the pipeline still uses ``log`` explicitly as the documented contract.
+
 Conviction label is **inverted** vs flip percentile: low flip_rate ⇒ High
 conviction (same convention as the original velocity-matrix spec).
 """
@@ -134,7 +140,8 @@ def stamp_velocity_regimes(
             continue
 
         pld_series = combined["pld_ratio"].iloc[idxs]
-        pld_vals = pld_series.dropna().to_numpy(dtype=float)
+        pld_raw = pld_series.dropna().to_numpy(dtype=float)
+        pld_vals = pld_raw[(pld_raw > 0) & np.isfinite(pld_raw)]
 
         flip_series = combined["flip_rate"].iloc[idxs]
         flip_vals = flip_series.dropna().to_numpy(dtype=float)
@@ -144,8 +151,14 @@ def stamp_velocity_regimes(
         elif pld_vals.size == 0:
             jitter = None
         else:
-            pld_pct = _midrank_percentile(pld_vals, float(cur_pld))
-            jitter = _label_tercile(pld_pct, invert=False)
+            cur_pld_f = float(cur_pld)
+            if not np.isfinite(cur_pld_f) or cur_pld_f <= 0:
+                jitter = None
+            else:
+                log_vals = np.log(pld_vals)
+                log_cur = np.log(cur_pld_f)
+                pld_pct = _midrank_percentile(log_vals, log_cur)
+                jitter = _label_tercile(pld_pct, invert=False)
 
         if cur_flip is None or (isinstance(cur_flip, float) and np.isnan(cur_flip)):
             conviction = None

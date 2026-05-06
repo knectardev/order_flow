@@ -698,22 +698,32 @@ function _finalizeDraftPen() {
   redrawChartDrawOverlay();
 }
 
+function _syncDrawToggleTitle() {
+  const tgl = document.getElementById('chartDrawToggleBtn');
+  if (!tgl) return;
+  tgl.title = interactActive
+    ? 'Drawing layer on — click for normal chart (pan / hover)'
+    : 'Drawing layer off — click or pick Pen / Box / L / S / T to draw';
+}
+
 function _setInteract(on) {
   interactActive = on;
   if (priceWrap) priceWrap.classList.toggle('chart-wrap-annotations-active', on);
-  const tb = document.getElementById('chartDrawToolbar');
   const toggle = document.getElementById('chartDrawToggleBtn');
-  if (tb) tb.hidden = !on;
   if (toggle) toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
-  draftPen = null;
-  draftBox = null;
-  draftLongShort = null;
-  dragMove = null;
-  if (!on) selectedId = null;
+  if (!on) {
+    draftPen = null;
+    draftBox = null;
+    draftLongShort = null;
+    dragMove = null;
+    selectedId = null;
+  }
   _syncDeleteBtn();
+  _syncDrawToggleTitle();
   _updateOverlayCursor();
   redrawChartDrawOverlay();
 }
+
 
 export function bindChartDrawUI() {
   overlayCanvas = document.getElementById('chartDrawOverlay');
@@ -735,6 +745,9 @@ export function bindChartDrawUI() {
     tool = btn.dataset.drawTool || 'select';
     if (tool === 'longShort' && (btn.dataset.lsSide === 'long' || btn.dataset.lsSide === 'short')) {
       longShortPlaceSide = btn.dataset.lsSide;
+    }
+    if (tool === 'pen' || tool === 'text' || tool === 'box' || tool === 'longShort') {
+      if (!interactActive) _setInteract(true);
     }
     draftPen = null;
     draftBox = null;
@@ -1058,6 +1071,7 @@ export function bindChartDrawUI() {
     redrawChartDrawOverlay();
   });
 
+  _syncDrawToggleTitle();
   _syncToolButtons();
   redrawChartDrawOverlay();
 }

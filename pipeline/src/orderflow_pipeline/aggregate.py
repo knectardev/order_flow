@@ -34,6 +34,7 @@ bars; they require recomputation from raw trades per timeframe.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from typing import Iterable, Iterator
@@ -71,9 +72,6 @@ RTH_CLOSE = time(16, 0)
 # Persisting the integer bucket (not the float price) keeps the
 # `bar_volume_profile` PRIMARY KEY exact and the indexes cheap.
 TICK_SIZE = 0.25
-
-# Cap path-length / displacement ratio when displacement rounds to ~0 (chop).
-PLD_RATIO_CAP = 100.0
 
 
 @dataclass(slots=True)
@@ -133,7 +131,7 @@ class Bar:
     aggressive_sell_count: int = 0
     sum_aggressive_buy_size: int = 0
     sum_aggressive_sell_size: int = 0
-    # Velocity (path-length / displacement, within-bar flip rate). Populated in
+    # Velocity (path-length / bar range in ticks, within-bar flip rate). Populated in
     # `aggregate_trades` + `_stamp_velocity_derived`; regimes in velocity_regime.
     path_length_ticks: int = 0
     vw_path_length: float = 0.0
@@ -470,15 +468,25 @@ def _stamp_session_vwap(bars: list[Bar]) -> None:
 
 
 def _stamp_velocity_derived(bars: list[Bar]) -> None:
-    """Finalize displacement, capped `pld_ratio`, and `flip_rate` per bar."""
+    """Finalize displacement, path/range `pld_ratio`, and `flip_rate` per bar."""
     for b in bars:
         open_ticks = int(round(b.open / TICK_SIZE))
         close_ticks = int(round(b.close / TICK_SIZE))
         b.displacement_ticks = close_ticks - open_ticks
         b.abs_displacement_ticks = abs(b.displacement_ticks)
-        denom = max(b.abs_displacement_ticks, 1)
-        raw_ratio = b.path_length_ticks / denom
-        b.pld_ratio = round(min(float(raw_ratio), PLD_RATIO_CAP), 6)
+
+        high_ticks = int(round(b.high / TICK_SIZE))
+        low_ticks = int(round(b.low / TICK_SIZE))
+        range_ticks = max(high_ticks - low_ticks, 0)
+        if range_ticks == 0:
+            b.pld_ratio = None
+        else:
+            raw_ratio = b.path_length_ticks / float(range_ticks)
+            if not math.isfinite(raw_ratio):
+                b.pld_ratio = None
+            else:
+                b.pld_ratio = round(float(raw_ratio), 6)
+
         if b.trade_count <= 1:
             b.flip_rate = None
         else:

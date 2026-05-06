@@ -1,9 +1,8 @@
-VELOCITY layer 
+Variants of the ORB strategy for 5 min opening range and 30 minute. 
+Generalized range detection 
 
 add PL utility to drawing tools
-Add box to drawing tools
-Add long and short trade sim
-Practice using various regime signals
+
 Add standard ema’s
 
 Between phat candles, standard Ema, regime filter, and derived signals such as absorption and exhaustion, build a plausible manual strategy. If it works then code it.
