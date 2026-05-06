@@ -1,4 +1,4 @@
-// Session-only annotations on `#chartDrawOverlay` (freehand paths + text).
+// Session-only annotations on `#chartDrawOverlay` (freehand paths + text + boxes).
 // Drawing mode steals pointer events from `#priceChart`; disable annotations to pan/zoom/hover the chart.
 import { resizeCanvas } from '../util/dom.js';
 import { handlePriceChartWheelZoom } from './pan.js';
@@ -9,17 +9,21 @@ const HIT_DIST_PATH = 10;
 const HIT_PAD_TEXT = 6;
 const MIN_PEN_POINTS = 2;
 const MIN_SEGMENT_SKIP_SQ = 1;
+const MIN_BOX_SIDE = 4;
+const BOX_FILL_ALPHA = 0.22;
+const HANDLE_HIT = 10;
+const HANDLE_DRAW = 4;
 
-/** @type {{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string }} */
+/** @type {{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string } | { id: string, type: 'box', color: string, x: number, y: number, w: number, h: number }} */
 
 let overlayCanvas = null;
 let overlayCtx = null;
 let priceWrap = null;
 
 let interactActive = false;
-let tool = 'select'; // 'select' | 'pen' | 'text'
+let tool = 'select'; // 'select' | 'pen' | 'text' | 'box'
 
-/** @type {Array<{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string }>} */
+/** @type {Array<{ id: string, type: 'path', color: string, points: { x: number, y: number }[] } | { id: string, type: 'text', color: string, x: number, y: number, text: string } | { id: string, type: 'box', color: string, x: number, y: number, w: number, h: number }>} */
 let objects = [];
 
 let selectedId = null;
@@ -27,7 +31,10 @@ let selectedId = null;
 /** @type {{ points: { x: number, y: number }[], preview?: { x: number, y: number } } | null} */
 let draftPen = null;
 
-/** @type {{ id: string, lastX: number, lastY: number, pointerId: number } | null} */
+/** @type {{ x0: number, y0: number, pointerId: number, previewX?: number, previewY?: number } | null} */
+let draftBox = null;
+
+/** @type {{ id: string, lastX: number, lastY: number, pointerId: number, mode?: 'move' | 'resize', fx?: number, fy?: number } | null} */
 let dragMove = null;
 
 function _nid() {
@@ -56,7 +63,8 @@ function _updateOverlayCursor() {
     overlayCanvas.style.cursor = '';
     return;
   }
-  overlayCanvas.style.cursor = tool === 'pen' ? 'crosshair' : tool === 'text' ? 'text' : 'default';
+  overlayCanvas.style.cursor =
+    tool === 'pen' || tool === 'box' ? 'crosshair' : tool === 'text' ? 'text' : 'default';
 }
 
 function _localXY(e) {
@@ -120,6 +128,77 @@ function _pointInBBox(px, py, bb) {
   return px >= bb.minx && px <= bb.maxx && py >= bb.miny && py <= bb.maxy;
 }
 
+function _boxBB(o) {
+  return { minx: o.x, miny: o.y, maxx: o.x + o.w, maxy: o.y + o.h };
+}
+
+/** @returns {'nw'|'ne'|'sw'|'se'|null} */
+function _nearestBoxHandle(px, py, o) {
+  /** @type {Array<{ name: 'nw'|'ne'|'sw'|'se', cx: number, cy: number }>} */
+  const corners = [
+    { name: 'nw', cx: o.x, cy: o.y },
+    { name: 'ne', cx: o.x + o.w, cy: o.y },
+    { name: 'sw', cx: o.x, cy: o.y + o.h },
+    { name: 'se', cx: o.x + o.w, cy: o.y + o.h },
+  ];
+  let best = null;
+  let bestD = HANDLE_HIT + 1;
+  for (const c of corners) {
+    const d = Math.hypot(px - c.cx, py - c.cy);
+    if (d <= HANDLE_HIT && d <= bestD) {
+      bestD = d;
+      best = c.name;
+    }
+  }
+  return best;
+}
+
+/** @returns {{ id: string, handle: 'nw'|'ne'|'sw'|'se' } | null} */
+function _hitBoxResizeTop(px, py) {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    if (o.type !== 'box') continue;
+    const h = _nearestBoxHandle(px, py, o);
+    if (h) return { id: o.id, handle: h };
+  }
+  return null;
+}
+
+function _hexToRgbaFill(hex, alpha) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return `rgba(38,166,154,${alpha})`;
+  return `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${alpha})`;
+}
+
+/** Resize box so `(fx,fy)` stays fixed and the diagonal follows `(mx,my)`. */
+function _resizeBoxDiagonal(o, fx, fy, mx, my) {
+  const signx = fx <= mx ? 1 : -1;
+  const signy = fy <= my ? 1 : -1;
+  let w = Math.max(MIN_BOX_SIDE, Math.abs(mx - fx));
+  let h = Math.max(MIN_BOX_SIDE, Math.abs(my - fy));
+  let x = signx >= 0 ? fx : fx - w;
+  let y = signy >= 0 ? fy : fy - h;
+  o.x = x;
+  o.y = y;
+  o.w = w;
+  o.h = h;
+}
+
+/** @returns {{ fx: number, fy: number }} fixed corner opposite the dragged handle */
+function _oppositeCornerForHandle(o, handle) {
+  switch (handle) {
+    case 'nw':
+      return { fx: o.x + o.w, fy: o.y + o.h };
+    case 'ne':
+      return { fx: o.x, fy: o.y + o.h };
+    case 'sw':
+      return { fx: o.x + o.w, fy: o.y };
+    case 'se':
+    default:
+      return { fx: o.x, fy: o.y };
+  }
+}
+
 function _hitTest(px, py) {
   if (!overlayCtx) return null;
   for (let i = objects.length - 1; i >= 0; i--) {
@@ -139,6 +218,9 @@ function _hitTest(px, py) {
     } else if (o.type === 'text') {
       const bb = _textBBox(overlayCtx, o);
       if (_pointInBBox(px, py, bb)) return o.id;
+    } else if (o.type === 'box') {
+      const bb = _boxBB(o);
+      if (_pointInBBox(px, py, bb)) return o.id;
     }
   }
   return null;
@@ -155,6 +237,22 @@ function _drawSelection(ctx, o) {
   } else if (o.type === 'text') {
     const bb = _textBBox(ctx, o);
     ctx.strokeRect(bb.minx, bb.miny, bb.maxx - bb.minx, bb.maxy - bb.miny);
+  } else if (o.type === 'box') {
+    ctx.strokeRect(o.x, o.y, o.w, o.h);
+    ctx.setLineDash([]);
+    const hs = HANDLE_DRAW;
+    const corners = [
+      [o.x, o.y],
+      [o.x + o.w, o.y],
+      [o.x, o.y + o.h],
+      [o.x + o.w, o.y + o.h],
+    ];
+    for (const [cx, cy] of corners) {
+      ctx.fillStyle = 'rgba(40,40,48,0.95)';
+      ctx.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.strokeRect(cx - hs / 2, cy - hs / 2, hs, hs);
+    }
   }
   ctx.restore();
 }
@@ -186,6 +284,12 @@ export function redrawChartDrawOverlay() {
       overlayCtx.font = DRAW_FONT;
       overlayCtx.textBaseline = 'alphabetic';
       overlayCtx.fillText(o.text, o.x, o.y);
+    } else if (o.type === 'box') {
+      overlayCtx.fillStyle = _hexToRgbaFill(o.color, BOX_FILL_ALPHA);
+      overlayCtx.fillRect(o.x, o.y, o.w, o.h);
+      overlayCtx.strokeStyle = o.color;
+      overlayCtx.lineWidth = PEN_WIDTH;
+      overlayCtx.strokeRect(o.x + 0.5, o.y + 0.5, o.w - 1, o.h - 1);
     }
     overlayCtx.restore();
   }
@@ -205,6 +309,25 @@ export function redrawChartDrawOverlay() {
     overlayCtx.restore();
   }
 
+  if (draftBox) {
+    const x0 = draftBox.x0;
+    const y0 = draftBox.y0;
+    const x1 = draftBox.previewX ?? x0;
+    const y1 = draftBox.previewY ?? y0;
+    const nx = Math.min(x0, x1);
+    const ny = Math.min(y0, y1);
+    const rw = Math.abs(x1 - x0);
+    const rh = Math.abs(y1 - y0);
+    const col = _colorInputValue();
+    overlayCtx.save();
+    overlayCtx.fillStyle = _hexToRgbaFill(col, BOX_FILL_ALPHA * 0.85);
+    overlayCtx.strokeStyle = col;
+    overlayCtx.lineWidth = PEN_WIDTH;
+    overlayCtx.fillRect(nx, ny, rw, rh);
+    overlayCtx.strokeRect(nx + 0.5, ny + 0.5, Math.max(0, rw - 1), Math.max(0, rh - 1));
+    overlayCtx.restore();
+  }
+
   if (selectedId) {
     const o = objects.find(x => x.id === selectedId);
     if (o) _drawSelection(overlayCtx, o);
@@ -220,6 +343,36 @@ function _maybeAppendPenPoint(pt) {
   const dx = pt.x - last.x;
   const dy = pt.y - last.y;
   if (dx * dx + dy * dy >= MIN_SEGMENT_SKIP_SQ) draftPen.points.push(pt);
+}
+
+function _finalizeDraftBox(x1, y1) {
+  const x0 = draftBox?.x0;
+  const y0 = draftBox?.y0;
+  draftBox = null;
+  if (x0 === undefined || y0 === undefined) {
+    redrawChartDrawOverlay();
+    return;
+  }
+  const nx = Math.min(x0, x1);
+  const ny = Math.min(y0, y1);
+  const w = Math.abs(x1 - x0);
+  const h = Math.abs(y1 - y0);
+  if (w < MIN_BOX_SIDE || h < MIN_BOX_SIDE) {
+    redrawChartDrawOverlay();
+    return;
+  }
+  objects.push({
+    id: _nid(),
+    type: 'box',
+    color: _colorInputValue(),
+    x: nx,
+    y: ny,
+    w,
+    h,
+  });
+  selectedId = objects[objects.length - 1].id;
+  _syncDeleteBtn();
+  redrawChartDrawOverlay();
 }
 
 function _finalizeDraftPen() {
@@ -249,6 +402,7 @@ function _setInteract(on) {
   if (tb) tb.hidden = !on;
   if (toggle) toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
   draftPen = null;
+  draftBox = null;
   dragMove = null;
   if (!on) selectedId = null;
   _syncDeleteBtn();
@@ -275,6 +429,7 @@ export function bindChartDrawUI() {
     if (!btn) return;
     tool = btn.dataset.drawTool || 'select';
     draftPen = null;
+    draftBox = null;
     _syncToolButtons();
     _updateOverlayCursor();
     redrawChartDrawOverlay();
@@ -315,6 +470,13 @@ export function bindChartDrawUI() {
       return;
     }
 
+    if (tool === 'box') {
+      draftBox = { x0: x, y0: y, pointerId: e.pointerId };
+      overlayCanvas.setPointerCapture(e.pointerId);
+      redrawChartDrawOverlay();
+      return;
+    }
+
     if (tool === 'text') {
       const raw = window.prompt('Annotation text:', '');
       if (raw != null && String(raw).trim()) {
@@ -333,7 +495,30 @@ export function bindChartDrawUI() {
       return;
     }
 
-    // select
+    // select — box corners resize before body hit-testing
+    const rs = _hitBoxResizeTop(x, y);
+    if (rs) {
+      const o = objects.find(z => z.id === rs.id && z.type === 'box');
+      if (o) {
+        const { fx, fy } = _oppositeCornerForHandle(o, rs.handle);
+        selectedId = rs.id;
+        _syncDeleteBtn();
+        if (colorEl) colorEl.value = o.color;
+        dragMove = {
+          id: o.id,
+          lastX: x,
+          lastY: y,
+          pointerId: e.pointerId,
+          mode: 'resize',
+          fx,
+          fy,
+        };
+        overlayCanvas.setPointerCapture(e.pointerId);
+        redrawChartDrawOverlay();
+        return;
+      }
+    }
+
     const hit = _hitTest(x, y);
     selectedId = hit;
     _syncDeleteBtn();
@@ -351,6 +536,31 @@ export function bindChartDrawUI() {
   overlayCanvas.addEventListener('pointermove', e => {
     if (!interactActive) return;
     const { x, y } = _localXY(e);
+
+    if (
+      dragMove?.mode === 'resize' &&
+      dragMove.pointerId === e.pointerId &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      const o = objects.find(z => z.id === dragMove.id);
+      if (o && o.type === 'box' && dragMove.fx !== undefined && dragMove.fy !== undefined) {
+        _resizeBoxDiagonal(o, dragMove.fx, dragMove.fy, x, y);
+      }
+      redrawChartDrawOverlay();
+      return;
+    }
+
+    if (
+      draftBox &&
+      tool === 'box' &&
+      draftBox.pointerId === e.pointerId &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      draftBox.previewX = x;
+      draftBox.previewY = y;
+      redrawChartDrawOverlay();
+      return;
+    }
 
     if (tool === 'pen' && draftPen && overlayCanvas.hasPointerCapture(e.pointerId)) {
       _maybeAppendPenPoint({ x, y });
@@ -374,6 +584,9 @@ export function bindChartDrawUI() {
         } else if (o.type === 'text') {
           o.x += dx;
           o.y += dy;
+        } else if (o.type === 'box') {
+          o.x += dx;
+          o.y += dy;
         }
       }
       redrawChartDrawOverlay();
@@ -381,6 +594,17 @@ export function bindChartDrawUI() {
   });
 
   overlayCanvas.addEventListener('pointerup', e => {
+    if (
+      tool === 'box' &&
+      draftBox &&
+      draftBox.pointerId === e.pointerId &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      overlayCanvas.releasePointerCapture(e.pointerId);
+      const xy = _localXY(e);
+      _finalizeDraftBox(xy.x, xy.y);
+      return;
+    }
     if (tool === 'pen' && draftPen && overlayCanvas.hasPointerCapture(e.pointerId)) {
       overlayCanvas.releasePointerCapture(e.pointerId);
       if (draftPen.preview) {
@@ -397,6 +621,17 @@ export function bindChartDrawUI() {
   });
 
   overlayCanvas.addEventListener('pointercancel', e => {
+    if (
+      draftBox &&
+      typeof overlayCanvas.hasPointerCapture === 'function' &&
+      overlayCanvas.hasPointerCapture(e.pointerId)
+    ) {
+      try {
+        overlayCanvas.releasePointerCapture(e.pointerId);
+      } catch (_) { /* noop */ }
+      draftBox = null;
+      redrawChartDrawOverlay();
+    }
     if (
       draftPen &&
       typeof overlayCanvas.hasPointerCapture === 'function' &&
