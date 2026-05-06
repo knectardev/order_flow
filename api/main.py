@@ -434,6 +434,9 @@ class BacktestRunRequest(BaseModel):
     entry_gap_guard_max_ticks: float | None = None
     watch_ids: list[str] | None = None
     use_regime_filter: bool = True
+    rank_gate_enabled: bool = False
+    trade_context_gate_enabled: bool = False
+    trade_context_allowed: list[str] | None = None
     null_hypothesis: bool = False
     null_hypothesis_seed: int | None = None
 
@@ -1108,10 +1111,18 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
             )
 
         if payload.null_hypothesis:
+            if not (payload.rank_gate_enabled or payload.trade_context_gate_enabled):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "null_hypothesis requires rank_gate_enabled or trade_context_gate_enabled "
+                        "(at least one entry gate)."
+                    ),
+                )
             if not payload.use_regime_filter:
                 raise HTTPException(
                     status_code=400,
-                    detail="null_hypothesis requires use_regime_filter=true (regime ON baseline).",
+                    detail="null_hypothesis requires use_regime_filter=true (DB-fire baseline path).",
                 )
             if len(watch_ids) != 1:
                 raise HTTPException(
@@ -1132,6 +1143,9 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
             execution_policy=exec_policy,
             watch_ids=set(watch_ids) if watch_ids else None,
             use_regime_filter=bool(payload.use_regime_filter),
+            rank_gate_enabled=bool(payload.rank_gate_enabled),
+            trade_context_gate_enabled=bool(payload.trade_context_gate_enabled),
+            trade_context_allowed=payload.trade_context_allowed,
         )
 
         if not payload.null_hypothesis:
@@ -1204,6 +1218,9 @@ def run_backtest(payload: BacktestRunRequest) -> dict:
             execution_policy=exec_policy,
             watch_ids={wid},
             use_regime_filter=True,
+            rank_gate_enabled=bool(payload.rank_gate_enabled),
+            trade_context_gate_enabled=bool(payload.trade_context_gate_enabled),
+            trade_context_allowed=payload.trade_context_allowed,
             fires_by_time=nh_fires,
             signal_source="null_hypothesis",
             metadata_extra=nh_meta_extra,
@@ -1339,7 +1356,8 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
             SELECT trade_id, watch_id, entry_time, exit_time, direction, qty,
                    entry_price, exit_price, gross_pnl, commission, net_pnl, bars_held,
                    exit_reason,
-                   stop_loss_ticks_effective, take_profit_ticks_effective, slippage_to_stop_ratio
+                   stop_loss_ticks_effective, take_profit_ticks_effective, slippage_to_stop_ratio,
+                   entry_trade_context
             FROM backtest_trades
             WHERE run_id = ?
             ORDER BY trade_id
@@ -1373,6 +1391,8 @@ def get_backtest_trades(run_id: str | None = Query(default=None, alias="runId"))
             item["takeProfitTicksEffective"] = r[14]
         if r[15] is not None:
             item["slippageToStopRatio"] = r[15]
+        if r[16] is not None:
+            item["entryTradeContext"] = r[16]
         trades_out.append(item)
     return {"runId": rid, "trades": trades_out}
 

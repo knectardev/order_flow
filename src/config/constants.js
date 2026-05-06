@@ -25,6 +25,15 @@ export const TRADE_CONTEXT_DOT_AVOID = 'rgba(245, 158, 11, 0.95)';
 export const TRADE_CONTEXT_DOT_WATCH = 'rgba(167, 139, 250, 0.95)';
 
 /** Muted lane fills (two rows: jitter + conviction), same hue families as dots + gray Mid. */
+export const REGIME_LANE_FILL_NEUTRAL = 'rgba(52, 56, 64, 0.45)';
+/** Brighter neutral cell when hovering the jitter row (tooltip + highlight pass). */
+export const REGIME_LANE_FILL_NEUTRAL_HOVER = 'rgba(88, 94, 106, 0.82)';
+/** Jitter-row hover: higher α so the brick reads clearly against the pane. */
+export const REGIME_JITTER_LANE_FILL_HOVER = Object.freeze({
+  Low: 'rgba(45, 212, 191, 0.55)',
+  Mid: 'rgba(124, 132, 146, 0.62)',
+  High: 'rgba(245, 158, 11, 0.55)',
+});
 export const REGIME_JITTER_LANE_FILL = Object.freeze({
   Low: 'rgba(45, 212, 191, 0.22)',
   Mid: 'rgba(110, 116, 128, 0.38)',

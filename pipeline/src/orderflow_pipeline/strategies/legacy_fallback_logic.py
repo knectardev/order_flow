@@ -5,6 +5,7 @@ Orchestrates per-bar evaluation; per-watchid logic lives in sibling modules.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from .absorption_wall import try_emit_absorption_wall
 from .breakout import try_emit_breakout
@@ -26,9 +27,13 @@ def derive_fires_from_bars(
     watch_ids: set[str] | None = None,
     config: LegacyFallbackConfig | None = None,
     timeframe: str = "1m",
+    rank_gate_enabled: Optional[bool] = None,
+    trade_context_gate_enabled: bool = False,
+    trade_context_allowed: frozenset[str] | None = None,
 ) -> dict[datetime, list[dict]]:
     cfg = config or LegacyFallbackConfig()
     tf = (timeframe or "1m").strip()
+    orb_rank = bool(cfg.use_regime_filter) if rank_gate_enabled is None else bool(rank_gate_enabled)
     if not bars:
         return {}
 
@@ -70,7 +75,9 @@ def derive_fires_from_bars(
             bars=bars,
             emit=emit,
             orb_state=orb_state,
-            use_regime_filter=cfg.use_regime_filter,
+            rank_gate_enabled=orb_rank,
+            trade_context_gate_enabled=trade_context_gate_enabled,
+            trade_context_allowed=trade_context_allowed,
         )
 
     if len(bars) < cfg.min_bars:

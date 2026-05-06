@@ -725,6 +725,62 @@
     width: 100%;
     height: 140px;
   }
+  .bt-compare-four-summary {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .bt-compare-four-summary table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+  }
+  .bt-compare-four-summary caption {
+    text-align: left;
+    font-size: 10px;
+    color: var(--muted-2);
+    margin-bottom: 4px;
+  }
+  .bt-compare-four-summary th,
+  .bt-compare-four-summary td {
+    border: 1px solid var(--border);
+    padding: 4px 6px;
+    text-align: left;
+  }
+  .bt-compare-four-summary .cf-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .bt-trade-context-breakdown {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .bt-context-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+  }
+  .bt-context-table caption {
+    text-align: left;
+    font-size: 10px;
+    color: var(--muted-2);
+    margin-bottom: 4px;
+  }
+  .bt-context-table th,
+  .bt-context-table td {
+    border: 1px solid var(--border);
+    padding: 4px 6px;
+    text-align: left;
+  }
+  .bt-gate-profile select,
+  .bt-trade-context-allowed input {
+    max-width: 11rem;
+  }
 
   /* HTF-bias ribbon legend popover.
      Anchor element is `.bias-legend` rendered inline in the price-section

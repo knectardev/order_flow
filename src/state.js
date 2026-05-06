@@ -134,10 +134,15 @@ export const state = {
     executionDefaultsFromApi: null,
     runParams: {
       scope: '',
-      /** When true, runs a second backtest with regime gates relaxed and shows OFF equity/markers. */
-      compareRegimeOff: false,
+      /** `none` | `rank_only` | `trade_context_only` | `both` — maps to rank/trade_context API gates. */
+      gateProfile: 'both',
+      /** Pipeline legacy breakout/fade/etc. threshold strictness (`use_regime_filter`); independent of entry gates. */
+      legacyStrictThresholds: true,
+      /** Comma-separated allowed `trade_context` values when trade-context gate is on (default favorable). */
+      tradeContextAllowedStr: 'favorable',
+      /** Run four backtests (all gate combinations) and overlay equity + summary table. */
+      compareFourModes: false,
       showMarkersOn: true,
-      showMarkersOff: false,
       showBuyHold: true,
       nullHypothesis: false,
       initialCapital: 50000,
@@ -170,6 +175,8 @@ export const state = {
       filtered: { runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] } },
       unfiltered: { runId: null, stats: null, equity: [], benchmark: [], trades: [], skipped: { summary: {}, rows: [] } },
     },
+    /** When non-null, `{ runs: [{ key, label, runId, stats, equity }] }` from compare-four execution. */
+    compareFour: null,
     /** Null-hypothesis run (regime ON baseline only); null when not requested or cleared. */
     nullHypothesis: null,
     loading: false,

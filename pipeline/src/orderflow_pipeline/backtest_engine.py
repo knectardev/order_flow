@@ -14,6 +14,7 @@ import duckdb
 from . import db as db_module
 from .strategies.exit_ticks import resolve_exit_ticks
 from .strategies.legacy_fallback_logic import config_for_timeframe, derive_fires_from_bars
+from .strategies.opening_range_breakout import ORB_WATCH_ID, _rank_gate
 from .strategies.regime_exit_scale import RegimeExitScaleParams, apply_regime_exit_scale
 
 RUNTIME_DERIVED_WATCH_IDS = frozenset({"orb"})
@@ -61,6 +62,47 @@ def signal_bar_allows_next_bar_entry(
 
 
 _ORB_STRUCTURE_SL_BUFFER_TICKS = 4.0
+
+
+def filter_fires_by_entry_gates(
+    fires_by_time: dict[datetime, list[dict]],
+    bars_by_time: dict[datetime, dict],
+    *,
+    rank_gate_enabled: bool,
+    trade_context_gate_enabled: bool,
+    trade_context_allowed: frozenset[str],
+) -> dict[datetime, list[dict]]:
+    """Drop DB-originated fires whose signal bar fails rank / trade_context gates (ORB rank applies only to `orb`)."""
+    if not rank_gate_enabled and not trade_context_gate_enabled:
+        return fires_by_time
+    out: dict[datetime, list[dict]] = {}
+    for ts, batch in fires_by_time.items():
+        kept: list[dict] = []
+        bar = bars_by_time.get(ts)
+        for fire in batch:
+            wid = str(fire.get("watch_id") or "")
+            if rank_gate_enabled and wid == ORB_WATCH_ID:
+                if bar is None or not _rank_gate(bar):
+                    continue
+            if trade_context_gate_enabled:
+                if bar is None:
+                    continue
+                tc = bar.get("trade_context")
+                if tc is None or str(tc) not in trade_context_allowed:
+                    continue
+            kept.append(fire)
+        if kept:
+            out[ts] = kept
+    return out
+
+
+def _entry_trade_context_from_bar(bar: dict | None) -> str | None:
+    if not bar:
+        return None
+    tc = bar.get("trade_context")
+    if tc is None or tc == "":
+        return None
+    return str(tc)
 
 
 def _orb_structure_sl_floor_ticks(
@@ -275,6 +317,7 @@ class Position:
     take_profit_price: float | None = None
     stop_ticks_effective: float | None = None
     take_profit_ticks_effective: float | None = None
+    entry_trade_context: str | None = None
 
 
 class SimulatedBroker:
@@ -320,6 +363,7 @@ class SimulatedBroker:
         *,
         stop_ticks: float | None = None,
         take_profit_ticks: float | None = None,
+        entry_trade_context: str | None = None,
     ) -> None:
         if self.position is not None:
             return
@@ -341,6 +385,7 @@ class SimulatedBroker:
             take_profit_price=tp_px,
             stop_ticks_effective=stop_ticks,
             take_profit_ticks_effective=take_profit_ticks,
+            entry_trade_context=entry_trade_context,
         )
         self._mark(fill)
 
@@ -380,26 +425,27 @@ class SimulatedBroker:
         slip_ratio = None
         if eff_sl is not None and eff_sl > 0:
             slip_ratio = round(float(self.config.slippage_ticks) / float(eff_sl), 6)
-        self.trade_log.append(
-            {
-                "trade_id": self._trade_id,
-                "watch_id": pos.watch_id,
-                "entry_time": pos.entry_time,
-                "exit_time": ts,
-                "direction": "long" if pos.side > 0 else "short",
-                "qty": pos.qty,
-                "entry_price": round(pos.entry_price, 6),
-                "exit_price": round(fill, 6),
-                "gross_pnl": round(gross, 6),
-                "commission": round(pos.entry_commission + exit_commission, 6),
-                "net_pnl": round(net, 6),
-                "bars_held": max(1, bar_idx - pos.entry_index),
-                "exit_reason": reason,
-                "stop_loss_ticks_effective": eff_sl,
-                "take_profit_ticks_effective": pos.take_profit_ticks_effective,
-                "slippage_to_stop_ratio": slip_ratio,
-            }
-        )
+        row = {
+            "trade_id": self._trade_id,
+            "watch_id": pos.watch_id,
+            "entry_time": pos.entry_time,
+            "exit_time": ts,
+            "direction": "long" if pos.side > 0 else "short",
+            "qty": pos.qty,
+            "entry_price": round(pos.entry_price, 6),
+            "exit_price": round(fill, 6),
+            "gross_pnl": round(gross, 6),
+            "commission": round(pos.entry_commission + exit_commission, 6),
+            "net_pnl": round(net, 6),
+            "bars_held": max(1, bar_idx - pos.entry_index),
+            "exit_reason": reason,
+            "stop_loss_ticks_effective": eff_sl,
+            "take_profit_ticks_effective": pos.take_profit_ticks_effective,
+            "slippage_to_stop_ratio": slip_ratio,
+        }
+        if pos.entry_trade_context is not None:
+            row["entry_trade_context"] = pos.entry_trade_context
+        self.trade_log.append(row)
         self.position = None
 
     def mark_to_market(self, ts: datetime, mark_price: float) -> None:
@@ -427,7 +473,7 @@ class BacktestEngine:
         cur = self.con.execute(
             """
             SELECT bar_time, open, high, low, close, volume,
-                   session_date, v_rank, d_rank, range_pct
+                   session_date, v_rank, d_rank, range_pct, trade_context
             FROM bars
             WHERE timeframe = ? AND bar_time BETWEEN ? AND ?
             ORDER BY bar_time
@@ -475,12 +521,19 @@ class BacktestEngine:
         timeframe: str,
         watch_ids: set[str] | None = None,
         use_regime_filter: bool = True,
+        *,
+        rank_gate_enabled: bool | None = None,
+        trade_context_gate_enabled: bool = False,
+        trade_context_allowed: frozenset[str] | None = None,
     ) -> dict[datetime, list[dict]]:
         return derive_fires_from_bars(
             bars,
             watch_ids=watch_ids,
             config=config_for_timeframe(timeframe, use_regime_filter=use_regime_filter),
             timeframe=timeframe,
+            rank_gate_enabled=rank_gate_enabled,
+            trade_context_gate_enabled=trade_context_gate_enabled,
+            trade_context_allowed=trade_context_allowed,
         )
 
     @staticmethod
@@ -682,6 +735,7 @@ class BacktestEngine:
                     entry_bar_idx,
                     stop_ticks=eff_sl,
                     take_profit_ticks=eff_tp,
+                    entry_trade_context=_entry_trade_context_from_bar(entry_bar),
                 )
             pending = next_pending
 
@@ -764,6 +818,7 @@ class BacktestEngine:
                             idx,
                             stop_ticks=eff_sl,
                             take_profit_ticks=eff_tp,
+                            entry_trade_context=_entry_trade_context_from_bar(bar),
                         )
                     continue
                 if broker.position and broker.position.side != side:
@@ -794,6 +849,7 @@ class BacktestEngine:
                             idx,
                             stop_ticks=eff_sl,
                             take_profit_ticks=eff_tp,
+                            entry_trade_context=_entry_trade_context_from_bar(bar),
                         )
                     continue
                 log_skip(fire, "already_in_position_same_side")
@@ -829,6 +885,9 @@ class BacktestEngine:
         execution_policy: ExecutionPolicy | None = None,
         watch_ids: set[str] | None = None,
         use_regime_filter: bool = True,
+        rank_gate_enabled: bool = False,
+        trade_context_gate_enabled: bool = False,
+        trade_context_allowed: list[str] | None = None,
         fires_by_time: dict[datetime, list[dict]] | None = None,
         signal_source: str | None = None,
         metadata_extra: dict | None = None,
@@ -844,6 +903,16 @@ class BacktestEngine:
         if not bars:
             raise ValueError("No bars in requested window.")
 
+        allowed_src = trade_context_allowed if trade_context_allowed is not None else ["favorable"]
+        trade_context_allowed_frozen = frozenset(
+            str(x).strip() for x in allowed_src if str(x).strip()
+        )
+        if trade_context_gate_enabled and not trade_context_allowed_frozen:
+            raise ValueError(
+                "trade_context_allowed must list at least one trade_context when "
+                "trade_context_gate_enabled is true."
+            )
+
         if fires_by_time is None:
             sig = "db"
             derived_runtime = (
@@ -857,6 +926,9 @@ class BacktestEngine:
                     timeframe,
                     watch_ids=watch_ids,
                     use_regime_filter=use_regime_filter,
+                    rank_gate_enabled=rank_gate_enabled,
+                    trade_context_gate_enabled=trade_context_gate_enabled,
+                    trade_context_allowed=trade_context_allowed_frozen,
                 )
                 sig = "derived_runtime"
                 # Empty derived fires are allowed (narrow windows / regime gate): finish as zero-trade run.
@@ -874,6 +946,9 @@ class BacktestEngine:
                     timeframe,
                     watch_ids=watch_ids,
                     use_regime_filter=False,
+                    rank_gate_enabled=rank_gate_enabled,
+                    trade_context_gate_enabled=trade_context_gate_enabled,
+                    trade_context_allowed=trade_context_allowed_frozen,
                 )
                 sig = "derived_no_regime"
                 if not fires_by_time:
@@ -885,6 +960,15 @@ class BacktestEngine:
             signal_source = sig
         else:
             signal_source = signal_source or "custom"
+
+        bars_by_time = {b["bar_time"]: b for b in bars}
+        fires_by_time = filter_fires_by_entry_gates(
+            fires_by_time,
+            bars_by_time,
+            rank_gate_enabled=rank_gate_enabled,
+            trade_context_gate_enabled=trade_context_gate_enabled,
+            trade_context_allowed=trade_context_allowed_frozen,
+        )
 
         closed, equity_rows, skipped_fires = self._simulate(
             bars,
@@ -945,6 +1029,9 @@ class BacktestEngine:
             "watch_ids": sorted(watch_ids) if watch_ids else ["all"],
             "fire_source": signal_source,
             "use_regime_filter": bool(use_regime_filter),
+            "rank_gate_enabled": bool(rank_gate_enabled),
+            "trade_context_gate_enabled": bool(trade_context_gate_enabled),
+            "trade_context_allowed": sorted(trade_context_allowed_frozen),
             "skipped_fires": dict(skip_counts),
             "buy_hold_cached": bool(benchmark_cached),
             "exit_ticks_broker_stop_loss": config.stop_loss_ticks,
@@ -1019,6 +1106,9 @@ class BacktestEngine:
             "scope": sorted(watch_ids) if watch_ids else ["all"],
             "signalSource": signal_source,
             "useRegimeFilter": bool(use_regime_filter),
+            "rankGateEnabled": bool(rank_gate_enabled),
+            "tradeContextGateEnabled": bool(trade_context_gate_enabled),
+            "tradeContextAllowed": sorted(trade_context_allowed_frozen),
             "skippedFires": dict(skip_counts),
             "entryMode": entry_mode,
             "entryGapGuardMaxTicks": policy.entry_gap_guard_max_ticks,

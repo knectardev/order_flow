@@ -92,6 +92,13 @@ def _rank_gate(bar: dict) -> bool:
     return cell in ORB_ALLOWED_RANK_CELLS
 
 
+def _trade_context_passes(bar: dict, allowed: frozenset[str]) -> bool:
+    tc = bar.get("trade_context")
+    if tc is None or tc == "":
+        return False
+    return str(tc) in allowed
+
+
 def try_emit_opening_range_breakout(
     *,
     i: int,
@@ -100,7 +107,9 @@ def try_emit_opening_range_breakout(
     bars: list[dict],
     emit: Callable[..., None],
     orb_state: dict[Any, dict[str, Any]],
-    use_regime_filter: bool = True,
+    rank_gate_enabled: bool = False,
+    trade_context_gate_enabled: bool = False,
+    trade_context_allowed: frozenset[str] | None = None,
 ) -> None:
     """Evaluate ORB on bar index ``i``; mutates ``orb_state`` per session key."""
     tf = (timeframe or "").strip()
@@ -108,6 +117,8 @@ def try_emit_opening_range_breakout(
         return
     if watch_ids is not None and ORB_WATCH_ID not in watch_ids:
         return
+
+    allowed = trade_context_allowed if trade_context_allowed is not None else frozenset({"favorable"})
 
     bar = bars[i]
     session_date = _session_key(bar)
@@ -191,8 +202,9 @@ def try_emit_opening_range_breakout(
     elif long_break_idx is not None and i > int(long_break_idx):
         close = float(bar["close"])
         long_confirm = low <= (or_high + tol_px) and close >= (or_high - tol_px)
-        rank_ok = (not use_regime_filter) or _rank_gate(bar) or bool(st.get("long_break_rank_ok"))
-        if long_confirm and rank_ok:
+        rank_ok = (not rank_gate_enabled) or _rank_gate(bar) or bool(st.get("long_break_rank_ok"))
+        tc_ok = (not trade_context_gate_enabled) or _trade_context_passes(bar, allowed)
+        if long_confirm and rank_ok and tc_ok:
             st["direction_lock"] = "up"
             emit(
                 ORB_WATCH_ID,
@@ -240,8 +252,9 @@ def try_emit_opening_range_breakout(
     elif short_break_idx is not None and i > int(short_break_idx):
         close = float(bar["close"])
         short_confirm = high >= (or_low - tol_px) and close <= (or_low + tol_px)
-        rank_ok = (not use_regime_filter) or _rank_gate(bar) or bool(st.get("short_break_rank_ok"))
-        if short_confirm and rank_ok:
+        rank_ok = (not rank_gate_enabled) or _rank_gate(bar) or bool(st.get("short_break_rank_ok"))
+        tc_ok = (not trade_context_gate_enabled) or _trade_context_passes(bar, allowed)
+        if short_confirm and rank_ok and tc_ok:
             st["direction_lock"] = "down"
             emit(
                 ORB_WATCH_ID,

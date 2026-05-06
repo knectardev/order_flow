@@ -287,8 +287,8 @@
     </div>
     <div class="section-body">
     <div class="backtest-legend">
-      <span class="legend-item"><span class="legend-dot teal"></span> Regime filter ON</span>
-      <span class="legend-item" id="btLegendRegimeOff" hidden><span class="legend-dot orange"></span> Regime filter OFF</span>
+      <span class="legend-item"><span class="legend-dot teal"></span> Primary backtest equity</span>
+      <span class="legend-item" id="btLegendCompareFour" hidden>Four gate overlays: dashed = non-selected modes (gray / orange / purple); solid teal = selected profile</span>
       <span class="legend-item" id="btLegendNullHypothesis" hidden><span class="legend-dot null-hypothesis"></span> Null hypothesis</span>
     </div>
     <div class="backtest-toolbar-row">
@@ -355,25 +355,38 @@
           <input id="btEntryGapGuardTicks" type="number" step="any" min="0" placeholder="" disabled>
         </label>
       </div>
+      <label class="bt-gate-profile" title="Independent toggles for ORB rank cells vs trade_context allowed set. Legacy strategy thresholds are separate below.">
+        Entry gates
+        <select id="btGateProfile" aria-label="Entry gate profile">
+          <option value="none">None (no rank / no trade_context gate)</option>
+          <option value="rank_only">Rank only (ORB matrix)</option>
+          <option value="trade_context_only">Trade context only</option>
+          <option value="both" selected>Both (rank + trade context)</option>
+        </select>
+      </label>
+      <label class="bt-toggle-row" title="When on, uses strict breakout/fade/etc. thresholds from pipeline config (same as before dual gates). Does not imply rank/trade_context gates — set those above.">
+        <input id="btLegacyStrictThresholds" type="checkbox" checked>
+        Legacy strict thresholds (<code>use_regime_filter</code>)
+      </label>
+      <label class="bt-trade-context-allowed" title="Comma-separated trade_context values allowed when trade-context gate is on (default single favorable).">
+        Allowed trade contexts
+        <input id="btTradeContextAllowed" type="text" value="favorable" placeholder="favorable" autocapitalize="off" spellcheck="false">
+      </label>
       <label class="bt-toggle-row">
-        <input id="btCompareRegimeOff" type="checkbox">
-        Compare regime filter OFF (second run)
+        <input id="btCompareFourModes" type="checkbox">
+        Compare all four gate modes (four parallel runs)
       </label>
       <div class="bt-marker-split-row">
         <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-teal">
           <input id="btShowMarkersOn" type="checkbox" checked>
-          Show Regime ON markers
-        </label>
-        <label class="bt-toggle-row bt-toggle-row-inline bt-toggle-orange" id="btMarkersOffLabel" hidden>
-          <input id="btShowMarkersOff" type="checkbox">
-          Show Regime OFF markers
+          Show entry/exit markers
         </label>
       </div>
       <label class="bt-toggle-row bt-show-buy-hold">
         <input id="btShowBuyHold" type="checkbox" checked>
         Show buy &amp; hold benchmark
       </label>
-      <label class="bt-toggle-row bt-null-hypothesis" id="btNullHypothesisLabel" title="Requires exactly one watch in scope and regime ON baseline.">
+      <label class="bt-toggle-row bt-null-hypothesis" id="btNullHypothesisLabel" title="Requires exactly one watch, DB-fire baseline (legacy strict on), and at least one entry gate (rank or trade context).">
         <input id="btNullHypothesis" type="checkbox">
         Null hypothesis (frequency-matched random)
       </label>
@@ -392,6 +405,8 @@
     <div class="price-wrap backtest-chart-wrap">
       <canvas id="backtestEquityChart"></canvas>
     </div>
+    <div id="btCompareFourSummaryWrap" class="bt-compare-four-summary" hidden></div>
+    <div id="btTradeContextBreakdownWrap" class="bt-trade-context-breakdown" hidden></div>
     </div>
   </div>
 

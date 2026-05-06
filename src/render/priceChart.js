@@ -11,6 +11,9 @@ import {
   OVERLAY_STACK_STEP,
   REGIME_CONVICTION_LANE_FILL,
   REGIME_JITTER_LANE_FILL,
+  REGIME_JITTER_LANE_FILL_HOVER,
+  REGIME_LANE_FILL_NEUTRAL,
+  REGIME_LANE_FILL_NEUTRAL_HOVER,
   REGIME_LANE_TOTAL,
   REGIME_ROW_PX,
   REGIME_SEP_PX,
@@ -81,13 +84,25 @@ function _barTimeMs(t) {
 }
 
 function _regimeLaneCellFill(row, label) {
-  if (label == null || label === '') return 'rgba(52, 56, 64, 0.45)';
+  if (label == null || label === '') return REGIME_LANE_FILL_NEUTRAL;
   const L = String(label);
   const map = row === 'jitter' ? REGIME_JITTER_LANE_FILL : REGIME_CONVICTION_LANE_FILL;
   if (L === 'Low') return map.Low;
   if (L === 'Mid') return map.Mid;
   if (L === 'High') return map.High;
-  return 'rgba(52, 56, 64, 0.45)';
+  return REGIME_LANE_FILL_NEUTRAL;
+}
+
+/** Top lane row only: brighter fill when `hoverBarTime` matches this bar (tooltip.js linkage). */
+function _regimeLaneJitterCellFill(label, hovered) {
+  if (label == null || label === '') {
+    return hovered ? REGIME_LANE_FILL_NEUTRAL_HOVER : REGIME_LANE_FILL_NEUTRAL;
+  }
+  const L = String(label);
+  if (L === 'Low') return hovered ? REGIME_JITTER_LANE_FILL_HOVER.Low : REGIME_JITTER_LANE_FILL.Low;
+  if (L === 'Mid') return hovered ? REGIME_JITTER_LANE_FILL_HOVER.Mid : REGIME_JITTER_LANE_FILL.Mid;
+  if (L === 'High') return hovered ? REGIME_JITTER_LANE_FILL_HOVER.High : REGIME_JITTER_LANE_FILL.High;
+  return hovered ? REGIME_LANE_FILL_NEUTRAL_HOVER : REGIME_LANE_FILL_NEUTRAL;
 }
 
 /** Bin width per chart timeframe (mirrors `BIN_MS_BY_TF` in `replay.js`). */
@@ -1565,11 +1580,22 @@ function drawPriceChart() {
     pctx.save();
     for (let ri = 0; ri < allBars.length; ri++) {
       const rb = allBars[ri];
+      const laneBarMs = _barTimeMs(rb.time);
       const slotLeft = PAD.l + ri * slotW;
-      const jFill = _regimeLaneCellFill('jitter', rb.jitterRegime);
-      const cFill = _regimeLaneCellFill('conviction', rb.convictionRegime);
+      const jRowHover =
+        Number.isFinite(laneBarMs)
+        && state.selection.hoverBarTime != null
+        && state.selection.hoverBarTime === laneBarMs;
+      const jr = rb.jitterRegime ?? rb.jitter_regime ?? null;
+      const jFill = _regimeLaneJitterCellFill(jr, jRowHover);
+      const cFill = _regimeLaneCellFill('conviction', rb.convictionRegime ?? rb.conviction_regime);
       pctx.fillStyle = jFill;
       pctx.fillRect(slotLeft, regimeTop, slotW, REGIME_ROW_PX);
+      if (jRowHover) {
+        pctx.strokeStyle = 'rgba(248, 250, 255, 0.35)';
+        pctx.lineWidth = 1;
+        pctx.strokeRect(slotLeft + 0.5, regimeTop + 0.5, slotW - 1, REGIME_ROW_PX - 1);
+      }
       pctx.fillStyle = cFill;
       pctx.fillRect(
         slotLeft,
@@ -1577,6 +1603,30 @@ function drawPriceChart() {
         slotW,
         REGIME_ROW_PX,
       );
+      const jitterY1 = regimeTop + REGIME_ROW_PX;
+      state.chartHits.push({
+        hitShape: 'rect',
+        x: slotLeft + slotW / 2,
+        y: regimeTop + REGIME_ROW_PX / 2,
+        r: 4,
+        x0: slotLeft,
+        x1: slotLeft + slotW,
+        y0: regimeTop,
+        y1: jitterY1,
+        kind: 'regimeLaneJitter',
+        payload: {
+          barTimeMs: laneBarMs,
+          jitterRegime: jr,
+          convictionRegime: rb.convictionRegime ?? rb.conviction_regime ?? null,
+          pldRatio: Number.isFinite(Number(rb.pldRatio ?? rb.pld_ratio))
+            ? Number(rb.pldRatio ?? rb.pld_ratio)
+            : null,
+          flipRate: Number.isFinite(Number(rb.flipRate ?? rb.flip_rate))
+            ? Number(rb.flipRate ?? rb.flip_rate)
+            : null,
+          tradeContext: rb.tradeContext ?? rb.trade_context ?? null,
+        },
+      });
     }
     pctx.fillStyle = 'rgba(42, 46, 54, 0.85)';
     pctx.fillRect(PAD.l, regimeTop + REGIME_ROW_PX, chartW, REGIME_SEP_PX);
@@ -2281,14 +2331,8 @@ function drawPriceChart() {
   // labels; do not confuse with pipeline **swing** triangles (▲/▼ at H/L with
   // no letters) or sweep event glyphs.
   const btFiltered = state.backtest?.compare?.filtered?.trades || [];
-  const btUnfiltered = state.backtest?.compare?.unfiltered?.trades || [];
   const showBtMarkersOn = state.backtest?.runParams?.showMarkersOn !== false;
-  const compareRegimeOff =
-    state.backtest?.runParams?.compareRegimeOff === true &&
-    !!(state.backtest?.compare?.unfiltered?.runId);
-  const showBtMarkersOff =
-    compareRegimeOff && state.backtest?.runParams?.showMarkersOff !== false;
-  if ((showBtMarkersOn || showBtMarkersOff) && (btFiltered.length || btUnfiltered.length) && allBars.length) {
+  if (showBtMarkersOn && btFiltered.length && allBars.length) {
     const idxByMs = new Map();
     for (let i = 0; i < allBars.length; i++) {
       idxByMs.set(_barTimeMs(allBars[i].time), i);
@@ -2370,20 +2414,11 @@ function drawPriceChart() {
       }
     };
     pctx.save();
-    if (showBtMarkersOn) {
-      drawTradeMarkers(
-        btFiltered,
-        'rgba(33, 160, 149, 0.95)',
-        'rgba(110, 245, 220, 0.92)',
-      );
-    }
-    if (showBtMarkersOff) {
-      drawTradeMarkers(
-        btUnfiltered,
-        'rgba(211, 145, 69, 0.95)',
-        'rgba(255, 205, 120, 0.92)',
-      );
-    }
+    drawTradeMarkers(
+      btFiltered,
+      'rgba(33, 160, 149, 0.95)',
+      'rgba(110, 245, 220, 0.92)',
+    );
     pctx.restore();
   }
 

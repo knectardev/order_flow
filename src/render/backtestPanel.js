@@ -72,6 +72,21 @@ function _setMetricCardStacked(id, primaryInnerHtml, nhActive, nhInnerHtml) {
   el.innerHTML = `<span class="bt-stat-primary">${primaryInnerHtml}</span><span class="bt-stat-nh">${nhInnerHtml}</span>`;
 }
 
+/** Canonical order + colors for compare-four overlays (must match `main.js` MODE_ORDER). */
+const _COMPARE_FOUR_KEYS = ['none', 'rank_only', 'trade_context_only', 'both'];
+const _COMPARE_FOUR_COLORS = {
+  none: '#95a5a6',
+  rank_only: '#d39145',
+  trade_context_only: '#9b59b6',
+  both: '#21a095',
+};
+const _COMPARE_FOUR_LABELS = {
+  none: 'None',
+  rank_only: 'Rank only',
+  trade_context_only: 'Trade context only',
+  both: 'Both',
+};
+
 function _drawEquity({
   pointsOn,
   pointsOff,
@@ -80,6 +95,8 @@ function _drawEquity({
   showCompareOffLine,
   showBuyHold,
   includeNH,
+  compareFourRuns,
+  gateProfileNorm,
 }) {
   const cv = document.getElementById('backtestEquityChart');
   if (!cv) return;
@@ -105,28 +122,56 @@ function _drawEquity({
   const pBench = benchmarkPoints || [];
   const pNH = pointsNH || [];
   const pBscale = showCompareOffLine ? pB : [];
+
+  const pk = String(gateProfileNorm || 'both').trim().toLowerCase();
+  let overlay = [];
+  if (Array.isArray(compareFourRuns) && compareFourRuns.length) {
+    overlay = _COMPARE_FOUR_KEYS.map((key) => {
+      const r = compareFourRuns.find((x) => String(x.key || '').trim().toLowerCase() === key);
+      const pts = r?.equity;
+      if (!Array.isArray(pts) || pts.length < 2) return null;
+      const isSel = key === pk;
+      return {
+        points: pts,
+        color: _COMPARE_FOUR_COLORS[key] || '#888',
+        lineWidth: isSel ? 2.5 : 1.45,
+        dashed: !isSel,
+      };
+    }).filter(Boolean);
+    overlay.sort((a, b) => {
+      if (a.dashed === b.dashed) return 0;
+      return a.dashed ? -1 : 1;
+    });
+  }
+
   const drawBench = showBuyHold && pBench.length >= 2;
   const drawNH = includeNH && pNH.length >= 2;
+  const useFourOverlay = overlay.length > 0;
   const hasLine =
-    pA.length >= 2 ||
+    (!useFourOverlay && pA.length >= 2) ||
     pBscale.length >= 2 ||
     drawNH ||
-    drawBench;
+    drawBench ||
+    useFourOverlay;
   if (!hasLine) return;
 
   const ys = [];
-  for (const p of pA) ys.push(Number(p.equity || 0));
+  if (!useFourOverlay) {
+    for (const p of pA) ys.push(Number(p.equity || 0));
+  }
   for (const p of pBscale) ys.push(Number(p.equity || 0));
   if (drawNH) for (const p of pNH) ys.push(Number(p.equity || 0));
   if (drawBench) for (const p of pBench) ys.push(Number(p.equity || 0));
+  for (const s of overlay) for (const p of s.points) ys.push(Number(p.equity || 0));
   const lo = Math.min(...ys);
   const hi = Math.max(...ys);
   const span = Math.max(1e-6, hi - lo);
 
-  const drawLine = (pts, color, lineWidth = 1.8) => {
+  const drawLineStroke = (pts, color, lineWidth, dashed) => {
     if (!pts || pts.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
+    ctx.setLineDash(dashed ? [6, 5] : []);
     ctx.beginPath();
     pts.forEach((p, i) => {
       const x = (i / (pts.length - 1)) * (w - 1);
@@ -135,20 +180,97 @@ function _drawEquity({
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
+    ctx.setLineDash([]);
   };
 
-  drawLine(pA, '#21a095', 1.8);
-  if (showCompareOffLine) drawLine(pB, '#d39145', 1.8);
-  if (drawNH) drawLine(pNH, '#2ecc71', 1.8);
-  if (drawBench) drawLine(pBench, 'rgba(255, 79, 163, 0.35)', 0.7);
+  if (drawBench) drawLineStroke(pBench, 'rgba(255, 79, 163, 0.35)', 0.7, false);
+  if (drawNH) drawLineStroke(pNH, '#2ecc71', 1.8, false);
+  for (const s of overlay) {
+    drawLineStroke(s.points, s.color, s.lineWidth, s.dashed);
+  }
+  if (!useFourOverlay) {
+    drawLineStroke(pA, '#21a095', 1.8, false);
+    if (showCompareOffLine) drawLineStroke(pB, '#d39145', 1.8, false);
+  }
+}
+
+function _renderTradeContextBreakdown(trades) {
+  const wrap = document.getElementById('btTradeContextBreakdownWrap');
+  if (!wrap) return;
+  const list = Array.isArray(trades) ? trades : [];
+  if (!list.length) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    return;
+  }
+  const by = new Map();
+  for (const t of list) {
+    const raw = t.entryTradeContext ?? t.entry_trade_context;
+    const key = raw != null && raw !== '' ? String(raw) : '(missing)';
+    let row = by.get(key);
+    if (!row) {
+      row = { n: 0, wins: 0, netSum: 0 };
+      by.set(key, row);
+    }
+    row.n += 1;
+    const net = Number(t.netPnl ?? t.net_pnl ?? 0);
+    row.netSum += net;
+    if (net > 0) row.wins += 1;
+  }
+  const rows = [...by.entries()].sort((a, b) => b[1].n - a[1].n);
+  const tbl = [
+    '<table class="bt-context-table"><caption>Per trade_context (entry bar)</caption>',
+    '<thead><tr><th>Context</th><th>Trades</th><th>Win %</th><th>Avg net</th><th>Σ net</th></tr></thead><tbody>',
+  ];
+  for (const [ctx, r] of rows) {
+    const wr = r.n ? (r.wins / r.n) * 100 : 0;
+    const avg = r.n ? r.netSum / r.n : 0;
+    tbl.push(
+      `<tr><td>${ctx}</td><td>${r.n}</td><td>${wr.toFixed(1)}%</td><td>${avg.toFixed(2)}</td><td>${r.netSum.toFixed(2)}</td></tr>`,
+    );
+  }
+  tbl.push('</tbody></table>');
+  wrap.innerHTML = tbl.join('');
+  wrap.hidden = false;
+}
+
+function _renderCompareFourSummary(runs) {
+  const wrap = document.getElementById('btCompareFourSummaryWrap');
+  if (!wrap) return;
+  const list = Array.isArray(runs) ? runs : [];
+  if (!list.length) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    return;
+  }
+  const pk = String(state.backtest.runParams?.gateProfile || 'both').trim().toLowerCase();
+  const tbl = [
+    '<table class="bt-compare-four-table"><caption>Compare four gate modes (trade count / net P&amp;L)</caption>',
+    '<thead><tr><th>Mode</th><th>Trades</th><th>Net P&amp;L</th></tr></thead><tbody>',
+  ];
+  for (const key of _COMPARE_FOUR_KEYS) {
+    const r = list.find((x) => String(x.key || '').trim().toLowerCase() === key);
+    const sel = key === pk ? ' <strong>(selected)</strong>' : '';
+    const dot = _COMPARE_FOUR_COLORS[key] || '#888';
+    const label = r?.label || _COMPARE_FOUR_LABELS[key] || key;
+    const st = r?.stats || {};
+    const n = st.tradeCount ?? st.trade_count ?? '—';
+    const pnl = st.netPnl != null ? st.netPnl : st.net_pnl;
+    const pnlStr = pnl != null && Number.isFinite(Number(pnl)) ? Number(pnl).toFixed(2) : '—';
+    tbl.push(
+      `<tr><td><span class="cf-dot" style="background:${dot}"></span>${label}${sel}</td><td>${n}</td><td>${pnlStr}</td></tr>`,
+    );
+  }
+  tbl.push('</tbody></table>');
+  wrap.innerHTML = tbl.join('');
+  wrap.hidden = false;
 }
 
 function renderBacktestPanel() {
   syncBacktestTimeframeSelect();
   const f = state.backtest.compare?.filtered || { stats: null, equity: [] };
   const u = state.backtest.compare?.unfiltered || { stats: null, equity: [] };
-  const showCompareOff =
-    state.backtest.runParams?.compareRegimeOff === true && !!u.runId;
+  const showCompareOff = false;
 
   const nhState = state.backtest.nullHypothesis;
   const nhM = nhState?.runId ? _nhMetricsFromStats(nhState.stats) : null;
@@ -280,9 +402,10 @@ function renderBacktestPanel() {
         const top = entries.sort((a, b) => Number(b[1]) - Number(a[1]))[0];
         return `${total} skipped (top: ${top[0]})`;
       };
-      let msg = showCompareOff
-        ? `Ready · ON ${summarize(f.skipped?.summary)} · OFF ${summarize(u.skipped?.summary)}`
-        : `Ready · ON ${summarize(f.skipped?.summary)}`;
+      let msg = `Ready · ${summarize(f.skipped?.summary)}`;
+      if (state.backtest.compareFour?.runs?.length) {
+        msg += ' · compare-four';
+      }
       if (nhState?.skipped === true) msg += ` · NH skipped (${nhState.reason})`;
       else if (nhState?.runId) msg += ` · NH ${summarize(nhState.skipped?.summary)}`;
       const em = f.stats?.entryMode;
@@ -301,6 +424,8 @@ function renderBacktestPanel() {
   const includeNH = !!(nhState?.runId && (nhState.equity || []).length >= 2);
   const nhLegend = document.getElementById('btLegendNullHypothesis');
   if (nhLegend) nhLegend.hidden = !nhState?.runId;
+  const pkNorm = String(state.backtest.runParams?.gateProfile || 'both').trim().toLowerCase();
+  const cfRuns = state.backtest.compareFour?.runs;
   _drawEquity({
     pointsOn: f.equity || [],
     pointsOff: u.equity || [],
@@ -309,7 +434,11 @@ function renderBacktestPanel() {
     showCompareOffLine: showCompareOff,
     showBuyHold: state.backtest.runParams?.showBuyHold !== false,
     includeNH,
+    compareFourRuns: Array.isArray(cfRuns) && cfRuns.length ? cfRuns : null,
+    gateProfileNorm: pkNorm,
   });
+  _renderCompareFourSummary(cfRuns);
+  _renderTradeContextBreakdown(f.trades);
   syncBacktestRunButtonFromState();
 }
 

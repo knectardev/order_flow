@@ -576,17 +576,35 @@ function syncBacktestNullHypothesisEnabledUI() {
   nhLabel?.classList.toggle('bt-null-hypothesis--disabled', !ok);
 }
 
-/** ORB scope: compare OFF is allowed — server skips ORB (v_rank,d_rank) rank gate when use_regime_filter=false. */
 function syncBacktestOrbScopeUI() {
-  const compareInput = document.getElementById('btCompareRegimeOff');
+  const gateSel = document.getElementById('btGateProfile');
   const scopeInput = document.getElementById('btScope');
-  if (!compareInput || !scopeInput) return;
+  if (!gateSel || !scopeInput) return;
   const orbScope = String(scopeInput.value || '') === 'orb';
-  compareInput.disabled = false;
-  compareInput.title = orbScope
-    ? 'OFF run: ORB without the (v_rank,d_rank) entry gate. ON run: gate {(3,2),(3,3),(4,2),(4,3)}. Same opening-range geometry; different eligibility.'
+  gateSel.title = orbScope
+    ? 'ORB uses 5m bars; rank gate uses ORB matrix cells when enabled.'
     : '';
-  syncBacktestCompareRegimeOffUI();
+}
+
+/** Maps dashboard gate profile → API booleans. */
+function gatesFromProfile(profile) {
+  const p = String(profile || 'both').toLowerCase();
+  if (p === 'none') return { rankGateEnabled: false, tradeContextGateEnabled: false };
+  if (p === 'rank_only') return { rankGateEnabled: true, tradeContextGateEnabled: false };
+  if (p === 'trade_context_only') return { rankGateEnabled: false, tradeContextGateEnabled: true };
+  return { rankGateEnabled: true, tradeContextGateEnabled: true };
+}
+
+function parseTradeContextAllowedStr(str) {
+  const raw = String(str ?? '').trim();
+  if (!raw) return ['favorable'];
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function syncBacktestCompareFourLegend() {
+  const leg = document.getElementById('btLegendCompareFour');
+  if (!leg) return;
+  leg.hidden = !state.backtest.compareFour?.runs?.length;
 }
 
 /** Non-negative finite ticks from Performance input, or `undefined` when blank (omit from POST → defaults merge). */
@@ -615,30 +633,6 @@ function _negativeBacktestTicksError(slEl, tpEl, gapEl) {
   return check(slEl, 'Stop loss (ticks)') || check(tpEl, 'Take profit (ticks)') || check(gapEl, 'Gap guard (ticks)');
 }
 
-/** Reflects compare-regime-OFF toggle: legend, OFF markers row, and stale OFF run data when disabled. */
-function syncBacktestCompareRegimeOffUI() {
-  const compareInput = document.getElementById('btCompareRegimeOff');
-  const legendOff = document.getElementById('btLegendRegimeOff');
-  const markersOffLabel = document.getElementById('btMarkersOffLabel');
-  const markersOffInput = document.getElementById('btShowMarkersOff');
-  if (!compareInput) return;
-  const on = !!state.backtest.runParams.compareRegimeOff;
-  compareInput.checked = on;
-  if (legendOff) legendOff.hidden = !on;
-  if (markersOffLabel) markersOffLabel.hidden = !on;
-  if (markersOffInput) {
-    markersOffInput.disabled = !on;
-    markersOffInput.checked = on && state.backtest.runParams.showMarkersOff !== false;
-  }
-  if (!on) {
-    state.backtest.runParams = {
-      ...state.backtest.runParams,
-      showMarkersOff: false,
-    };
-    state.backtest.compare.unfiltered = _emptyCompareUnfiltered();
-  }
-}
-
 function bindBacktestUI() {
   const runBtn = document.getElementById('btRunBtn');
   const popoutBtn = document.getElementById('btPopoutBtn');
@@ -649,9 +643,11 @@ function bindBacktestUI() {
   const qtyInput = document.getElementById('btQty');
   const slTicksInput = document.getElementById('btStopLossTicks');
   const tpTicksInput = document.getElementById('btTakeProfitTicks');
-  const compareInput = document.getElementById('btCompareRegimeOff');
+  const gateProfileInput = document.getElementById('btGateProfile');
+  const legacyStrictInput = document.getElementById('btLegacyStrictThresholds');
+  const tcAllowedInput = document.getElementById('btTradeContextAllowed');
+  const compareFourInput = document.getElementById('btCompareFourModes');
   const markersOnInput = document.getElementById('btShowMarkersOn');
-  const markersOffInput = document.getElementById('btShowMarkersOff');
   const showBuyHoldInput = document.getElementById('btShowBuyHold');
   const nhInput = document.getElementById('btNullHypothesis');
   const execFlip = document.getElementById('btExecFlipOpposite');
@@ -662,7 +658,7 @@ function bindBacktestUI() {
   const gapGuardInput = document.getElementById('btEntryGapGuardTicks');
   const regimeScaleInput = document.getElementById('btRegimeExitScale');
   const regimeModeInput = document.getElementById('btRegimeExitScaleMode');
-  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !qtyInput || !compareInput || !markersOnInput || !markersOffInput) return;
+  if (!runBtn || !scopeInput || !capInput || !commInput || !slipInput || !qtyInput || !markersOnInput) return;
 
   function syncRegimeRunParamsFromDom() {
     if (!regimeScaleInput || !regimeModeInput) return;
@@ -715,11 +711,19 @@ function bindBacktestUI() {
     ...state.backtest.runParams,
     scope: String(scopeInput.value || ''),
   };
+  if (gateProfileInput && state.backtest.runParams.gateProfile) {
+    gateProfileInput.value = state.backtest.runParams.gateProfile;
+  }
+  if (legacyStrictInput) legacyStrictInput.checked = state.backtest.runParams.legacyStrictThresholds !== false;
+  if (tcAllowedInput && state.backtest.runParams.tradeContextAllowedStr != null) {
+    tcAllowedInput.value = state.backtest.runParams.tradeContextAllowedStr;
+  }
+  if (compareFourInput) compareFourInput.checked = !!state.backtest.runParams.compareFourModes;
   markersOnInput.checked = state.backtest.runParams.showMarkersOn !== false;
   if (showBuyHoldInput) showBuyHoldInput.checked = state.backtest.runParams.showBuyHold !== false;
   if (nhInput) nhInput.checked = !!state.backtest.runParams.nullHypothesis;
   syncBacktestOrbScopeUI();
-  syncBacktestCompareRegimeOffUI();
+  syncBacktestCompareFourLegend();
   syncBacktestNullHypothesisEnabledUI();
   syncExecRunParamsFromDom();
   syncGapGuardInputEnabled();
@@ -762,27 +766,47 @@ function bindBacktestUI() {
     renderBacktestPanel();
   });
   syncBtRunButtonEnabled();
-  compareInput.addEventListener('change', () => {
-    state.backtest.runParams = {
-      ...state.backtest.runParams,
-      compareRegimeOff: !!compareInput.checked,
-    };
-    syncBacktestCompareRegimeOffUI();
-    drawPriceChart();
-    renderBacktestPanel();
-  });
+  if (gateProfileInput) {
+    gateProfileInput.addEventListener('change', () => {
+      state.backtest.runParams = {
+        ...state.backtest.runParams,
+        gateProfile: String(gateProfileInput.value || 'both'),
+      };
+      syncBacktestOrbScopeUI();
+      renderBacktestPanel();
+    });
+  }
+  if (legacyStrictInput) {
+    legacyStrictInput.addEventListener('change', () => {
+      state.backtest.runParams = {
+        ...state.backtest.runParams,
+        legacyStrictThresholds: !!legacyStrictInput.checked,
+      };
+      renderBacktestPanel();
+    });
+  }
+  if (tcAllowedInput) {
+    tcAllowedInput.addEventListener('change', () => {
+      state.backtest.runParams = {
+        ...state.backtest.runParams,
+        tradeContextAllowedStr: String(tcAllowedInput.value || ''),
+      };
+      renderBacktestPanel();
+    });
+  }
+  if (compareFourInput) {
+    compareFourInput.addEventListener('change', () => {
+      state.backtest.runParams = {
+        ...state.backtest.runParams,
+        compareFourModes: !!compareFourInput.checked,
+      };
+      renderBacktestPanel();
+    });
+  }
   markersOnInput.addEventListener('change', () => {
     state.backtest.runParams = {
       ...state.backtest.runParams,
       showMarkersOn: !!markersOnInput.checked,
-    };
-    drawPriceChart();
-    renderBacktestPanel();
-  });
-  markersOffInput.addEventListener('change', () => {
-    state.backtest.runParams = {
-      ...state.backtest.runParams,
-      showMarkersOff: !!markersOffInput.checked,
     };
     drawPriceChart();
     renderBacktestPanel();
@@ -852,6 +876,7 @@ function bindBacktestUI() {
     syncBtRunButtonEnabled();
     state.backtest.error = null;
     state.backtest.nullHypothesis = null;
+    state.backtest.compareFour = null;
     const slTicks = _optionalTicksFromInput(slTicksInput);
     const tpTicks = _optionalTicksFromInput(tpTicksInput);
     syncExecRunParamsFromDom();
@@ -872,9 +897,11 @@ function bindBacktestUI() {
         : 'range_pct';
     state.backtest.runParams = {
       scope: String(scopeInput.value || 'all'),
-      compareRegimeOff: !!compareInput.checked,
+      gateProfile: gateProfileInput ? String(gateProfileInput.value || 'both') : 'both',
+      legacyStrictThresholds: legacyStrictInput ? !!legacyStrictInput.checked : true,
+      tradeContextAllowedStr: tcAllowedInput ? String(tcAllowedInput.value || '') : 'favorable',
+      compareFourModes: compareFourInput ? !!compareFourInput.checked : false,
       showMarkersOn: !!markersOnInput.checked,
-      showMarkersOff: !!compareInput.checked && !!markersOffInput.checked,
       showBuyHold: showBuyHoldInput ? !!showBuyHoldInput.checked : true,
       nullHypothesis: nhInput ? !!nhInput.checked : false,
       initialCapital: Number(capInput.value || 50000),
@@ -892,7 +919,7 @@ function bindBacktestUI() {
       entryNextBarOpen,
       entryGapGuardMaxTicks: gapGuardTicks !== undefined ? gapGuardTicks : null,
     };
-    syncBacktestCompareRegimeOffUI();
+    syncBacktestCompareFourLegend();
     renderBacktestPanel();
     try {
       const defs = state.backtest.brokerDefaultsFromApi || {};
@@ -933,12 +960,85 @@ function bindBacktestUI() {
           ? { regimeExitScaleEnabled: true, regimeExitScaleMode: regimeMode }
           : {}),
       };
-      const doCompareOff = !!state.backtest.runParams.compareRegimeOff;
+      const legacyStrict = state.backtest.runParams.legacyStrictThresholds !== false;
+      const tcList = parseTradeContextAllowedStr(tcAllowedInput?.value);
+      const compareFourWant = !!state.backtest.runParams.compareFourModes;
       const nhWant = !!(
         state.backtest.runParams.nullHypothesis && backtestScopeIsSingleWatch(state.backtest.runParams.scope)
       );
-      if (!doCompareOff) {
-        const filteredRun = await runBacktest({ ...common, useRegimeFilter: true, nullHypothesis: nhWant });
+      if (compareFourWant && nhWant) {
+        throw new Error('Turn off “Compare all four gate modes” before running null hypothesis.');
+      }
+      const profileKey = state.backtest.runParams.gateProfile || 'both';
+      const profileGates = gatesFromProfile(profileKey);
+      if (nhWant && !profileGates.rankGateEnabled && !profileGates.tradeContextGateEnabled) {
+        throw new Error(
+          'Null hypothesis requires at least one entry gate — choose a gate profile other than “None”, ' +
+            'or enable rank / trade context.',
+        );
+      }
+      if (compareFourWant) {
+        const MODE_ORDER = ['none', 'rank_only', 'trade_context_only', 'both'];
+        const MODE_LABEL = {
+          none: 'None',
+          rank_only: 'Rank only',
+          trade_context_only: 'Trade context only',
+          both: 'Both',
+        };
+        const runs = await Promise.all(
+          MODE_ORDER.map((key) => {
+            const g = gatesFromProfile(key);
+            return runBacktest({
+              ...common,
+              useRegimeFilter: legacyStrict,
+              rankGateEnabled: g.rankGateEnabled,
+              tradeContextGateEnabled: g.tradeContextGateEnabled,
+              tradeContextAllowed: tcList,
+              nullHypothesis: false,
+            });
+          }),
+        );
+        const eqRuns = await Promise.all(runs.map((r) => fetchBacktestEquity(r.runId)));
+        const trRuns = await Promise.all(runs.map((r) => fetchBacktestTrades(r.runId)));
+        const skRuns = await Promise.all(runs.map((r) => fetchBacktestSkippedFires(r.runId)));
+        const packed = MODE_ORDER.map((key, i) => ({
+          key,
+          label: MODE_LABEL[key],
+          runId: runs[i].runId,
+          stats: runs[i],
+          equity: eqRuns[i].points || [],
+          trades: trRuns[i].trades || [],
+          skipped: { summary: skRuns[i].summary || {}, rows: skRuns[i].rows || [] },
+        }));
+        state.backtest.compareFour = { runs: packed };
+        const pi = Math.max(0, MODE_ORDER.indexOf(profileKey));
+        const primary = packed.find((p) => p.key === profileKey) || packed[packed.length - 1];
+        state.backtest.runId = primary.runId;
+        state.backtest.stats = primary.stats;
+        state.backtest.equity = primary.equity;
+        state.backtest.trades = primary.trades;
+        state.backtest.compare.filtered = {
+          runId: primary.runId,
+          stats: primary.stats,
+          equity: primary.equity,
+          benchmark: eqRuns[pi]?.benchmark?.points || [],
+          trades: primary.trades,
+          skipped: primary.skipped,
+        };
+        state.backtest.compare.unfiltered = _emptyCompareUnfiltered();
+        state.backtest.error = null;
+        state.backtest.lastRunScope = state.backtest.runParams.scope || null;
+        syncBacktestCompareFourLegend();
+        renderBacktestPanel();
+      } else {
+        const filteredRun = await runBacktest({
+          ...common,
+          useRegimeFilter: legacyStrict,
+          rankGateEnabled: profileGates.rankGateEnabled,
+          tradeContextGateEnabled: profileGates.tradeContextGateEnabled,
+          tradeContextAllowed: tcList,
+          nullHypothesis: nhWant,
+        });
         const [eqA, trA, skA] = await Promise.all([
           fetchBacktestEquity(filteredRun.runId),
           fetchBacktestTrades(filteredRun.runId),
@@ -961,43 +1061,6 @@ function bindBacktestUI() {
         state.backtest.error = null;
         state.backtest.lastRunScope = state.backtest.runParams.scope || null;
         renderBacktestPanel();
-      } else {
-        const [filteredRun, unfilteredRun] = await Promise.all([
-          runBacktest({ ...common, useRegimeFilter: true, nullHypothesis: nhWant }),
-          runBacktest({ ...common, useRegimeFilter: false, nullHypothesis: false }),
-        ]);
-        const [eqA, eqB, trA, trB, skA, skB] = await Promise.all([
-          fetchBacktestEquity(filteredRun.runId),
-          fetchBacktestEquity(unfilteredRun.runId),
-          fetchBacktestTrades(filteredRun.runId),
-          fetchBacktestTrades(unfilteredRun.runId),
-          fetchBacktestSkippedFires(filteredRun.runId),
-          fetchBacktestSkippedFires(unfilteredRun.runId),
-          _hydrateNullHypothesisFromFilteredRun(filteredRun),
-        ]);
-        state.backtest.runId = filteredRun.runId;
-        state.backtest.stats = filteredRun;
-        state.backtest.equity = eqA.points || [];
-        state.backtest.trades = trA.trades || [];
-        state.backtest.compare.filtered = {
-          runId: filteredRun.runId,
-          stats: filteredRun,
-          equity: eqA.points || [],
-          benchmark: eqA.benchmark?.points || [],
-          trades: trA.trades || [],
-          skipped: { summary: skA.summary || {}, rows: skA.rows || [] },
-        };
-        state.backtest.compare.unfiltered = {
-          runId: unfilteredRun.runId,
-          stats: unfilteredRun,
-          equity: eqB.points || [],
-          benchmark: eqB.benchmark?.points || [],
-          trades: trB.trades || [],
-          skipped: { summary: skB.summary || {}, rows: skB.rows || [] },
-        };
-        state.backtest.error = null;
-        state.backtest.lastRunScope = state.backtest.runParams.scope || null;
-        renderBacktestPanel();
       }
     } catch (err) {
       state.backtest.error = err?.message || 'Backtest failed.';
@@ -1005,6 +1068,7 @@ function bindBacktestUI() {
     } finally {
       state.backtest.loading = false;
       syncBtRunButtonEnabled();
+      syncBacktestCompareFourLegend();
       renderBacktestPanel();
       // Trades land in `state.backtest.compare` but `renderBacktestPanel` does not
       // repaint the price canvas — refresh so E/X + entry–exit connectors show.

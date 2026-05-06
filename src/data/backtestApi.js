@@ -287,6 +287,9 @@ async function runBacktest({
   tickSize,
   pointValue,
   useRegimeFilter = true,
+  rankGateEnabled = false,
+  tradeContextGateEnabled = false,
+  tradeContextAllowed = undefined,
   nullHypothesis = false,
   nullHypothesisSeed = undefined,
   regimeExitScaleEnabled = undefined,
@@ -309,7 +312,12 @@ async function runBacktest({
     qty,
     watch_ids: watchIds,
     use_regime_filter: !!useRegimeFilter,
+    rank_gate_enabled: !!rankGateEnabled,
+    trade_context_gate_enabled: !!tradeContextGateEnabled,
   };
+  if (Array.isArray(tradeContextAllowed) && tradeContextAllowed.length > 0) {
+    payload.trade_context_allowed = tradeContextAllowed;
+  }
   if (nh) {
     payload.null_hypothesis = true;
     const seed = nullHypothesisSeed == null ? null : Number(nullHypothesisSeed);

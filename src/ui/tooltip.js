@@ -151,6 +151,7 @@ function _hitTestChart(x, y) {
     if (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias') return 2;
     if (hit.kind === 'priceSwing') return 1.5;
     if (hit.kind === 'divergenceSegment') return 1.45;
+    if (hit.kind === 'regimeLaneJitter') return 1.38;
     if (hit.kind === 'phatCandle' || hit.kind === 'candle') return 1;
     return 0;
   };
@@ -511,6 +512,38 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
       detail: lines.map(ln => _phatEsc(ln)).join('<br>'),
     };
     meta = 'divergence_events';
+  } else if (hit.kind === 'regimeLaneJitter') {
+    const p = hit.payload || {};
+    const jr = p.jitterRegime;
+    const jrDisp = jr != null && jr !== '' ? String(jr) : '—';
+    let desc;
+    if (jr === 'Low') {
+      desc = 'Bottom third of trailing log(PLD ratio) for this session kind (up to ~200 prior bars). Price path vs displacement is relatively efficient compared with recent bars — less micro-chop.';
+    } else if (jr === 'Mid') {
+      desc = 'Middle third of that same trailing distribution — typical path-length vs displacement for this window.';
+    } else if (jr === 'High') {
+      desc = 'Top third — more cumulative path per net displacement; choppier microstructure vs recent same-session bars.';
+    } else {
+      desc = 'Not classified: missing/non-positive PLD ratio, insufficient history, or warmup (see ingest velocity_regime).';
+    }
+    const btLane = Number(p.barTimeMs);
+    meta = Number.isFinite(btLane)
+      ? new Date(btLane).toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }) + ' ET'
+      : '—';
+    info = {
+      variant: 'breakout',
+      glyph: '▬',
+      name: `Lane jitter · ${jrDisp}`,
+      desc,
+      _velocityHtml: _velocityTooltipExtraHtml(p, _phatEsc),
+    };
   } else if (hit.kind === 'candle') {
     const p = hit.payload || {};
     const up = p.isUp !== false;
@@ -542,6 +575,8 @@ function _showTooltipForHit(hit, mouseX, mouseY, opts = {}) {
     ? ''
     : hit.kind === 'candle'
       ? 'Click to highlight on regime matrix'
+      : hit.kind === 'regimeLaneJitter'
+        ? 'Click to highlight on regime matrix'
       : (hit.kind === 'priceSwing' || hit.kind === 'cvdSwing')
         ? 'Pipeline fractal (swing_events); K matches the Δ section header when uniform.'
         : hit.kind === 'divergenceSegment'
@@ -626,13 +661,13 @@ priceCanvas.addEventListener('mousemove', (e) => {
   }
   const hit = _hitTestChart(_lastMouse.x, _lastMouse.y);
   let hoverMs = null;
-  if (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing')) {
+  if (hit && (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'regimeLaneJitter')) {
     hoverMs = Number(hit.payload?.barTimeMs);
   } else if (hit && hit.kind === 'divergenceSegment') {
     hoverMs = barTimeMsFromSubchartX(priceCanvas, _lastMouse.x);
   }
   hoverBar(Number.isFinite(hoverMs) ? hoverMs : null, 'chart-hover');
-  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'divergenceSegment')) {
+  if (hit && (hit.kind === 'event' || hit.kind === 'fire' || hit.kind === 'bias' || hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'divergenceSegment' || hit.kind === 'regimeLaneJitter')) {
     _showTooltipForHit(hit, _lastMouse.x, _lastMouse.y);
   } else {
     _hideTooltip();
@@ -698,7 +733,7 @@ priceCanvas.addEventListener('click', (e) => {
     } else {
       selectFire(hit.payload);
     }
-  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing') {
+  } else if (hit.kind === 'phatCandle' || hit.kind === 'candle' || hit.kind === 'priceSwing' || hit.kind === 'regimeLaneJitter') {
     const barMs = Number(hit.payload?.barTimeMs);
     if (Number.isFinite(barMs)) {
       selectBar(barMs, 'chart-click');
